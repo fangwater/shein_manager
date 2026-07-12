@@ -1,0 +1,192 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Panda SHEIN PNL</title>
+<script src="https://cdn.jsdelivr.net/npm/echarts@5.5.1/dist/echarts.min.js"></script>
+<style>
+:root{--bg:#eef3f2;--panel:#fff;--ink:#17202a;--muted:#667085;--line:#d6dee4;--accent:#0f766e;--blue:#2563eb;--warn:#b45309;--bad:#b42318;--good:#087443;--purple:#6d28d9;--soft:#f8fafb}*{box-sizing:border-box}body{margin:0;background:var(--bg);font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:var(--ink)}button,input,select{font:inherit}.shell{max-width:1680px;margin:0 auto;padding:18px 20px 36px}.top{display:flex;align-items:flex-end;justify-content:space-between;gap:16px;margin-bottom:14px}.brand h1{font-size:25px;margin:0 0 4px}.brand p{margin:0;color:var(--muted);font-size:13px}.nav{display:flex;gap:12px;align-items:center;flex-wrap:wrap}.nav a{color:var(--muted);font-size:13px;text-decoration:none}.nav a.active{color:var(--accent);font-weight:800}.filters{display:grid;grid-template-columns:210px 210px auto;gap:10px;align-items:end;background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:14px;margin-bottom:14px}.field label{display:block;font-size:12px;font-weight:750;color:#344054;margin-bottom:6px}.field select,.field input{width:100%;height:40px;border:1px solid var(--line);border-radius:6px;padding:0 10px;background:#fff;color:var(--ink);outline:0}.field select{height:118px;padding:8px}.field input:focus,.field select:focus{border-color:var(--accent);box-shadow:0 0 0 3px #d6f3ee}.actions{display:flex;align-items:flex-start;gap:8px;flex-wrap:wrap}.actions button{height:40px;border:0;border-radius:6px;background:var(--accent);color:white;font-weight:800;padding:0 18px;cursor:pointer}.actions button:disabled{opacity:.62;cursor:wait}.actions .secondary{background:#fff;color:var(--accent);border:1px solid var(--accent)}.hint,.status{font-size:12px;color:var(--muted);line-height:1.45}.estimate-panel{display:flex;align-items:center;justify-content:space-between;gap:14px;background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:12px 14px;margin:-2px 0 14px}.estimate-main{display:flex;align-items:center;gap:14px;min-width:0}.estimate-title{font-size:13px;font-weight:850;color:#344054}.estimate-copy{font-size:12px;color:var(--muted);margin-top:3px}.mode-toggle{height:34px;display:flex;align-items:center;gap:8px;border:1px solid var(--line);border-radius:6px;padding:0 10px;background:#fff;color:#344054;font-size:13px;font-weight:750;white-space:nowrap}.mode-toggle input{width:16px;height:16px;accent-color:var(--accent)}.method-group{display:flex;align-items:center;gap:8px}.method-label{font-size:12px;color:var(--muted);font-weight:750;white-space:nowrap}.seg{display:inline-flex;border:1px solid var(--line);border-radius:6px;overflow:hidden;background:#fff}.seg button{height:32px;border:0;border-right:1px solid var(--line);background:#fff;padding:0 10px;color:var(--muted);font-weight:700;cursor:pointer;white-space:nowrap}.seg button:last-child{border-right:0}.seg button.active{background:#e7f3f1;color:var(--accent)}.cards{display:grid;grid-template-columns:repeat(6,1fr);gap:10px;margin-bottom:14px}.card{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:13px 14px;min-height:88px}.card .k{font-size:12px;color:var(--muted);font-weight:750}.card .v{font-size:23px;font-weight:850;margin-top:8px;letter-spacing:0}.card .s{font-size:12px;color:var(--muted);margin-top:4px}.card .s .profit-lines{display:grid;gap:2px;line-height:1.35}.mini-line{display:flex;justify-content:space-between;gap:8px}.mini-line b{color:#344054;font-weight:850}.mini-line .pos{color:var(--good)}.mini-line .neg{color:var(--bad)}.card.good .v{color:var(--good)}.card.bad .v{color:var(--bad)}.card.warn .v{color:var(--warn)}.grid{display:grid;grid-template-columns:1.45fr 1fr;gap:14px;margin-bottom:14px}.grid.three{grid-template-columns:1fr 1fr 1fr}.panel{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:14px;min-width:0}.panel h2{margin:0;font-size:15px}.panel-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:10px}.tools{display:flex;align-items:center;gap:8px}.tools input{height:34px;border:1px solid var(--line);border-radius:6px;padding:0 10px;min-width:260px}.chart{width:100%;height:340px}.chart.small{height:300px}.table-wrap{overflow:auto;max-height:640px;border:1px solid var(--line);border-radius:8px;background:white}table{border-collapse:collapse;width:100%;font-size:12px;white-space:nowrap}th,td{padding:9px 10px;border-bottom:1px solid #edf0f4;text-align:right;vertical-align:middle}th:first-child,td:first-child{text-align:left}th{position:sticky;top:0;background:#f8fafb;color:#344054;z-index:1;cursor:pointer}td.neg{color:var(--bad);font-weight:750}td.pos{color:var(--good);font-weight:750}.code{font-weight:850;color:#17202a}.sub{display:block;margin-top:3px;color:var(--muted);font-size:12px;white-space:normal;max-width:360px}.badge{display:inline-flex;align-items:center;height:22px;border-radius:999px;padding:0 8px;background:#e7f3f1;color:#0f766e;font-weight:800}.badge.return{background:#fff1e7;color:#b45309}.badge.warn{background:#fff1e7;color:#b45309}.badge.bad{background:#fee4e2;color:#b42318}.badge.estimated{background:#ede9fe;color:#6d28d9}.badge.blue{background:#e8f0ff;color:#2563eb}.badge.purple{background:#f1e9ff;color:#6d28d9}.estimated-row{background:#fbfaff}.estimated-row td{color:#4c1d95}.warning-row{background:#fffaf3}.warning-row td:first-child{box-shadow:inset 3px 0 0 var(--warn)}.estimate-error-row{background:#fff7f7}.estimate-error-row td{color:#7a271a}.estimate-error-row td:first-child{box-shadow:inset 3px 0 0 var(--bad)}.estimated-note{color:#7c3aed;font-size:12px;font-weight:750}.estimate-error-note{display:inline-flex;margin-left:4px;color:var(--bad);font-size:12px;font-weight:850}.estimated-fee-cell{background:#f3efff;color:#6d28d9;font-weight:850;box-shadow:inset 3px 0 0 #7c3aed}.thumb{width:44px;height:56px;object-fit:cover;border-radius:6px;border:1px solid var(--line);background:#f3f4f6}.product-cell{display:flex;gap:9px;align-items:center;text-align:left;min-width:280px}.product-cell .title{font-weight:750;white-space:normal;max-width:360px}.product-thumb-cell{display:flex;align-items:center;justify-content:center;min-width:54px}.product-thumb-cell .thumb{display:block}.link-btn{height:26px;border:1px solid var(--line);border-radius:6px;background:#fff;color:var(--blue);font-size:12px;font-weight:850;padding:0 9px;cursor:pointer}.link-btn:hover{border-color:var(--blue);background:#eef4ff}.detail-row td{background:#fbfdff}.detail-panel{padding:8px 0;text-align:left}.detail-table{width:auto;min-width:420px;font-size:12px;white-space:nowrap;border:1px solid var(--line);border-radius:6px;overflow:hidden}.detail-table th,.detail-table td{position:static;text-align:left;padding:7px 10px}.split-sku-cell{display:flex;align-items:flex-start;gap:8px;text-align:left;min-width:180px}.split-sku-cell .thumb{width:34px;height:44px}.split-sku-cell .meta{min-width:0}.skc-group-cell,.warehouse-group-cell{background:#fbfdff;vertical-align:top;border-right:1px solid var(--line)}.warehouse-group-cell{background:#f8fafb}.skc-split-first td{border-top:1px solid #d6dee4}.skc-split-sub td,.shein-split-row td{border-top:1px solid #e4eaf0}.warehouse-split-start td{border-top:2px solid var(--line)}#skcTable th,#skcTable td{border-right:1px solid #edf0f4}#skcTable th:last-child,#skcTable td:last-child{border-right:0}.empty{padding:42px;text-align:center;color:var(--muted);border:1px dashed var(--line);border-radius:8px;background:#fff}@media(max-width:1180px){.cards{grid-template-columns:repeat(3,1fr)}.grid,.grid.three{grid-template-columns:1fr}.filters{grid-template-columns:1fr 1fr}.actions{grid-column:1/-1}}@media(max-width:700px){.cards{grid-template-columns:1fr 1fr}.filters{grid-template-columns:1fr}.estimate-panel,.estimate-main,.method-group{align-items:stretch;flex-direction:column}.shell{padding:14px 12px 28px}.field select{height:140px}.tools{flex-wrap:wrap}.tools input{min-width:0;width:100%}.chart{height:300px}.top,.panel-head{align-items:flex-start;flex-direction:column}}
+</style>
+</head>
+<body>
+<div class="shell">
+  <div class="top"><div class="brand"><h1>Panda SHEIN PNL</h1><p id="shop">加载中...</p></div><div class="nav"><a class="active" href="./">PNL</a><a href="logistics">物流分析</a><a href="shipping-fee">Shipping Fee</a><a href="returns">退货明细</a><a href="sku-mappings">SKU映射</a><a href="warehouse-relations">关联视图</a><a href="inventory">库存管理</a><a href="logout">退出</a></div></div>
+  <div class="filters"><div class="field"><label>开始时间</label><input id="start" type="datetime-local"></div><div class="field"><label>结束时间</label><input id="end" type="datetime-local"></div><div class="actions"><button id="apply">刷新数据</button><button id="refreshExport" class="secondary" type="button">重建利润表</button><div class="hint" id="rangeHint"></div></div></div>
+  <div class="estimate-panel"><div class="estimate-main"><label class="mode-toggle"><input id="estimatedMode" type="checkbox"><span>纳入待揽收预估</span></label><div><div class="estimate-title">待揽收履约费估算</div><div class="estimate-copy">SKU均值按仓库 SKU 计算；拿不到仓库均值会标为预估异常。</div></div></div><div class="method-group"><span class="method-label">估算方式</span><div class="seg" id="estimateMethod"><button data-method="sku_avg" class="active">仓库SKU均值</button><button data-method="zero">0费用</button></div></div></div>
+  <div class="cards" id="cards"></div>
+  <div class="grid"><div class="panel"><div class="panel-head"><h2>利润趋势</h2><div class="seg" id="trendMode"><button data-mode="profit" class="active">利润</button><button data-mode="revenue">收入</button><button data-mode="orders">订单</button></div></div><div id="trendChart" class="chart"></div></div><div class="panel"><div class="panel-head"><h2>成本结构</h2><span class="status" id="costStatus"></span></div><div id="costChart" class="chart"></div></div></div>
+  <div class="grid three"><div class="panel"><div class="panel-head"><h2>仓库 SKU 收入 / 利润</h2></div><div id="skuProfitChart" class="chart small"></div></div><div class="panel"><div class="panel-head"><h2>仓库 SKU 利润率</h2></div><div id="skuRevenueChart" class="chart small"></div></div><div class="panel"><div class="panel-head"><h2>订单利润分布</h2></div><div id="orderScatterChart" class="chart small"></div></div></div>
+  <div class="panel"><div class="panel-head"><h2>仓库 SKU 利润表</h2><div class="tools"><input id="skuSearch" placeholder="搜索仓库 SKU / SHEIN SKU / SKC"><span class="status" id="status"></span></div></div><div class="table-wrap"><table id="skuTable"></table></div></div>
+  <div class="panel" style="margin-top:14px"><div class="panel-head"><h2>SKC 利润表</h2><div class="tools"><div class="seg skc-quick" id="skcQuickRange"><button data-days="1">近1天</button><button data-days="3">近3天</button><button data-days="7">近1周</button><button data-days="30">近1月</button></div><input id="skcSearch" placeholder="搜索 SKC / 仓库 SKU / SHEIN SKU"><span class="status" id="skcStatus"></span></div></div><div class="table-wrap"><table id="skcTable"></table></div></div>
+  <div class="panel" style="margin-top:14px"><div class="panel-head"><h2>订单明细</h2><div class="tools"><input id="orderSearch" placeholder="搜索订单 / 仓库 SKU / SHEIN SKU / SKC"><span class="status" id="orderStatus"></span></div></div><div class="table-wrap"><table id="orderTable"></table></div></div>
+</div>
+<script>
+const fmtMoney=v=>'$'+Number(v||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
+const fmtMaybeMoney=v=>(v===null||v===undefined||v==='')?'-':fmtMoney(v);
+const fmtNum=v=>Number(v||0).toLocaleString();
+const fmtPct=v=>(v===null||v===undefined||isNaN(v))?'-':(Number(v)*100).toFixed(2)+'%';
+const fmtPlatformMarkup=(price,cost)=>{if(price===null||price===undefined||cost===null||cost===undefined)return '-';const p=Number(price),c=Number(cost);return Number.isFinite(p)&&Number.isFinite(c)&&c>0?fmtPct((p-c)/c):'-'};
+const val=id=>document.getElementById(id).value;
+const checked=id=>document.getElementById(id).checked;
+const pad2=n=>String(n).padStart(2,'0');
+const datetimeLocal=d=>`${d.getFullYear()}-${pad2(d.getMonth()+1)}-${pad2(d.getDate())}T${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+const parseDatetimeLocal=v=>{const d=v?new Date(v):null;return d&&Number.isFinite(d.getTime())?d:null};
+const pnlMode=()=>checked('estimatedMode')?'estimated':'actual';
+const estimateMethod=()=>document.querySelector('#estimateMethod button.active')?.dataset.method||'sku_avg';
+const selectedSkus=()=>[];
+const escapeHtml=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const profitClass=v=>Number(v||0)<0?'neg':'pos';
+const cell=(v,cls='')=>`<td class="${cls}">${v??''}</td>`;
+const rowSpanCell=(v,span,cls='')=>`<td rowspan="${span}" class="${cls}">${v??''}</td>`;
+const intVal=v=>Number(v||0);
+const skuLabel=r=>r.warehouseSkuLabel||r.warehouse_sku_label||r.sku_label||'未匹配';
+const mappingStatus=r=>r.mappingStatus||r.warehouse_mapping_status||'mapped';
+const missingLines=r=>intVal(r.missingMappingLines||r.missingLines||0);
+const estimateMissingLines=r=>intVal(r.estimateMissingLines||0);
+const estimateLineText=r=>`${fmtNum(r.estimatedLines||0)}${estimateMissingLines(r)?` / 异常 ${fmtNum(estimateMissingLines(r))}`:''}`;
+const warningBadge=n=>n?`<span class="badge warn">缺映射 ${fmtNum(n)}</span>`:'<span class="badge">完整</span>';
+const shelfBadge=v=>Number(v)===1?'<span class="badge">上架</span>':Number(v)===0?'<span class="badge warn">下架</span>':'<span class="badge blue">未知</span>';
+const rowClass=r=>`${estimateMissingLines(r)>0?'estimate-error-row ':''}${intVal(r.estimatedLines)>0?'estimated-row ':''}${missingLines(r)>0?'warning-row':''}`.trim();
+let state={skuTable:[],skcTable:[],orders:[],hourly:[],summary:{},trendMode:'profit',sort:{sku:['profit',-1],skc:['profit',-1],order:['profit',1]},pnlMode:'actual',estimateMethod:'sku_avg',expandedSkuDetails:{}};
+function clearSkcQuickRange(){document.querySelectorAll('#skcQuickRange button').forEach(b=>b.classList.remove('active'))}
+function applySkcQuickRange(days,btn){const endEl=document.getElementById('end'),startEl=document.getElementById('start');const end=parseDatetimeLocal(endEl.value)||new Date();const start=new Date(end.getTime()-Number(days||1)*86400000);startEl.value=datetimeLocal(start);endEl.value=datetimeLocal(end);document.querySelectorAll('#skcQuickRange button').forEach(b=>b.classList.toggle('active',b===btn));document.getElementById('rangeHint').textContent=`${startEl.value} 至 ${endEl.value}`;loadData()}
+const charts={trend:null,cost:null,skuProfit:null,skuRevenue:null,scatter:null};
+const chartIds={trend:'trendChart',cost:'costChart',skuProfit:'skuProfitChart',skuRevenue:'skuRevenueChart',scatter:'orderScatterChart'};
+function chart(id){if(!window.echarts)return null;if(!charts[id])charts[id]=echarts.init(document.getElementById(chartIds[id]||id));return charts[id]}
+async function init(){
+  const f=await fetch('api/filters');
+  if(!f.ok){location.reload();return}
+  const data=await f.json();
+  document.getElementById('shop').textContent=data.shop+' · /shein/shein-us';
+  document.getElementById('start').value=data.minTime||'';
+  document.getElementById('end').value=data.maxTime||'';
+  document.getElementById('rangeHint').textContent=`${data.minTime||''} 至 ${data.maxTime||''}`;
+  document.getElementById('apply').onclick=loadData;
+  document.getElementById('refreshExport').onclick=refreshExport;
+  document.getElementById('start').oninput=clearSkcQuickRange;
+  document.getElementById('end').oninput=clearSkcQuickRange;
+  document.querySelectorAll('#skcQuickRange button').forEach(btn=>btn.onclick=()=>applySkcQuickRange(btn.dataset.days,btn));
+  document.getElementById('estimatedMode').onchange=loadData;
+  document.querySelectorAll('#estimateMethod button').forEach(btn=>btn.onclick=()=>{document.querySelectorAll('#estimateMethod button').forEach(b=>b.classList.toggle('active',b===btn));loadData()});
+  document.getElementById('skuSearch').oninput=()=>renderSkuTable(state.skuTable);
+  document.getElementById('skcSearch').oninput=()=>renderSkcTable(state.skcTable);
+  document.getElementById('orderSearch').oninput=()=>renderOrderTable(state.orders);
+  document.querySelectorAll('#trendMode button').forEach(btn=>btn.onclick=()=>{state.trendMode=btn.dataset.mode;document.querySelectorAll('#trendMode button').forEach(b=>b.classList.toggle('active',b===btn));renderTrend()});
+  await loadData();
+}
+async function loadData(){
+  const qs=new URLSearchParams();
+  selectedSkus().forEach(s=>qs.append('sku',s));
+  if(val('start'))qs.set('start',val('start'));
+  if(val('end'))qs.set('end',val('end'));
+  qs.set('pnlMode',pnlMode());
+  qs.set('estimateMethod',estimateMethod());
+  const r=await fetch('api/data?'+qs.toString());
+  if(!r.ok){alert('加载失败：'+await r.text());return}
+  const data=await r.json();
+  state={...state,summary:data.summary||{},skuTable:data.skuTable||[],skcTable:data.skcTable||[],hourly:data.hourly||[],orders:data.orders||[],pnlMode:data.summary?.pnlMode||pnlMode(),estimateMethod:data.summary?.estimateMethod||estimateMethod()};
+  renderCards(state.summary);renderSkuTable(state.skuTable);renderSkcTable(state.skcTable);renderOrderTable(state.orders);renderCharts();
+}
+async function refreshExport(){
+  const btn=document.getElementById('refreshExport');
+  const old=btn.textContent;
+  btn.disabled=true;btn.textContent='重建中...';
+  document.getElementById('rangeHint').textContent='正在从数据库重建利润表 parquet...';
+  try{
+    const r=await fetch('api/refresh-pnl-export',{method:'POST'});
+    if(!r.ok){throw new Error(await r.text())}
+    const data=await r.json();
+    const info=data.export||{};
+    document.getElementById('rangeHint').textContent=`已重建 ${fmtNum(info.orders||info.order_rows||0)} 单 / ${fmtNum(info.item_rows||0)} 行，正在刷新页面...`;
+    setTimeout(()=>location.reload(),500);
+  }catch(err){
+    alert('重建利润表失败：'+err.message);
+    document.getElementById('rangeHint').textContent='重建失败';
+  }finally{
+    btn.disabled=false;btn.textContent=old;
+  }
+}
+function renderCards(s){
+  const methodText=s.estimateMethod==='zero'?'0费用':'仓库SKU均值';
+  const modeText=s.pnlMode==='estimated'?`预估口径 · ${methodText}`:'实收口径';
+  const estimateText=s.estimatedOrders?` / ${fmtNum(s.estimatedOrders)} 预估`:'';
+  const estimateErrorText=s.estimateMissingOrders?` / ${fmtNum(s.estimateMissingOrders)} 预估异常`:'';
+  const profitDelta=Number(s.profitDelta||0),deltaClass=profitDelta<0?'neg':'pos',deltaPrefix=profitDelta>0?'+':'';
+  const profitLines=`<div class="profit-lines"><div class="mini-line"><span>实际利润</span><b>${fmtMoney(s.actualProfit)}</b></div><div class="mini-line"><span>预估利润</span><b>${fmtMoney(s.estimatedProfit)}</b></div><div class="mini-line"><span>预估差额</span><b class="${deltaClass}">${deltaPrefix}${fmtMoney(profitDelta)}</b></div><div>实际率 ${fmtPct(s.actualMargin)} · 预估率 ${fmtPct(s.estimatedMargin)}</div></div>`;
+  const missingText=`缺映射 ${fmtNum(s.missingMappingLines||0)} 行 / ${fmtNum(s.missingMappingSkus||0)} 个 SHEIN SKU`;
+  const cards=[
+    ['订单',fmtNum(s.orders),`${fmtNum(s.salesOrders||0)} 有效${estimateText}${estimateErrorText} / ${fmtNum(s.returnOrders||0)} 退货 / ${fmtNum(s.revenueExcludedOrders||0)} 剔除 / ${fmtNum(s.afterSalesOrders||0)} 售后`,s.estimateMissingOrders?'bad':''],
+    ['商品行',fmtNum(s.lines),`${modeText} · ${fmtNum(s.estimatedLines||0)} 行预估${s.estimateMissingLines?` / ${fmtNum(s.estimateMissingLines)} 行异常`:''}`,s.estimateMissingLines?'bad':''],
+    ['仓库 SKU',fmtNum(s.mappedWarehouseSkuCount||0),`${fmtNum(s.warehouseSkuCount||0)} 个分组 · ${fmtNum(s.skcCount||0)} 个 SKC · ${missingText}`,s.missingMappingLines?'warn':''],
+    ['有效收入',fmtMoney(s.grossRevenue),`商品 ${fmtMoney(s.baseRevenue)} · 运费 ${fmtMoney(s.shippingRevenue)}`],
+    ['成本',fmtMoney((s.productCost||0)+(s.packagingFee||0)+(s.afterSalesCost||0)),`货品 ${fmtMoney(s.productCost)} · 打包 ${fmtMoney(s.packagingFee)} · 售后 ${fmtMoney(s.afterSalesCost)}`],
+    ['利润',fmtMoney(s.profit),profitLines,s.profit<0?'bad':'good']
+  ];
+  document.getElementById('cards').innerHTML=cards.map(c=>`<div class="card ${c[3]||''}"><div class="k">${c[0]}</div><div class="v">${c[1]}</div><div class="s">${c[2]}</div></div>`).join('');
+  document.getElementById('costStatus').textContent=`有效利润率 ${fmtPct(s.margin)} · 实际 ${fmtMoney(s.actualProfit)} / 预估 ${fmtMoney(s.estimatedProfit)}${s.estimateMissingLines?` · 预估异常 ${fmtNum(s.estimateMissingLines)} 行`:''} · ${missingText}`;
+}
+function renderCharts(){if(!window.echarts)return;renderTrend();renderCost();renderSkuCharts();renderScatter()}
+function renderTrend(){const c=chart('trend');if(!c)return;const rows=state.hourly||[],mode=state.trendMode,valueKey=mode==='revenue'?'revenue':mode==='orders'?'orders':'profit';c.setOption({color:['#0f766e','#2563eb'],tooltip:{trigger:'axis',valueFormatter:v=>mode==='orders'?fmtNum(v):fmtMoney(v)},grid:{left:54,right:24,top:30,bottom:54},xAxis:{type:'category',data:rows.map(r=>String(r.hour).slice(5,16)),axisLabel:{rotate:45,color:'#667085'}},yAxis:{type:'value',axisLabel:{formatter:v=>mode==='orders'?fmtNum(v):'$'+v}},dataZoom:[{type:'inside'},{type:'slider',height:22,bottom:8}],series:[{name:mode==='revenue'?'收入':mode==='orders'?'订单':'利润',type:'line',smooth:true,showSymbol:false,areaStyle:{opacity:.14},data:rows.map(r=>Number(r[valueKey]||0))}]})}
+function renderCost(){const c=chart('cost');if(!c)return;const s=state.summary||{};c.setOption({color:['#2563eb','#0f766e','#b45309','#7c3aed'],tooltip:{trigger:'item',formatter:p=>`${p.name}<br>${fmtMoney(p.value)} (${p.percent}%)`},legend:{bottom:0},series:[{type:'pie',radius:['48%','72%'],center:['50%','44%'],label:{formatter:'{b}\n{d}%'},data:[{name:'货品成本',value:s.productCost||0},{name:'打包费',value:s.packagingFee||0},{name:'售后成本',value:s.afterSalesCost||0},{name:'履约费',value:s.performanceFee||0},{name:'利润',value:Math.max(s.profit||0,0)}]}]})}
+function topRows(rows,key,n=12){return [...rows].sort((a,b)=>Number(b[key]||0)-Number(a[key]||0)).slice(0,n).reverse()}
+function renderSkuCharts(){
+  const profitChart=chart('skuProfit'),revenueChart=chart('skuRevenue');if(!profitChart||!revenueChart)return;
+  const amountRows=topRows(state.skuTable,'grossRevenue');
+  const labels=amountRows.map(r=>String(skuLabel(r)).slice(0,30));
+  profitChart.setOption({color:['#2563eb','#0f766e'],tooltip:{trigger:'axis',axisPointer:{type:'shadow'},valueFormatter:fmtMoney},legend:{top:0},grid:{left:116,right:20,top:36,bottom:28},xAxis:{type:'value',axisLabel:{formatter:v=>'$'+v}},yAxis:{type:'category',data:labels,axisLabel:{color:'#667085'}},series:[{name:'收入',type:'bar',data:amountRows.map(r=>Number(r.grossRevenue||0))},{name:'利润',type:'bar',data:amountRows.map(r=>Number(r.profit||0)),itemStyle:{color:p=>p.value<0?'#b42318':'#0f766e'}}]});
+  const marginRows=[...state.skuTable].filter(r=>r.margin!==null&&r.margin!==undefined&&!isNaN(r.margin)&&Number(r.salesGrossRevenue||0)>0).sort((a,b)=>Number(b.margin||0)-Number(a.margin||0)).slice(0,12).reverse();
+  revenueChart.setOption({color:['#7c3aed'],tooltip:{trigger:'axis',axisPointer:{type:'shadow'},valueFormatter:v=>(Number(v)*100).toFixed(2)+'%'},grid:{left:116,right:28,top:12,bottom:28},xAxis:{type:'value',axisLabel:{formatter:v=>(Number(v)*100).toFixed(0)+'%'}},yAxis:{type:'category',data:marginRows.map(r=>String(skuLabel(r)).slice(0,30)),axisLabel:{color:'#667085'}},series:[{name:'利润率',type:'bar',data:marginRows.map(r=>Number(r.margin||0)),itemStyle:{color:p=>p.value<0?'#b42318':'#7c3aed'},label:{show:true,position:'right',formatter:p=>(Number(p.value)*100).toFixed(1)+'%'}}]})
+}
+function renderScatter(){const c=chart('scatter');if(!c)return;const rows=state.orders||[];c.setOption({color:['#0f766e','#7c3aed'],tooltip:{trigger:'item',formatter:p=>{const d=p.data.value||p.data;return `${escapeHtml(d[3])}<br>收入 ${fmtMoney(d[0])}<br>利润 ${fmtMoney(d[1])}<br>利润率 ${fmtPct(d[2])}`}},grid:{left:54,right:20,top:18,bottom:42},xAxis:{name:'收入',type:'value',axisLabel:{formatter:v=>'$'+v}},yAxis:{name:'利润',type:'value',axisLabel:{formatter:v=>'$'+v}},dataZoom:[{type:'inside'}],series:[{type:'scatter',symbolSize:p=>Math.max(6,Math.min(24,Number(p[0]||0)/10)),data:rows.map(r=>({value:[Number(r.grossRevenue||0),Number(r.profit||0),r.margin,r.order_no],itemStyle:{color:r.isEstimated?'#7c3aed':missingLines(r)>0?'#b45309':'#0f766e'}}))}]})}
+function policyLabel(v){const map={standard:'标准',return_profit_zeroed:'退货归零',revenue_excluded_status:'收入剔除',pending_pickup_without_fulfillment_fee:'待揽收剔除',pending_pickup_estimated:'预估待揽收',pending_pickup_estimate_missing:'预估异常',after_sales_cost:'售后成本'};const cls=v==='pending_pickup_estimated'?'estimated':(v==='pending_pickup_estimate_missing'?'bad':(v==='after_sales_cost'||v==='revenue_excluded_status'||v==='pending_pickup_without_fulfillment_fee'?'return':''));return `<span class="badge ${cls}">${map[v]||escapeHtml(v||'')}</span>`}
+function compareValues(a,b,key,dir){const av=a[key],bv=b[key];const na=Number(av),nb=Number(bv);if(!Number.isNaN(na)||!Number.isNaN(nb))return ((Number.isNaN(na)?0:na)>(Number.isNaN(nb)?0:nb)?1:(Number.isNaN(na)?0:na)<(Number.isNaN(nb)?0:nb)?-1:0)*dir;return String(av??'').localeCompare(String(bv??''))*dir}
+function sortRows(rows,kind,key){const current=state.sort[kind]||[key,-1];const dir=current[0]===key?-current[1]:-1;state.sort[kind]=[key,dir];return [...rows].sort((a,b)=>compareValues(a,b,key,dir))}
+function productCell(r){const title=r.title||r.productTitle||r.skus||'';return `<div class="product-cell">${r.imageUrl?`<img class="thumb" src="${escapeHtml(r.imageUrl)}" loading="lazy">`:''}<div><span class="code">${escapeHtml(title||'-')}</span>${r.supplierSkus||r.supplierCodes?`<span class="sub">${escapeHtml([r.supplierCodes,r.supplierSkus].filter(Boolean).join(' · '))}</span>`:''}</div></div>`}
+function productThumbCell(r){return r.imageUrl?`<div class="product-thumb-cell"><img class="thumb" src="${escapeHtml(r.imageUrl)}" alt="" loading="lazy"></div>`:"-"}
+function skuDetailKey(r){return String(r.warehouseSkuKey||r.warehouse_sku_key||skuLabel(r))}
+function skuDetailButton(r){const key=skuDetailKey(r);return `<button class="link-btn sku-detail-btn" type="button" data-key="${escapeHtml(key)}">${fmtNum(r.sheinSkuCount)}</button>`}
+function skuDetailRow(r){const details=Array.isArray(r.sheinSkuDetails)?r.sheinSkuDetails:[];const rows=details.length?details.map(d=>`<tr><td>${escapeHtml(d.sheinSku||'')}</td><td>${escapeHtml(d.skc||'-')}</td></tr>`).join(''):'<tr><td colspan="2">无 SHEIN SKU 明细</td></tr>';return `<tr class="detail-row"><td colspan="16"><div class="detail-panel"><table class="detail-table"><thead><tr><th>SHEIN SKU</th><th>SKC</th></tr></thead><tbody>${rows}</tbody></table></div></td></tr>`}
+function renderSkuTable(rows){
+  const q=document.getElementById('skuSearch').value.toLowerCase();
+  let filtered=(rows||[]).filter(r=>(`${skuLabel(r)} ${r.warehouseSku||''} ${r.sheinSkus||''} ${r.skcs||''} ${r.pcs||''}`).toLowerCase().includes(q));
+  const [key,dir]=state.sort.sku;filtered=[...filtered].sort((a,b)=>compareValues(a,b,key,dir));
+  document.getElementById('status').textContent=`${filtered.length} 个仓库 SKU 分组 / ${fmtNum(state.summary.lines||0)} 个明细行`;
+  if(!filtered.length){document.getElementById('skuTable').innerHTML='<tr><td><div class="empty">暂无数据</div></td></tr>';return}
+  const head='<tr><th data-k="warehouseSkuLabel">仓库 SKU</th><th>商品</th><th data-k="sheinSkuCount">SHEIN SKU</th><th data-k="lines">明细行</th><th data-k="salesLines">计入利润行</th><th data-k="estimatedLines">待揽收预估行</th><th data-k="orders">涉及订单号</th><th data-k="grossRevenue">收入</th><th data-k="performanceFee">履约费</th><th data-k="avgFulfillmentFee">均履约费</th><th data-k="productCost">货品</th><th data-k="packagingFee">打包</th><th data-k="afterSalesCost">售后</th><th data-k="profit">利润</th><th data-k="margin">利润率</th><th data-k="avgProfit">行均利润</th></tr>';
+  const body=filtered.map(r=>{const key=skuDetailKey(r);const main=`<tr class="${rowClass(r)}">${cell(`<span class="code">${escapeHtml(skuLabel(r))}</span>${r.pcs?`<span class="sub">pcs ${escapeHtml(r.pcs)}</span>`:''}`)}${cell(productThumbCell(r))}${cell(skuDetailButton(r))}${cell(fmtNum(r.lines))}${cell(fmtNum(r.salesLines||0))}${cell(estimateLineText(r),estimateMissingLines(r)?'neg':'')}${cell(fmtNum(r.orders))}${cell(fmtMoney(r.grossRevenue))}${cell(fmtMoney(r.performanceFee))}${cell(fmtMoney(r.avgFulfillmentFee))}${cell(fmtMoney(r.productCost))}${cell(fmtMoney(r.packagingFee))}${cell(fmtMoney(r.afterSalesCost))}${cell(fmtMoney(r.profit),profitClass(r.profit))}${cell(fmtPct(r.margin))}${cell(fmtMoney(r.avgProfit),profitClass(r.avgProfit))}</tr>`;return main+(state.expandedSkuDetails?.[key]?skuDetailRow(r):'')}).join('');
+  document.getElementById('skuTable').innerHTML=head+body;
+  document.querySelectorAll('#skuTable th[data-k]').forEach(th=>th.onclick=()=>{state.skuTable=sortRows(state.skuTable,'sku',th.dataset.k);renderSkuTable(state.skuTable)});
+  document.querySelectorAll('#skuTable .sku-detail-btn').forEach(btn=>btn.onclick=()=>{const key=btn.dataset.key;state.expandedSkuDetails={...(state.expandedSkuDetails||{}),[key]:!state.expandedSkuDetails?.[key]};renderSkuTable(state.skuTable)})
+}
+function skcWarehouseRows(r){const rows=Array.isArray(r.warehouseSkuRows)?r.warehouseSkuRows:[];return rows.length?rows:[{warehouseSku:r.warehouseSkus||'-',imageUrl:r.imageUrl||'',sheinSkus:[]}]}
+function skcSkuChildren(item){const rows=Array.isArray(item.sheinSkus)?item.sheinSkus:[];return rows.length?rows:[{sheinSku:'-',costUsd:null,basePriceUsd:null,specialPriceUsd:null}]}
+function splitSkuCell(item){const img=item.imageUrl?`<img class="thumb" src="${escapeHtml(item.imageUrl)}" alt="" loading="lazy">`:'';const count=skcSkuChildren(item).length;return `<div class="split-sku-cell">${img}<div class="meta"><span class="code">${escapeHtml(item.warehouseSku||'-')}</span><span class="sub">${fmtNum(count)} 个 SHEIN SKU</span></div></div>`}
+function skcSplitRowCount(rows){return rows.reduce((sum,item)=>sum+Math.max(skcSkuChildren(item).length,1),0)||1}
+function renderSkcTable(rows){
+  const q=document.getElementById('skcSearch').value.toLowerCase();
+  let filtered=(rows||[]).filter(r=>{const skuRows=skcWarehouseRows(r).map(x=>`${x.warehouseSku||''} ${skcSkuChildren(x).map(c=>c.sheinSku||'').join(' ')}`).join(' ');return (`${r.skcLabel||''} ${r.skcName||''} ${r.warehouseSkus||''} ${r.sheinSkus||''} ${skuRows}`).toLowerCase().includes(q)});
+  const [key,dir]=state.sort.skc;filtered=[...filtered].sort((a,b)=>compareValues(a,b,key,dir));
+  document.getElementById('skcStatus').textContent=`${filtered.length} 个 SKC / ${fmtNum(state.summary.skcCount||0)} 个有订单 SKC`;
+  if(!filtered.length){document.getElementById('skcTable').innerHTML='<tr><td><div class="empty">暂无数据</div></td></tr>';return}
+  const head='<tr><th data-k="skcLabel">SKC</th><th>仓库 SKU</th><th>SHEIN SKU</th><th>供货价(USD)</th><th>原价(USD)</th><th>前端售价(USD)</th><th>平台加价率</th><th data-k="skcShelfStatus">上架</th><th data-k="lines">明细行</th><th data-k="orders">涉及订单号</th><th data-k="grossRevenue">收入</th><th data-k="performanceFee">履约费</th><th data-k="productCost">货品</th><th data-k="packagingFee">打包</th><th data-k="afterSalesCost">售后</th><th data-k="profit">利润</th><th data-k="margin">利润率</th><th data-k="avgProfit">行均利润</th></tr>';
+  const body=filtered.map(r=>{const skuRows=skcWarehouseRows(r);const totalSpan=skcSplitRowCount(skuRows);let wroteSkc=false;return skuRows.map(item=>{const children=skcSkuChildren(item);return children.map((child,idx)=>{const firstSkc=!wroteSkc;const firstWarehouse=idx===0;const rowCls=`${rowClass(r)} shein-split-row ${firstSkc?'skc-split-first':firstWarehouse?'warehouse-split-start':'skc-split-sub'}`.trim();wroteSkc=true;return `<tr class="${rowCls}">${firstSkc?rowSpanCell(`<span class="code">${escapeHtml(r.skcLabel||r.skcName||'缺商品资料')}</span>`,totalSpan,'skc-group-cell'):''}${firstWarehouse?rowSpanCell(splitSkuCell(item),children.length,'warehouse-group-cell'):''}${cell(`<span class="code">${escapeHtml(child.sheinSku||'-')}</span>`)}${cell(fmtMaybeMoney(child.costUsd))}${cell(fmtMaybeMoney(child.basePriceUsd))}${cell(fmtMaybeMoney(child.specialPriceUsd))}${cell(fmtPlatformMarkup(child.specialPriceUsd,child.costUsd))}${firstSkc?rowSpanCell(shelfBadge(r.skcShelfStatus),totalSpan)+rowSpanCell(fmtNum(r.lines),totalSpan)+rowSpanCell(fmtNum(r.orders),totalSpan)+rowSpanCell(`${fmtMoney(r.grossRevenue)}${estimateMissingLines(r)?`<span class="estimate-error-note">异常 ${fmtNum(estimateMissingLines(r))}</span>`:''}`,totalSpan)+rowSpanCell(fmtMoney(r.performanceFee),totalSpan)+rowSpanCell(fmtMoney(r.productCost),totalSpan)+rowSpanCell(fmtMoney(r.packagingFee),totalSpan)+rowSpanCell(fmtMoney(r.afterSalesCost),totalSpan)+rowSpanCell(fmtMoney(r.profit),totalSpan,profitClass(r.profit))+rowSpanCell(fmtPct(r.margin),totalSpan)+rowSpanCell(fmtMoney(r.avgProfit),totalSpan,profitClass(r.avgProfit)):''}</tr>`}).join('')}).join('')}).join('');
+  document.getElementById('skcTable').innerHTML=head+body;
+  document.querySelectorAll('#skcTable th[data-k]').forEach(th=>th.onclick=()=>{state.skcTable=sortRows(state.skcTable,'skc',th.dataset.k);renderSkcTable(state.skcTable)})
+}
+function renderOrderTable(rows){
+  const q=document.getElementById('orderSearch').value.toLowerCase();
+  let filtered=(rows||[]).filter(r=>(`${r.order_no} ${r.skus} ${r.sheinSkus||''} ${r.skcs||''} ${r.returnStatus||''}`).toLowerCase().includes(q));
+  const [key,dir]=state.sort.order;filtered=[...filtered].sort((a,b)=>compareValues(a,b,key,dir));
+  document.getElementById('orderStatus').textContent=`${filtered.length} 单`;
+  if(!filtered.length){document.getElementById('orderTable').innerHTML='<tr><td><div class="empty">暂无数据</div></td></tr>';return}
+  const head='<tr><th data-k="order_no">订单号</th><th>时间</th><th>状态</th><th>订单状态</th><th>PNL政策</th><th>标记</th><th>仓库 SKU</th><th>SHEIN SKU</th><th>SKC</th><th data-k="lines">行数</th><th data-k="grossRevenue">收入</th><th data-k="performanceFee">履约费</th><th data-k="productCost">货品</th><th data-k="packagingFee">打包</th><th data-k="afterSalesCost">售后</th><th data-k="profit">利润</th><th data-k="margin">利润率</th></tr>';
+  const body=filtered.map(r=>`<tr class="${rowClass(r)}">${cell(escapeHtml(r.order_no))}${cell(escapeHtml(r.orderCreated))}${cell(r.returnDetected?`<span class="badge return">${escapeHtml(r.returnStatus||'退货')}</span>`:'<span class="badge">销售</span>')}${cell(escapeHtml(r.orderStatus||''))}${cell(policyLabel(r.pnlPolicy))}${cell(`${r.isEstimated?'<span class="estimated-note">预估</span>':''}${estimateMissingLines(r)?`<span class="badge bad">预估异常 ${fmtNum(estimateMissingLines(r))}</span>`:''}${missingLines(r)?`<span class="badge warn">缺映射 ${fmtNum(missingLines(r))}</span>`:''}`)}${cell(escapeHtml(r.skus))}${cell(escapeHtml(r.sheinSkus||''))}${cell(escapeHtml(r.skcs||''))}${cell(fmtNum(r.lines))}${cell(fmtMoney(r.grossRevenue))}${cell(fmtMoney(r.performanceFee),estimateMissingLines(r)?'neg':(r.isEstimated?'estimated-fee-cell':''))}${cell(fmtMoney(r.productCost))}${cell(fmtMoney(r.packagingFee))}${cell(fmtMoney(r.afterSalesCost))}${cell(fmtMoney(r.profit),profitClass(r.profit))}${cell(fmtPct(r.margin))}</tr>`).join('');
+  document.getElementById('orderTable').innerHTML=head+body;
+  document.querySelectorAll('#orderTable th[data-k]').forEach(th=>th.onclick=()=>{state.orders=sortRows(state.orders,'order',th.dataset.k);renderOrderTable(state.orders)})
+}
+window.addEventListener('resize',()=>Object.values(charts).forEach(c=>c&&c.resize()));
+init();
+</script>
+</body>
+</html>

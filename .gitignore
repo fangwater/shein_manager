@@ -1,0 +1,11 @@
+.env
+.web_session_secret
+.venv/
+exports/
+.ipynb_checkpoints/
+__pycache__/
+*.pyc
+*.egg-info/
+.pytest_cache/
+dist/
+build/

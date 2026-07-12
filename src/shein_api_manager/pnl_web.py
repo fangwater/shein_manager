@@ -69,6 +69,7 @@ SHIPPING_FEE_DEFAULT_TOP_N = 12
 
 app = FastAPI(title=APP_TITLE)
 REFRESH_EXPORT_LOCK = threading.Lock()
+SYNC_LATEST_ORDERS_LOCK = threading.Lock()
 SESSION_SECRET_LOCK = threading.Lock()
 _SESSION_SECRET: bytes | None = None
 
@@ -1102,6 +1103,47 @@ def api_refresh_pnl_export(token: str | None = None, shein_pnl_token: str | None
     except json.JSONDecodeError:
         export = {"stdout": stdout[-4000:]}
     return JSONResponse({"status": "ok", "export": export})
+
+
+@app.post("/api/sync-latest-orders")
+def api_sync_latest_orders(token: str | None = None, shein_pnl_token: str | None = Cookie(default=None, alias=COOKIE_NAME)) -> JSONResponse:
+    require_auth(token, shein_pnl_token, permission=VIEW_PROFIT)
+    script_path = BASE_DIR / "scripts" / "sync_latest_shein_data.py"
+    if not script_path.exists():
+        raise HTTPException(status_code=500, detail=f"missing sync script: {script_path}")
+    if not SYNC_LATEST_ORDERS_LOCK.acquire(blocking=False):
+        raise HTTPException(status_code=409, detail="latest order sync is already running")
+    try:
+        try:
+            result = subprocess.run(
+                [sys.executable, str(script_path), "--data", "orders"],
+                cwd=str(BASE_DIR),
+                capture_output=True,
+                text=True,
+                timeout=300,
+                check=False,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise HTTPException(status_code=504, detail="latest order sync timed out after 300 seconds") from exc
+    finally:
+        SYNC_LATEST_ORDERS_LOCK.release()
+    stdout = (result.stdout or "").strip()
+    stderr = (result.stderr or "").strip()
+    if result.returncode != 0:
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "message": "latest order sync failed",
+                "returnCode": result.returncode,
+                "stdout": stdout[-4000:],
+                "stderr": stderr[-4000:],
+            },
+        )
+    try:
+        sync = json.loads(stdout) if stdout else {}
+    except json.JSONDecodeError:
+        sync = {"stdout": stdout[-4000:]}
+    return JSONResponse({"status": "ok", "sync": sync})
 
 
 @app.get("/api/data")

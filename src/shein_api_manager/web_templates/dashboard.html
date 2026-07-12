@@ -12,7 +12,7 @@
 <body>
 <div class="shell">
   <div class="top"><div class="brand"><h1>Panda SHEIN PNL</h1><p id="shop">加载中...</p></div><div class="nav"><a class="active" href="./">PNL</a><a href="logistics">物流分析</a><a href="shipping-fee">Shipping Fee</a><a href="returns">退货明细</a><a href="sku-mappings">SKU映射</a><a href="warehouse-relations">关联视图</a><a href="inventory">库存管理</a><a href="logout">退出</a></div></div>
-  <div class="filters"><div class="field"><label>开始时间</label><input id="start" type="datetime-local"></div><div class="field"><label>结束时间</label><input id="end" type="datetime-local"></div><div class="actions"><button id="apply">刷新数据</button><button id="refreshExport" class="secondary" type="button">重建利润表</button><div class="hint" id="rangeHint"></div></div></div>
+  <div class="filters"><div class="field"><label>开始时间</label><input id="start" type="datetime-local"></div><div class="field"><label>结束时间</label><input id="end" type="datetime-local"></div><div class="actions"><button id="apply">刷新数据</button><button id="syncLatestOrders" type="button">拉取最新订单</button><button id="refreshExport" class="secondary" type="button">重建利润表</button><div class="hint" id="rangeHint"></div></div></div>
   <div class="estimate-panel"><div class="estimate-main"><label class="mode-toggle"><input id="estimatedMode" type="checkbox"><span>纳入待揽收预估</span></label><div><div class="estimate-title">待揽收履约费估算</div><div class="estimate-copy">SKU均值按仓库 SKU 计算；拿不到仓库均值会标为预估异常。</div></div></div><div class="method-group"><span class="method-label">估算方式</span><div class="seg" id="estimateMethod"><button data-method="sku_avg" class="active">仓库SKU均值</button><button data-method="zero">0费用</button></div></div></div>
   <div class="cards" id="cards"></div>
   <div class="grid"><div class="panel"><div class="panel-head"><h2>利润趋势</h2><div class="seg" id="trendMode"><button data-mode="profit" class="active">利润</button><button data-mode="revenue">收入</button><button data-mode="orders">订单</button></div></div><div id="trendChart" class="chart"></div></div><div class="panel"><div class="panel-head"><h2>成本结构</h2><span class="status" id="costStatus"></span></div><div id="costChart" class="chart"></div></div></div>
@@ -63,6 +63,7 @@ async function init(){
   document.getElementById('end').value=data.maxTime||'';
   document.getElementById('rangeHint').textContent=`${data.minTime||''} 至 ${data.maxTime||''}`;
   document.getElementById('apply').onclick=loadData;
+  document.getElementById('syncLatestOrders').onclick=syncLatestOrders;
   document.getElementById('refreshExport').onclick=refreshExport;
   document.getElementById('start').oninput=clearSkcQuickRange;
   document.getElementById('end').oninput=clearSkcQuickRange;
@@ -87,6 +88,26 @@ async function loadData(){
   const data=await r.json();
   state={...state,summary:data.summary||{},skuTable:data.skuTable||[],skcTable:data.skcTable||[],hourly:data.hourly||[],orders:data.orders||[],pnlMode:data.summary?.pnlMode||pnlMode(),estimateMethod:data.summary?.estimateMethod||estimateMethod()};
   renderCards(state.summary);renderSkuTable(state.skuTable);renderSkcTable(state.skcTable);renderOrderTable(state.orders);renderCharts();
+}
+async function syncLatestOrders(){
+  const btn=document.getElementById('syncLatestOrders');
+  const refreshBtn=document.getElementById('refreshExport');
+  const old=btn.textContent;
+  btn.disabled=true;refreshBtn.disabled=true;btn.textContent='拉取中...';
+  document.getElementById('rangeHint').textContent='正在从 SHEIN 拉取最新订单和订单详情...';
+  try{
+    const r=await fetch('api/sync-latest-orders',{method:'POST'});
+    if(!r.ok){throw new Error(await r.text())}
+    const data=await r.json();
+    const info=data.sync?.orders||{};
+    document.getElementById('rangeHint').textContent='订单拉取完成：发现 '+fmtNum(info.ordersSeen||0)+' 单，写入 '+fmtNum(info.ordersInserted||0)+' 单，详情 '+fmtNum(info.detailsFetched||0)+' 单；正在重建利润表...';
+    await refreshExport();
+  }catch(err){
+    alert('拉取最新订单失败：'+err.message);
+    document.getElementById('rangeHint').textContent='订单拉取失败';
+  }finally{
+    btn.disabled=false;refreshBtn.disabled=false;btn.textContent=old;
+  }
 }
 async function refreshExport(){
   const btn=document.getElementById('refreshExport');

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import os
+import subprocess
 import unittest
+from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
@@ -65,11 +67,31 @@ class PnlWebAuthTests(unittest.TestCase):
         self.assertEqual(self.client.get("/api/filters").status_code, 403)
         self.assertEqual(self.client.get("/api/data").status_code, 403)
         self.assertEqual(self.client.get("/api/returns/data").status_code, 403)
+        self.assertEqual(self.client.post("/api/sync-latest-orders").status_code, 403)
 
         mappings = self.client.get("/sku-mappings")
         self.assertEqual(mappings.status_code, 200)
         self.assertNotIn(">PNL<", mappings.text)
         self.assertNotIn("退货明细", mappings.text)
+
+    def test_pyy_can_run_latest_order_sync(self) -> None:
+        self.login("pyy", "12345")
+        completed = subprocess.CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout='{"orders":{"ordersSeen":3,"ordersInserted":2,"detailsFetched":3}}',
+            stderr="",
+        )
+
+        with patch("shein_api_manager.pnl_web.subprocess.run", return_value=completed) as run:
+            response = self.client.post("/api/sync-latest-orders")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["sync"]["orders"]["ordersSeen"], 3)
+        command = run.call_args.args[0]
+        self.assertEqual(command[-2:], ["--data", "orders"])
+        self.assertEqual(run.call_args.kwargs["cwd"], os.path.dirname(os.path.dirname(__file__)))
+        self.assertEqual(run.call_args.kwargs["timeout"], 300)
 
     def test_tampered_cookie_is_rejected(self) -> None:
         login = self.login("temu-test", "temu-test")

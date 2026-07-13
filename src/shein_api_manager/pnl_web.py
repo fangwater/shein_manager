@@ -64,6 +64,7 @@ SHIPPING_FEE_DIMENSIONS = [
 ]
 SHIPPING_FEE_DEFAULT_DIMENSION = "warehouse_sku"
 SHIPPING_FEE_DEFAULT_ROLLING_DAYS = 7
+SHIPPING_FEE_DEFAULT_MIN_PERIODS = SHIPPING_FEE_DEFAULT_ROLLING_DAYS
 SHIPPING_FEE_DEFAULT_SHIFT_DAYS = 7
 SHIPPING_FEE_DEFAULT_TOP_N = 12
 
@@ -222,6 +223,11 @@ def warehouse_relations_page(token: str | None = None, shein_pnl_token: str | No
 @app.get("/inventory", response_class=HTMLResponse)
 def inventory_page(token: str | None = None, shein_pnl_token: str | None = Cookie(default=None, alias=COOKIE_NAME)) -> HTMLResponse:
     return page_response("inventory.html", shein_pnl_token)
+
+
+@app.get("/inventory-templates", response_class=HTMLResponse)
+def inventory_templates_page(token: str | None = None, shein_pnl_token: str | None = Cookie(default=None, alias=COOKIE_NAME)) -> HTMLResponse:
+    return page_response("inventory_templates.html", shein_pnl_token)
 
 
 @app.get("/logistics", response_class=HTMLResponse)
@@ -1450,18 +1456,44 @@ def apply_shipping_fee_dimension(df: pd.DataFrame, dimension: str) -> pd.DataFra
     return df
 
 
-def shipping_fee_window_summary(df: pd.DataFrame, *, start_day: pd.Timestamp, end_day: pd.Timestamp) -> dict[str, Any]:
+def shipping_fee_group_metadata(df: pd.DataFrame, dimension: str) -> dict[str, dict[str, str]]:
+    if dimension not in {"warehouse_sku", "shein_sku", "skc", "sku_attr"} or df.empty:
+        return {}
+    metadata: dict[str, dict[str, str]] = {}
+    columns = ["shipping_fee_group_key", "product_image_url", "product_title", "shein_sku_code"]
+    for group_key, image_url, title, shein_sku in df[columns].itertuples(index=False, name=None):
+        key = clean_text(group_key)
+        current = metadata.setdefault(key, {"imageUrl": "", "title": "", "sheinSku": ""})
+        if not current["imageUrl"]:
+            current["imageUrl"] = clean_text(image_url)
+        if not current["title"]:
+            current["title"] = clean_text(title)
+        if not current["sheinSku"]:
+            current["sheinSku"] = clean_text(shein_sku)
+    return metadata
+
+
+def shipping_fee_window_summary(
+    df: pd.DataFrame,
+    *,
+    start_day: pd.Timestamp,
+    end_day: pd.Timestamp,
+    min_periods: int = 1,
+) -> dict[str, Any]:
     if df.empty:
         return {"lines": 0, "hitLines": 0, "orders": 0, "shippingRevenue": 0.0, "rate": None}
     window = df.loc[df["shipping_fee_day"].between(start_day, end_day)]
     lines = int(len(window))
     hit_lines = int(window["shipping_fee_hit"].sum()) if lines else 0
+    data_start = df["shipping_fee_day"].min()
+    available_start = max(start_day, data_start)
+    available_periods = max(0, int((end_day - available_start).days) + 1) if end_day >= data_start else 0
     return {
         "lines": lines,
         "hitLines": hit_lines,
         "orders": int(window["order_no"].nunique()) if lines else 0,
         "shippingRevenue": round(float(window["shipping_fee_value_usd"].sum()), 2) if lines else 0.0,
-        "rate": shipping_fee_rate(hit_lines, lines),
+        "rate": shipping_fee_rate(hit_lines, lines) if available_periods >= min_periods else None,
     }
 
 
@@ -1483,6 +1515,7 @@ def shipping_fee_empty_response(
     *,
     dimension: str,
     rolling_days: int,
+    min_periods: int,
     shift_days: int,
     top_n: int,
     start_day: pd.Timestamp | None = None,
@@ -1494,6 +1527,7 @@ def shipping_fee_empty_response(
         "summary": {
             "dimension": dimension,
             "rollingDays": rolling_days,
+            "minPeriods": min_periods,
             "shiftDays": shift_days,
             "topN": top_n,
             "startDate": start_text,
@@ -1532,6 +1566,7 @@ def api_shipping_fee_filters(token: str | None = None, shein_pnl_token: str | No
         "defaults": {
             "dimension": SHIPPING_FEE_DEFAULT_DIMENSION,
             "rollingDays": SHIPPING_FEE_DEFAULT_ROLLING_DAYS,
+            "minPeriods": SHIPPING_FEE_DEFAULT_MIN_PERIODS,
             "shiftDays": SHIPPING_FEE_DEFAULT_SHIFT_DAYS,
             "topN": SHIPPING_FEE_DEFAULT_TOP_N,
         },
@@ -1550,6 +1585,7 @@ def api_shipping_fee_data(
     end: str | None = None,
     dimension: str | None = None,
     rolling: int | None = None,
+    minPeriods: int | None = None,
     shift: int | None = None,
     topN: int | None = None,
     shein_pnl_token: str | None = Cookie(default=None, alias=COOKIE_NAME),
@@ -1557,6 +1593,7 @@ def api_shipping_fee_data(
     require_auth(token, shein_pnl_token)
     selected_dimension = normalize_shipping_fee_dimension(dimension)
     rolling_days = normalize_int_range(rolling, default=SHIPPING_FEE_DEFAULT_ROLLING_DAYS, min_value=1, max_value=90)
+    min_periods = normalize_int_range(minPeriods, default=rolling_days, min_value=1, max_value=rolling_days)
     shift_days = normalize_int_range(shift, default=SHIPPING_FEE_DEFAULT_SHIFT_DAYS, min_value=1, max_value=90)
     top_n = normalize_int_range(topN, default=SHIPPING_FEE_DEFAULT_TOP_N, min_value=1, max_value=50)
 
@@ -1565,6 +1602,7 @@ def api_shipping_fee_data(
         return JSONResponse(shipping_fee_empty_response(
             dimension=selected_dimension,
             rolling_days=rolling_days,
+            min_periods=min_periods,
             shift_days=shift_days,
             top_n=top_n,
         ))
@@ -1576,13 +1614,13 @@ def api_shipping_fee_data(
         return JSONResponse(shipping_fee_empty_response(
             dimension=selected_dimension,
             rolling_days=rolling_days,
+            min_periods=min_periods,
             shift_days=shift_days,
             top_n=top_n,
             start_day=start_day,
             end_day=end_day,
         ))
 
-    calc_start = start_day - pd.Timedelta(days=rolling_days + shift_days - 1)
     current_start = end_day - pd.Timedelta(days=rolling_days - 1)
     shifted_end = end_day - pd.Timedelta(days=shift_days)
     shifted_start = shifted_end - pd.Timedelta(days=rolling_days - 1)
@@ -1594,7 +1632,11 @@ def api_shipping_fee_data(
         periodShippingRevenue=("shipping_fee_value_usd", "sum"),
     ).reset_index()
     period_grouped["periodRate"] = period_grouped["periodHitLines"] / period_grouped["periodLines"].replace({0: pd.NA})
-    period_grouped = period_grouped.sort_values(["periodLines", "periodHitLines", "shipping_fee_group_label"], ascending=[False, False, True])
+    group_metadata = shipping_fee_group_metadata(period_df, selected_dimension)
+    period_grouped = period_grouped.sort_values(
+        ["periodOrders", "periodShippingRevenue", "shipping_fee_group_label"],
+        ascending=[False, False, True],
+    )
     if selected_dimension != "all":
         period_grouped = period_grouped.head(top_n)
 
@@ -1607,84 +1649,90 @@ def api_shipping_fee_data(
             "periodRate": float_or_none(row.periodRate),
             "periodOrders": int(row.periodOrders or 0),
             "periodShippingRevenue": round(float(row.periodShippingRevenue or 0), 2),
+            **group_metadata.get(clean_text(row.shipping_fee_group_key), {"imageUrl": "", "title": "", "sheinSku": ""}),
         }
         for row in period_grouped.itertuples(index=False)
     ]
     top_keys = {item["key"] for item in top_groups}
-    calc_df = df.loc[df["shipping_fee_group_key"].isin(top_keys) & df["shipping_fee_day"].between(calc_start, end_day)].copy()
-    date_index = pd.date_range(calc_start, end_day, freq="D")
-
-    daily_source = calc_df.groupby(["shipping_fee_group_key", "shipping_fee_group_label", "shipping_fee_day"], dropna=False).agg(
+    trend_df = df.loc[df["shipping_fee_group_key"].isin(top_keys) & df["shipping_fee_day"].le(end_day)].copy()
+    daily_source = trend_df.groupby(
+        ["shipping_fee_group_key", "shipping_fee_group_label", "shipping_fee_day"],
+        dropna=False,
+    ).agg(
         lines=("shipping_fee_hit", "size"),
         hitLines=("shipping_fee_hit", "sum"),
-        orders=("order_no", "nunique"),
         shippingRevenue=("shipping_fee_value_usd", "sum"),
     ).reset_index()
+    daily_source["rate"] = daily_source["hitLines"] / daily_source["lines"].replace({0: pd.NA})
 
     period_by_key = {item["key"]: item for item in top_groups}
+    display_days = pd.date_range(start_day, end_day, freq="D")
     series_rows: list[dict[str, Any]] = []
     table_rows: list[dict[str, Any]] = []
     for group in top_groups:
         group_key = group["key"]
         group_label = group["label"]
-        group_daily = daily_source.loc[daily_source["shipping_fee_group_key"].eq(group_key)]
-        frame = pd.DataFrame({"day": date_index})
-        frame = frame.merge(group_daily, left_on="day", right_on="shipping_fee_day", how="left")
-        frame["shipping_fee_group_key"] = group_key
-        frame["shipping_fee_group_label"] = group_label
-        for col in ("lines", "hitLines", "orders", "shippingRevenue"):
-            frame[col] = pd.to_numeric(frame[col], errors="coerce").fillna(0.0)
-        frame["rollingLines"] = frame["lines"].rolling(rolling_days, min_periods=1).sum()
-        frame["rollingHitLines"] = frame["hitLines"].rolling(rolling_days, min_periods=1).sum()
-        frame["rollingOrders"] = frame["orders"].rolling(rolling_days, min_periods=1).sum()
-        frame["rollingShippingRevenue"] = frame["shippingRevenue"].rolling(rolling_days, min_periods=1).sum()
-        frame["rate"] = frame["rollingHitLines"] / frame["rollingLines"].replace({0: pd.NA})
-        frame["shiftedRate"] = frame["rate"].shift(shift_days)
-        frame["shiftedLines"] = frame["rollingLines"].shift(shift_days)
-        frame["shiftedHitLines"] = frame["rollingHitLines"].shift(shift_days)
-        frame["changePp"] = frame["rate"] - frame["shiftedRate"]
-
-        display_frame = frame.loc[frame["day"].between(start_day, end_day)].copy()
-        for row in display_frame.to_dict(orient="records"):
+        group_daily = daily_source.loc[daily_source["shipping_fee_group_key"].eq(group_key)].sort_values("shipping_fee_day")
+        frame = pd.DataFrame({"day": display_days})
+        in_range = group_daily.loc[group_daily["shipping_fee_day"].between(start_day, end_day)]
+        frame = frame.merge(in_range, left_on="day", right_on="shipping_fee_day", how="left")
+        prior_rates = group_daily.loc[group_daily["shipping_fee_day"].lt(start_day), "rate"].dropna()
+        last_rate = float_or_none(prior_rates.iloc[-1]) if not prior_rates.empty else None
+        filled_rates: list[float | None] = []
+        for value in frame["rate"].tolist():
+            current_value = float_or_none(value)
+            if current_value is not None:
+                last_rate = current_value
+            filled_rates.append(last_rate)
+        frame["rate"] = filled_rates
+        frame["shippingRevenue"] = pd.to_numeric(frame["shippingRevenue"], errors="coerce").fillna(0.0)
+        for row in frame.to_dict(orient="records"):
             series_rows.append({
                 "day": row["day"],
                 "groupKey": group_key,
                 "groupLabel": group_label,
                 "rate": float_or_none(row.get("rate")),
-                "shiftedRate": float_or_none(row.get("shiftedRate")),
-                "changePp": float_or_none(row.get("changePp")),
-                "lines": int_or_zero(row.get("lines")),
-                "hitLines": int_or_zero(row.get("hitLines")),
-                "rollingLines": int_or_zero(row.get("rollingLines")),
-                "rollingHitLines": int_or_zero(row.get("rollingHitLines")),
-                "shiftedLines": int_or_zero(row.get("shiftedLines")),
-                "shiftedHitLines": int_or_zero(row.get("shiftedHitLines")),
                 "shippingRevenue": round(number(row.get("shippingRevenue")), 2),
-                "rollingShippingRevenue": round(number(row.get("rollingShippingRevenue")), 2),
             })
 
-        end_row = frame.loc[frame["day"].eq(end_day)].iloc[0]
+        group_df = df.loc[df["shipping_fee_group_key"].eq(group_key)]
+        current = shipping_fee_window_summary(
+            group_df,
+            start_day=current_start,
+            end_day=end_day,
+            min_periods=min_periods,
+        )
+        shifted = shipping_fee_window_summary(
+            group_df,
+            start_day=shifted_start,
+            end_day=shifted_end,
+            min_periods=min_periods,
+        )
         period = period_by_key.get(group_key, {})
+        current_rate = current["rate"]
+        shifted_rate = shifted["rate"]
         table_rows.append({
             "groupKey": group_key,
             "groupLabel": group_label,
-            "currentRate": float_or_none(end_row.get("rate")),
-            "shiftedRate": float_or_none(end_row.get("shiftedRate")),
-            "changePp": float_or_none(end_row.get("changePp")),
-            "currentLines": int_or_zero(end_row.get("rollingLines")),
-            "currentHitLines": int_or_zero(end_row.get("rollingHitLines")),
-            "shiftedLines": int_or_zero(end_row.get("shiftedLines")),
-            "shiftedHitLines": int_or_zero(end_row.get("shiftedHitLines")),
-            "periodLines": int(period.get("periodLines") or 0),
-            "periodHitLines": int(period.get("periodHitLines") or 0),
+            "currentRate": current_rate,
+            "shiftedRate": shifted_rate,
+            "changePp": None if current_rate is None or shifted_rate is None else current_rate - shifted_rate,
             "periodRate": period.get("periodRate"),
             "periodOrders": int(period.get("periodOrders") or 0),
             "periodShippingRevenue": period.get("periodShippingRevenue") or 0.0,
         })
 
-    table_rows = sorted(table_rows, key=lambda item: (item["currentLines"], item["currentHitLines"], clean_text(item["groupLabel"])), reverse=True)
-    current_summary = shipping_fee_window_summary(df, start_day=current_start, end_day=end_day)
-    shifted_summary = shipping_fee_window_summary(df, start_day=shifted_start, end_day=shifted_end)
+    table_rows = sorted(
+        table_rows,
+        key=lambda item: (item["periodOrders"], number(item["periodShippingRevenue"]), clean_text(item["groupLabel"])),
+        reverse=True,
+    )
+    current_summary = shipping_fee_window_summary(
+        df, start_day=current_start, end_day=end_day, min_periods=min_periods
+    )
+    shifted_summary = shipping_fee_window_summary(
+        df, start_day=shifted_start, end_day=shifted_end, min_periods=min_periods
+    )
     period_summary = shipping_fee_window_summary(df, start_day=start_day, end_day=end_day)
     current_rate = current_summary["rate"]
     shifted_rate = shifted_summary["rate"]
@@ -1693,11 +1741,11 @@ def api_shipping_fee_data(
         "summary": {
             "dimension": selected_dimension,
             "rollingDays": rolling_days,
+            "minPeriods": min_periods,
             "shiftDays": shift_days,
             "topN": top_n,
             "startDate": start_day.strftime("%Y-%m-%d"),
             "endDate": end_day.strftime("%Y-%m-%d"),
-            "calcStartDate": calc_start.strftime("%Y-%m-%d"),
             "currentWindowStart": current_start.strftime("%Y-%m-%d"),
             "currentWindowEnd": end_day.strftime("%Y-%m-%d"),
             "shiftedWindowStart": shifted_start.strftime("%Y-%m-%d"),
@@ -2564,40 +2612,39 @@ def serialize_relation_datetime(value: Any) -> str:
     return value.strftime("%Y-%m-%d %H:%M") if hasattr(value, "strftime") else clean_text(value)
 
 
-INVENTORY_EXPORT_AGENT_FEES = [
-    {"key": "origin_trucking", "label": "拖车费-起运港", "currency": "RMB"},
-    {"key": "port_misc", "label": "港杂物费", "currency": "RMB"},
-]
-INVENTORY_OCEAN_IMPORT_FEES = [
-    {"key": "tax", "label": "税金", "currency": "USD"},
-    {"key": "final_delivery", "label": "尾程派送费", "currency": "USD"},
-    {"key": "ams", "label": "美国反恐舱单费", "currency": "USD"},
-    {"key": "ocean_freight", "label": "海运费", "currency": "USD"},
-]
-INVENTORY_INBOUND_FEES = [
-    {"key": "waiting_fee", "label": "待时费", "currency": "USD"},
-    {"key": "unloading_fee", "label": "卸货费", "currency": "USD"},
-]
-INVENTORY_FEE_GROUPS: dict[str, dict[str, Any]] = {
-    "exportAgent": {
-        "table": "shein_inventory_export_agent_fees",
-        "label": "出口代理费用",
-        "items": INVENTORY_EXPORT_AGENT_FEES,
-        "hasQuantity": True,
+INVENTORY_CALCULATION_MODES = {"direct_amount", "quantity_x_unit"}
+INVENTORY_DEFAULT_TEMPLATE_NAME = "标准库存成本模板"
+INVENTORY_DEFAULT_TEMPLATE = [
+    {
+        "name": "出口代理费用",
+        "currency": "RMB",
+        "sortOrder": 10,
+        "types": [
+            {"name": "拖车费-起运港", "calculationMode": "quantity_x_unit", "sortOrder": 10},
+            {"name": "港杂物费", "calculationMode": "quantity_x_unit", "sortOrder": 20},
+        ],
     },
-    "oceanImport": {
-        "table": "shein_inventory_ocean_import_fees",
-        "label": "海运进口费用",
-        "items": INVENTORY_OCEAN_IMPORT_FEES,
-        "hasQuantity": True,
+    {
+        "name": "海运进口费用",
+        "currency": "USD",
+        "sortOrder": 20,
+        "types": [
+            {"name": "税金", "calculationMode": "quantity_x_unit", "sortOrder": 10},
+            {"name": "尾程派送费", "calculationMode": "quantity_x_unit", "sortOrder": 20},
+            {"name": "美国反恐舱单费", "calculationMode": "quantity_x_unit", "sortOrder": 30},
+            {"name": "海运费", "calculationMode": "quantity_x_unit", "sortOrder": 40},
+        ],
     },
-    "inbound": {
-        "table": "shein_inventory_inbound_fees",
-        "label": "入仓费用",
-        "items": INVENTORY_INBOUND_FEES,
-        "hasQuantity": True,
+    {
+        "name": "入仓费用",
+        "currency": "USD",
+        "sortOrder": 30,
+        "types": [
+            {"name": "待时费", "calculationMode": "quantity_x_unit", "sortOrder": 10},
+            {"name": "卸货费", "calculationMode": "quantity_x_unit", "sortOrder": 20},
+        ],
     },
-}
+]
 
 
 def ensure_inventory_store() -> tuple[str, str]:
@@ -2631,19 +2678,159 @@ def inventory_datetime(value: Any) -> str:
     return value.strftime("%Y-%m-%d %H:%M") if hasattr(value, "strftime") else clean_text(value)
 
 
-def inventory_fee_payload(fees_payload: Any, group_key: str, fee_key: str) -> dict[str, Any]:
-    if not isinstance(fees_payload, dict):
-        return {}
-    group_payload = fees_payload.get(group_key) or {}
-    if isinstance(group_payload, list):
-        for item in group_payload:
-            if isinstance(item, dict) and clean_text(payload_value(item, "key", "feeType", "fee_type")) == fee_key:
-                return item
-        return {}
-    if isinstance(group_payload, dict):
-        item = group_payload.get(fee_key) or {}
-        return item if isinstance(item, dict) else {}
-    return {}
+def inventory_name(value: Any, field_name: str) -> str:
+    text = clean_text(value).strip()
+    if not text:
+        raise HTTPException(status_code=400, detail=f"{field_name} is required")
+    if len(text) > 120:
+        raise HTTPException(status_code=400, detail=f"{field_name} is too long")
+    return text
+
+
+def inventory_currency(value: Any) -> str:
+    currency = clean_text(value).strip().upper()
+    if not re.fullmatch(r"[A-Z][A-Z0-9]{1,7}", currency):
+        raise HTTPException(status_code=400, detail="currency must be an uppercase code")
+    return currency
+
+
+def inventory_sort_order(value: Any, default: int = 0) -> int:
+    if value in (None, ""):
+        return default
+    try:
+        order = int(value)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="sortOrder must be an integer")
+    if abs(order) > 1_000_000:
+        raise HTTPException(status_code=400, detail="sortOrder is out of range")
+    return order
+
+
+def inventory_calculation_mode(value: Any) -> str:
+    mode = clean_text(value) or "quantity_x_unit"
+    if mode not in INVENTORY_CALCULATION_MODES:
+        raise HTTPException(status_code=400, detail="invalid calculationMode")
+    return mode
+
+
+def ensure_inventory_template(conn: psycopg.Connection, shop_key: str) -> None:
+    initialized = conn.execute(
+        """
+        INSERT INTO inventory_template_settings (shop_key)
+        VALUES (%s)
+        ON CONFLICT (shop_key) DO NOTHING
+        RETURNING shop_key
+        """,
+        (shop_key,),
+    ).fetchone()
+    if not initialized:
+        return
+    template = conn.execute(
+        """
+        INSERT INTO inventory_cost_templates (shop_key, name)
+        VALUES (%s, %s)
+        RETURNING id
+        """,
+        (shop_key, INVENTORY_DEFAULT_TEMPLATE_NAME),
+    ).fetchone()
+    template_id = int(template.get("id"))
+    for category in INVENTORY_DEFAULT_TEMPLATE:
+        row = conn.execute(
+            """
+            INSERT INTO inventory_cost_categories (
+                shop_key, template_id, name, currency, sort_order
+            )
+            VALUES (%s, %s, %s, %s, %s)
+            RETURNING id
+            """,
+            (
+                shop_key,
+                template_id,
+                category["name"],
+                category["currency"],
+                category["sortOrder"],
+            ),
+        ).fetchone()
+        category_id = int(row.get("id"))
+        for cost_type in category["types"]:
+            conn.execute(
+                """
+                INSERT INTO inventory_cost_types (category_id, name, calculation_mode, sort_order)
+                VALUES (%s, %s, %s, %s)
+                """,
+                (
+                    category_id,
+                    cost_type["name"],
+                    cost_type["calculationMode"],
+                    cost_type["sortOrder"],
+                ),
+            )
+
+
+def fetch_inventory_templates(conn: psycopg.Connection, shop_key: str) -> list[dict[str, Any]]:
+    rows = conn.execute(
+        """
+        SELECT tm.id AS template_id, tm.name AS template_name,
+               tm.created_at AS template_created_at, tm.updated_at AS template_updated_at,
+               c.id AS category_id, c.name AS category_name, c.currency,
+               c.sort_order AS category_sort_order,
+               t.id AS cost_type_id, t.name AS cost_type_name,
+               t.calculation_mode, t.sort_order AS cost_type_sort_order
+        FROM inventory_cost_templates tm
+        LEFT JOIN inventory_cost_categories c ON c.template_id = tm.id
+        LEFT JOIN inventory_cost_types t ON t.category_id = c.id
+        WHERE tm.shop_key = %s
+        ORDER BY tm.updated_at DESC, tm.id, c.sort_order, c.id, t.sort_order, t.id
+        """,
+        (shop_key,),
+    ).fetchall()
+    templates: list[dict[str, Any]] = []
+    templates_by_id: dict[int, dict[str, Any]] = {}
+    categories_by_id: dict[int, dict[str, Any]] = {}
+    for row in rows:
+        template_id = int(row.get("template_id"))
+        template = templates_by_id.get(template_id)
+        if template is None:
+            template = {
+                "id": template_id,
+                "name": clean_text(row.get("template_name")),
+                "createdAt": inventory_datetime(row.get("template_created_at")),
+                "updatedAt": inventory_datetime(row.get("template_updated_at")),
+                "categories": [],
+            }
+            templates_by_id[template_id] = template
+            templates.append(template)
+        if row.get("category_id") is None:
+            continue
+        category_id = int(row.get("category_id"))
+        category = categories_by_id.get(category_id)
+        if category is None:
+            category = {
+                "id": category_id,
+                "templateId": template_id,
+                "name": clean_text(row.get("category_name")),
+                "currency": clean_text(row.get("currency")),
+                "sortOrder": int(row.get("category_sort_order") or 0),
+                "types": [],
+            }
+            categories_by_id[category_id] = category
+            template["categories"].append(category)
+        if row.get("cost_type_id") is not None:
+            category["types"].append(
+                {
+                    "id": int(row.get("cost_type_id")),
+                    "categoryId": category_id,
+                    "name": clean_text(row.get("cost_type_name")),
+                    "calculationMode": clean_text(row.get("calculation_mode")),
+                    "sortOrder": int(row.get("cost_type_sort_order") or 0),
+                }
+            )
+    return templates
+
+
+def inventory_template_response(conn: psycopg.Connection, shop_key: str) -> JSONResponse:
+    return JSONResponse({"templates": fetch_inventory_templates(conn, shop_key)})
+
 
 
 def inventory_warehouse_references(conn: psycopg.Connection, shop_key: str) -> list[dict[str, Any]]:
@@ -2701,238 +2888,978 @@ def inventory_warehouse_references(conn: psycopg.Connection, shop_key: str) -> l
     return sorted(refs.values(), key=lambda item: item["warehouseSku"])
 
 
-def fetch_inventory_fee_rows(
+def inventory_cost_totals(rows: list[dict[str, Any]]) -> dict[str, float]:
+    totals: dict[str, float] = {}
+    for row in rows:
+        currency = clean_text(row.get("currency"))
+        if not currency:
+            continue
+        totals[currency] = round(totals.get(currency, 0.0) + float(row.get("amount") or 0), 2)
+    return totals
+
+
+def inventory_ticket_cost_totals(
     conn: psycopg.Connection,
     *,
-    table: str,
     shop_key: str,
-    order_nos: list[str],
-    has_quantity: bool,
-) -> dict[str, dict[str, dict[str, Any]]]:
-    if not order_nos:
+    ticket_ids: list[int],
+) -> dict[int, dict[str, float]]:
+    if not ticket_ids:
         return {}
     rows = conn.execute(
-        f"""
-        SELECT order_no, fee_type, quantity, unit_price, amount, note, currency, updated_at
-        FROM {table}
-        WHERE shop_key = %s AND order_no = ANY(%s)
-        ORDER BY order_no, fee_type
+        """
+        SELECT e.inventory_ticket_id, c.currency, SUM(COALESCE(e.amount, 0)) AS amount
+        FROM inventory_cost_entries e
+        JOIN inventory_cost_types t ON t.id = e.cost_type_id
+        JOIN inventory_cost_categories c ON c.id = t.category_id
+        JOIN inventory_tickets i ON i.id = e.inventory_ticket_id
+        WHERE i.shop_key = %s AND e.inventory_ticket_id = ANY(%s)
+        GROUP BY e.inventory_ticket_id, c.currency
         """,
-        (shop_key, order_nos),
+        (shop_key, ticket_ids),
     ).fetchall()
-    grouped: dict[str, dict[str, dict[str, Any]]] = {}
+    totals: dict[int, dict[str, float]] = {}
     for row in rows:
-        order_no = clean_text(row.get("order_no"))
-        fee_type = clean_text(row.get("fee_type"))
-        if not order_no or not fee_type:
-            continue
-        grouped.setdefault(order_no, {})[fee_type] = row
-    return grouped
+        ticket_id = int(row.get("inventory_ticket_id"))
+        totals.setdefault(ticket_id, {})[clean_text(row.get("currency"))] = round(
+            float(row.get("amount") or 0), 2
+        )
+    return totals
 
 
-def inventory_fees_for_order(order_no: str, fee_maps: dict[str, dict[str, dict[str, dict[str, Any]]]]) -> dict[str, list[dict[str, Any]]]:
-    out: dict[str, list[dict[str, Any]]] = {}
-    for group_key, group in INVENTORY_FEE_GROUPS.items():
-        rows = fee_maps.get(group_key, {}).get(order_no, {})
-        fees: list[dict[str, Any]] = []
-        for item in group["items"]:
-            row = rows.get(item["key"], {})
-            fees.append(
-                {
-                    "key": item["key"],
-                    "label": item["label"],
-                    "currency": clean_text(row.get("currency")) or item["currency"],
-                    "quantity": inventory_number_or_none(row.get("quantity")),
-                    "unitPrice": inventory_number_or_none(row.get("unit_price")),
-                    "amount": inventory_number_or_none(row.get("amount")),
-                    "note": clean_text(row.get("note")),
-                    "updatedAt": inventory_datetime(row.get("updated_at")) if row else "",
-                }
-            )
-        out[group_key] = fees
-    return out
-
-
-def inventory_fee_totals(fees: dict[str, list[dict[str, Any]]]) -> dict[str, float]:
-    rmb_total = sum(float(item.get("amount") or 0) for item in fees.get("exportAgent", []))
-    usd_total = sum(float(item.get("amount") or 0) for item in fees.get("oceanImport", []))
-    usd_total += sum(float(item.get("amount") or 0) for item in fees.get("inbound", []))
-    return {"rmbTotal": round(rmb_total, 2), "usdTotal": round(usd_total, 2)}
-
-
-def inventory_refs_by_warehouse(warehouse_refs: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
-    return {clean_text(item.get("warehouseSku")): item.get("items", []) for item in warehouse_refs}
-
-
-def serialize_inventory_record(
+def serialize_inventory_ticket_summary(
     row: dict[str, Any],
     *,
-    fee_maps: dict[str, dict[str, dict[str, dict[str, Any]]]],
-    refs_by_warehouse: dict[str, list[dict[str, Any]]],
+    cost_totals: dict[int, dict[str, float]],
 ) -> dict[str, Any]:
-    order_no = clean_text(row.get("order_no"))
-    warehouse_sku = clean_text(row.get("warehouse_sku"))
-    fees = inventory_fees_for_order(order_no, fee_maps)
+    ticket_id = int(row.get("id"))
     return {
-        "id": row.get("id"),
-        "orderNo": order_no,
-        "warehouseSku": warehouse_sku,
-        "quantity": inventory_number_or_none(row.get("quantity")) or 0,
-        "unitPrice": inventory_number_or_none(row.get("unit_price")),
-        "amount": inventory_number_or_none(row.get("amount")),
+        "ticketId": ticket_id,
+        "ticketNo": clean_text(row.get("ticket_no")),
+        "costTemplateId": row.get("cost_template_id"),
+        "costTemplateName": clean_text(row.get("cost_template_name")),
         "note": clean_text(row.get("note")),
+        "lineCount": int(row.get("line_count") or 0),
+        "warehouseSkuCount": int(row.get("warehouse_sku_count") or 0),
+        "quantity": inventory_number_or_none(row.get("quantity")) or 0,
+        "inventoryAmount": inventory_number_or_none(row.get("inventory_amount")) or 0,
+        "costTotals": cost_totals.get(ticket_id, {}),
         "createdAt": inventory_datetime(row.get("created_at")),
         "updatedAt": inventory_datetime(row.get("updated_at")),
-        "fees": fees,
-        "feeTotals": inventory_fee_totals(fees),
-        "skuRefs": refs_by_warehouse.get(warehouse_sku, [])[:4],
     }
 
 
-def upsert_inventory_fee_rows(conn: psycopg.Connection, *, shop_key: str, order_no: str, fees_payload: Any) -> None:
-    for group_key, group in INVENTORY_FEE_GROUPS.items():
-        table = group["table"]
-        for item in group["items"]:
-            payload = inventory_fee_payload(fees_payload, group_key, item["key"])
-            quantity = inventory_decimal(payload_value(payload, "quantity", "qty"), f"{item['key']}.quantity")
-            unit_price = inventory_decimal(payload_value(payload, "unitPrice", "unit_price"), f"{item['key']}.unit_price")
-            amount = inventory_decimal(payload_value(payload, "amount"), f"{item['key']}.amount")
-            note = inventory_note(payload_value(payload, "note"))
-            if amount is None and quantity is not None and unit_price is not None:
-                amount = quantity * unit_price
-            conn.execute(
-                f"""
-                INSERT INTO {table} (shop_key, order_no, fee_type, quantity, unit_price, amount, note, currency)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT (shop_key, order_no, fee_type) DO UPDATE SET
-                    quantity = EXCLUDED.quantity,
-                    unit_price = EXCLUDED.unit_price,
-                    amount = EXCLUDED.amount,
-                    note = EXCLUDED.note,
-                    currency = EXCLUDED.currency,
-                    updated_at = now()
-                """,
-                (shop_key, order_no, item["key"], quantity, unit_price, amount, note, item["currency"]),
+def fetch_inventory_ticket_detail(
+    conn: psycopg.Connection,
+    *,
+    shop_key: str,
+    ticket_id: int,
+) -> dict[str, Any] | None:
+    ticket = conn.execute(
+        """
+        SELECT i.id, i.ticket_no, i.cost_template_id, tm.name AS cost_template_name,
+               i.note, i.created_at, i.updated_at
+        FROM inventory_tickets i
+        LEFT JOIN inventory_cost_templates tm ON tm.id = i.cost_template_id
+        WHERE i.id = %s AND i.shop_key = %s
+        """,
+        (ticket_id, shop_key),
+    ).fetchone()
+    if not ticket:
+        return None
+    line_rows = conn.execute(
+        """
+        SELECT id, warehouse_sku, quantity, unit_price, amount, note, created_at, updated_at
+        FROM inventory_ticket_lines
+        WHERE inventory_ticket_id = %s
+        ORDER BY id
+        """,
+        (ticket_id,),
+    ).fetchall()
+    cost_rows = conn.execute(
+        """
+        SELECT e.id, e.cost_type_id, e.quantity, e.unit_price, e.amount, e.note,
+               t.category_id, t.name AS cost_type_name, t.calculation_mode,
+               c.name AS category_name, c.currency
+        FROM inventory_cost_entries e
+        JOIN inventory_cost_types t ON t.id = e.cost_type_id
+        JOIN inventory_cost_categories c ON c.id = t.category_id
+        WHERE e.inventory_ticket_id = %s AND c.shop_key = %s
+        ORDER BY c.sort_order, c.id, t.sort_order, t.id
+        """,
+        (ticket_id, shop_key),
+    ).fetchall()
+    lines = [
+        {
+            "id": row.get("id"),
+            "warehouseSku": clean_text(row.get("warehouse_sku")),
+            "quantity": inventory_number_or_none(row.get("quantity")) or 0,
+            "unitPrice": inventory_number_or_none(row.get("unit_price")),
+            "amount": inventory_number_or_none(row.get("amount")),
+            "note": clean_text(row.get("note")),
+        }
+        for row in line_rows
+    ]
+    costs = [
+        {
+            "id": row.get("id"),
+            "costTypeId": row.get("cost_type_id"),
+            "categoryId": row.get("category_id"),
+            "categoryName": clean_text(row.get("category_name")),
+            "costTypeName": clean_text(row.get("cost_type_name")),
+            "calculationMode": clean_text(row.get("calculation_mode")),
+            "currency": clean_text(row.get("currency")),
+            "quantity": inventory_number_or_none(row.get("quantity")),
+            "unitPrice": inventory_number_or_none(row.get("unit_price")),
+            "amount": inventory_number_or_none(row.get("amount")),
+            "note": clean_text(row.get("note")),
+        }
+        for row in cost_rows
+    ]
+    return {
+        "ticketId": int(ticket.get("id")),
+        "ticketNo": clean_text(ticket.get("ticket_no")),
+        "costTemplateId": ticket.get("cost_template_id"),
+        "costTemplateName": clean_text(ticket.get("cost_template_name")),
+        "note": clean_text(ticket.get("note")),
+        "lines": lines,
+        "costs": costs,
+        "costTotals": inventory_cost_totals(cost_rows),
+        "createdAt": inventory_datetime(ticket.get("created_at")),
+        "updatedAt": inventory_datetime(ticket.get("updated_at")),
+    }
+
+
+def normalize_inventory_lines(lines_payload: Any) -> list[dict[str, Any]]:
+    if not isinstance(lines_payload, list) or not lines_payload:
+        raise HTTPException(status_code=400, detail="at least one inventory line is required")
+    lines: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for index, payload in enumerate(lines_payload):
+        if not isinstance(payload, dict):
+            raise HTTPException(status_code=400, detail=f"lines[{index}] must be an object")
+        warehouse_sku = sku_mapping_text(
+            payload_value(payload, "warehouseSku", "warehouse_sku"),
+            f"lines[{index}].warehouseSku",
+        )
+        if warehouse_sku in seen:
+            raise HTTPException(status_code=400, detail=f"duplicate warehouse SKU: {warehouse_sku}")
+        seen.add(warehouse_sku)
+        quantity = inventory_decimal(payload_value(payload, "quantity", "qty"), f"lines[{index}].quantity")
+        quantity = quantity if quantity is not None else Decimal("0")
+        unit_price = inventory_decimal(
+            payload_value(payload, "unitPrice", "unit_price"),
+            f"lines[{index}].unitPrice",
+        )
+        amount = inventory_decimal(payload_value(payload, "amount"), f"lines[{index}].amount")
+        if amount is None and unit_price is not None:
+            amount = quantity * unit_price
+        lines.append(
+            {
+                "warehouse_sku": warehouse_sku,
+                "quantity": quantity,
+                "unit_price": unit_price,
+                "amount": amount,
+                "note": inventory_note(payload_value(payload, "note")),
+            }
+        )
+    return lines
+
+
+def inventory_ticket_template_id(
+    conn: psycopg.Connection,
+    *,
+    shop_key: str,
+    value: Any,
+) -> int | None:
+    if value in (None, ""):
+        return None
+    try:
+        template_id = int(value)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="costTemplateId must be an integer")
+    row = conn.execute(
+        """
+        SELECT id FROM inventory_cost_templates
+        WHERE id = %s AND shop_key = %s
+        """,
+        (template_id, shop_key),
+    ).fetchone()
+    if not row:
+        raise HTTPException(status_code=400, detail="cost template not found")
+    return template_id
+
+
+def normalize_inventory_costs(
+    conn: psycopg.Connection,
+    *,
+    shop_key: str,
+    cost_template_id: int | None,
+    costs_payload: Any,
+) -> list[dict[str, Any]]:
+    if costs_payload in (None, ""):
+        return []
+    if not isinstance(costs_payload, list):
+        raise HTTPException(status_code=400, detail="costs must be an array")
+    if cost_template_id is None:
+        if costs_payload:
+            raise HTTPException(status_code=400, detail="blank template cannot contain costs")
+        return []
+    type_ids: list[int] = []
+    raw_by_id: dict[int, dict[str, Any]] = {}
+    for index, payload in enumerate(costs_payload):
+        if not isinstance(payload, dict):
+            raise HTTPException(status_code=400, detail=f"costs[{index}] must be an object")
+        try:
+            cost_type_id = int(payload_value(payload, "costTypeId", "cost_type_id"))
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail=f"costs[{index}].costTypeId is required")
+        if cost_type_id in raw_by_id:
+            raise HTTPException(status_code=400, detail=f"duplicate costTypeId: {cost_type_id}")
+        type_ids.append(cost_type_id)
+        raw_by_id[cost_type_id] = payload
+    if not type_ids:
+        return []
+    type_rows = conn.execute(
+        """
+        SELECT t.id, t.calculation_mode
+        FROM inventory_cost_types t
+        JOIN inventory_cost_categories c ON c.id = t.category_id
+        JOIN inventory_cost_templates tm ON tm.id = c.template_id
+        WHERE tm.shop_key = %s AND tm.id = %s AND t.id = ANY(%s)
+        """,
+        (shop_key, cost_template_id, type_ids),
+    ).fetchall()
+    modes = {int(row.get("id")): clean_text(row.get("calculation_mode")) for row in type_rows}
+    missing = sorted(set(type_ids) - set(modes))
+    if missing:
+        raise HTTPException(status_code=400, detail=f"unknown costTypeId: {missing[0]}")
+    costs: list[dict[str, Any]] = []
+    for index, cost_type_id in enumerate(type_ids):
+        payload = raw_by_id[cost_type_id]
+        note = inventory_note(payload_value(payload, "note"))
+        quantity = inventory_decimal(
+            payload_value(payload, "quantity", "qty"),
+            f"costs[{index}].quantity",
+        )
+        unit_price = inventory_decimal(
+            payload_value(payload, "unitPrice", "unit_price"),
+            f"costs[{index}].unitPrice",
+        )
+        amount = inventory_decimal(payload_value(payload, "amount"), f"costs[{index}].amount")
+        mode = modes[cost_type_id]
+        if mode == "direct_amount":
+            quantity = None
+            unit_price = None
+        elif quantity is None and unit_price is None:
+            amount = None
+        elif quantity is None or unit_price is None:
+            raise HTTPException(
+                status_code=400,
+                detail=f"costs[{index}] requires both quantity and unitPrice",
             )
+        else:
+            amount = quantity * unit_price
+        if quantity is None and unit_price is None and amount is None and note is None:
+            continue
+        costs.append(
+            {
+                "cost_type_id": cost_type_id,
+                "quantity": quantity,
+                "unit_price": unit_price,
+                "amount": amount,
+                "note": note,
+            }
+        )
+    return costs
+
+
+def save_inventory_ticket(
+    conn: psycopg.Connection,
+    *,
+    shop_key: str,
+    payload: dict[str, Any],
+    ticket_id: int | None = None,
+) -> int:
+    ticket_no = inventory_name(
+        payload_value(payload, "ticketNo", "ticket_no"),
+        "ticketNo",
+    )
+    note = inventory_note(payload_value(payload, "note"))
+    cost_template_id = inventory_ticket_template_id(
+        conn,
+        shop_key=shop_key,
+        value=payload_value(payload, "costTemplateId", "cost_template_id"),
+    )
+    lines = normalize_inventory_lines(payload_value(payload, "lines"))
+    costs = normalize_inventory_costs(
+        conn,
+        shop_key=shop_key,
+        cost_template_id=cost_template_id,
+        costs_payload=payload_value(payload, "costs"),
+    )
+    if ticket_id is None:
+        ticket = conn.execute(
+            """
+            INSERT INTO inventory_tickets (shop_key, ticket_no, cost_template_id, note)
+            VALUES (%s, %s, %s, %s)
+            RETURNING id
+            """,
+            (shop_key, ticket_no, cost_template_id, note),
+        ).fetchone()
+        ticket_id = int(ticket.get("id"))
+    else:
+        ticket = conn.execute(
+            """
+            UPDATE inventory_tickets
+            SET ticket_no = %s, cost_template_id = %s, note = %s, updated_at = now()
+            WHERE id = %s AND shop_key = %s
+            RETURNING id
+            """,
+            (ticket_no, cost_template_id, note, ticket_id, shop_key),
+        ).fetchone()
+        if not ticket:
+            raise HTTPException(status_code=404, detail="inventory ticket not found")
+        conn.execute(
+            "DELETE FROM inventory_ticket_lines WHERE inventory_ticket_id = %s",
+            (ticket_id,),
+        )
+        conn.execute(
+            "DELETE FROM inventory_cost_entries WHERE inventory_ticket_id = %s",
+            (ticket_id,),
+        )
+    for line in lines:
+        conn.execute(
+            """
+            INSERT INTO inventory_ticket_lines (
+                inventory_ticket_id, warehouse_sku, quantity, unit_price, amount, note
+            )
+            VALUES (%s, %s, %s, %s, %s, %s)
+            """,
+            (
+                ticket_id,
+                line["warehouse_sku"],
+                line["quantity"],
+                line["unit_price"],
+                line["amount"],
+                line["note"],
+            ),
+        )
+    for cost in costs:
+        conn.execute(
+            """
+            INSERT INTO inventory_cost_entries (
+                inventory_ticket_id, cost_type_id, quantity, unit_price, amount, note
+            )
+            VALUES (%s, %s, %s, %s, %s, %s)
+            """,
+            (
+                ticket_id,
+                cost["cost_type_id"],
+                cost["quantity"],
+                cost["unit_price"],
+                cost["amount"],
+                cost["note"],
+            ),
+        )
+    return ticket_id
 
 
 @app.get("/api/inventory")
-def api_inventory(q: str | None = None, token: str | None = None, shein_pnl_token: str | None = Cookie(default=None, alias=COOKIE_NAME)) -> JSONResponse:
+def api_inventory(
+    q: str | None = None,
+    token: str | None = None,
+    shein_pnl_token: str | None = Cookie(default=None, alias=COOKIE_NAME),
+) -> JSONResponse:
     require_auth(token, shein_pnl_token)
     url, shop_key = ensure_inventory_store()
-    filters = ["shop_key = %s"]
+    filters = ["t.shop_key = %s"]
     params: list[Any] = [shop_key]
     if q:
         term = f"%{q.strip()}%"
-        filters.append("(order_no ILIKE %s OR warehouse_sku ILIKE %s OR COALESCE(note, '') ILIKE %s)")
+        filters.append(
+            """(
+                t.ticket_no ILIKE %s
+                OR COALESCE(t.note, '') ILIKE %s
+                OR EXISTS (
+                    SELECT 1 FROM inventory_ticket_lines ql
+                    WHERE ql.inventory_ticket_id = t.id AND ql.warehouse_sku ILIKE %s
+                )
+            )"""
+        )
         params.extend([term, term, term])
     where_sql = " AND ".join(filters)
     params.append(600)
     with psycopg.connect(url, row_factory=dict_row) as conn:
-        records = conn.execute(
+        ensure_inventory_template(conn, shop_key)
+        ticket_rows = conn.execute(
             f"""
-            SELECT id, order_no, warehouse_sku, quantity, unit_price, amount, note, created_at, updated_at
-            FROM shein_inventory_records
+            SELECT t.id, t.ticket_no, t.cost_template_id,
+                   tm.name AS cost_template_name,
+                   t.note, t.created_at, t.updated_at,
+                   COUNT(l.id) AS line_count,
+                   COUNT(DISTINCT l.warehouse_sku) AS warehouse_sku_count,
+                   COALESCE(SUM(l.quantity), 0) AS quantity,
+                   COALESCE(SUM(l.amount), 0) AS inventory_amount
+            FROM inventory_tickets t
+            LEFT JOIN inventory_cost_templates tm ON tm.id = t.cost_template_id
+            LEFT JOIN inventory_ticket_lines l ON l.inventory_ticket_id = t.id
             WHERE {where_sql}
-            ORDER BY updated_at DESC, id DESC
+            GROUP BY t.id, tm.name
+            ORDER BY t.updated_at DESC, t.id DESC
             LIMIT %s
             """,
             params,
         ).fetchall()
-        order_nos = sorted({clean_text(row.get("order_no")) for row in records if clean_text(row.get("order_no"))})
-        fee_maps = {
-            key: fetch_inventory_fee_rows(
-                conn,
-                table=group["table"],
-                shop_key=shop_key,
-                order_nos=order_nos,
-                has_quantity=bool(group["hasQuantity"]),
-            )
-            for key, group in INVENTORY_FEE_GROUPS.items()
-        }
+        ticket_ids = [int(row.get("id")) for row in ticket_rows]
+        cost_totals = inventory_ticket_cost_totals(conn, shop_key=shop_key, ticket_ids=ticket_ids)
+        templates = fetch_inventory_templates(conn, shop_key)
         warehouse_refs = inventory_warehouse_references(conn, shop_key)
-    refs_by_warehouse = inventory_refs_by_warehouse(warehouse_refs)
-    rows = [serialize_inventory_record(row, fee_maps=fee_maps, refs_by_warehouse=refs_by_warehouse) for row in records]
-    order_totals: dict[str, dict[str, float]] = {}
-    for order_no in order_nos:
-        order_totals[order_no] = inventory_fee_totals(inventory_fees_for_order(order_no, fee_maps))
-    summary = {
-        "orders": len({row["orderNo"] for row in rows if row["orderNo"]}),
-        "lines": len(rows),
-        "warehouseSkus": len({row["warehouseSku"] for row in rows if row["warehouseSku"]}),
-        "quantity": round(sum(float(row.get("quantity") or 0) for row in rows), 3),
-        "rmbFees": round(sum(float(total.get("rmbTotal") or 0) for total in order_totals.values()), 2),
-        "usdFees": round(sum(float(total.get("usdTotal") or 0) for total in order_totals.values()), 2),
-        "limit": 600,
-    }
+    tickets = [
+        serialize_inventory_ticket_summary(row, cost_totals=cost_totals)
+        for row in ticket_rows
+    ]
+    total_costs: dict[str, float] = {}
+    for totals in cost_totals.values():
+        for currency, amount in totals.items():
+            total_costs[currency] = round(total_costs.get(currency, 0.0) + amount, 2)
     return JSONResponse(
         {
             "shop": shop_key,
-            "summary": summary,
-            "records": rows,
+            "summary": {
+                "tickets": len(tickets),
+                "lines": sum(ticket["lineCount"] for ticket in tickets),
+                "warehouseSkus": len(
+                    {
+                        item["warehouseSku"]
+                        for item in warehouse_refs
+                        if item.get("warehouseSku")
+                    }
+                ),
+                "quantity": round(sum(float(ticket["quantity"]) for ticket in tickets), 3),
+                "inventoryAmount": round(
+                    sum(float(ticket["inventoryAmount"]) for ticket in tickets),
+                    2,
+                ),
+                "costTotals": total_costs,
+                "limit": 600,
+            },
+            "tickets": tickets,
+            "templates": templates,
             "warehouseRefs": warehouse_refs,
-            "feeTypes": {key: group["items"] for key, group in INVENTORY_FEE_GROUPS.items()},
         }
     )
 
 
+@app.get("/api/inventory/{ticket_id}")
+def api_inventory_ticket(
+    ticket_id: int,
+    token: str | None = None,
+    shein_pnl_token: str | None = Cookie(default=None, alias=COOKIE_NAME),
+) -> JSONResponse:
+    require_auth(token, shein_pnl_token)
+    url, shop_key = ensure_inventory_store()
+    with psycopg.connect(url, row_factory=dict_row) as conn:
+        ensure_inventory_template(conn, shop_key)
+        ticket = fetch_inventory_ticket_detail(conn, shop_key=shop_key, ticket_id=ticket_id)
+        templates = fetch_inventory_templates(conn, shop_key)
+    if ticket is None:
+        raise HTTPException(status_code=404, detail="inventory ticket not found")
+    return JSONResponse({"ticket": ticket, "templates": templates})
+
+
 @app.post("/api/inventory")
-def api_save_inventory(
+def api_create_inventory_ticket(
     payload: dict[str, Any] = Body(...),
     token: str | None = None,
     shein_pnl_token: str | None = Cookie(default=None, alias=COOKIE_NAME),
 ) -> JSONResponse:
     require_auth(token, shein_pnl_token)
     url, shop_key = ensure_inventory_store()
-    order_no = sku_mapping_text(payload_value(payload, "orderNo", "order_no"), "order_no")
-    warehouse_sku = sku_mapping_text(payload_value(payload, "warehouseSku", "warehouse_sku"), "warehouse_sku")
-    quantity = inventory_decimal(payload_value(payload, "quantity", "qty"), "quantity") or Decimal("0")
-    unit_price = inventory_decimal(payload_value(payload, "unitPrice", "unit_price"), "unit_price")
-    amount = inventory_decimal(payload_value(payload, "amount"), "amount")
-    if amount is None and unit_price is not None:
-        amount = quantity * unit_price
-    note = inventory_note(payload_value(payload, "note"))
-    record_id_value = payload_value(payload, "id", "recordId")
     try:
-        record_id = int(record_id_value) if record_id_value not in (None, "") else None
-    except (TypeError, ValueError):
-        raise HTTPException(status_code=400, detail="id must be an integer")
+        with psycopg.connect(url, row_factory=dict_row) as conn:
+            ensure_inventory_template(conn, shop_key)
+            ticket_id = save_inventory_ticket(conn, shop_key=shop_key, payload=payload)
+            ticket = fetch_inventory_ticket_detail(conn, shop_key=shop_key, ticket_id=ticket_id)
+    except psycopg.errors.UniqueViolation:
+        raise HTTPException(status_code=409, detail="inventory ticket number or warehouse SKU already exists")
+    return JSONResponse({"saved": True, "ticket": ticket}, status_code=201)
+
+
+@app.put("/api/inventory/{ticket_id}")
+def api_update_inventory_ticket(
+    ticket_id: int,
+    payload: dict[str, Any] = Body(...),
+    token: str | None = None,
+    shein_pnl_token: str | None = Cookie(default=None, alias=COOKIE_NAME),
+) -> JSONResponse:
+    require_auth(token, shein_pnl_token)
+    url, shop_key = ensure_inventory_store()
+    try:
+        with psycopg.connect(url, row_factory=dict_row) as conn:
+            ensure_inventory_template(conn, shop_key)
+            save_inventory_ticket(
+                conn,
+                shop_key=shop_key,
+                payload=payload,
+                ticket_id=ticket_id,
+            )
+            ticket = fetch_inventory_ticket_detail(conn, shop_key=shop_key, ticket_id=ticket_id)
+    except psycopg.errors.UniqueViolation:
+        raise HTTPException(status_code=409, detail="inventory ticket number or warehouse SKU already exists")
+    return JSONResponse({"saved": True, "ticket": ticket})
+
+
+@app.delete("/api/inventory/{ticket_id}")
+def api_delete_inventory_ticket(
+    ticket_id: int,
+    token: str | None = None,
+    shein_pnl_token: str | None = Cookie(default=None, alias=COOKIE_NAME),
+) -> JSONResponse:
+    require_auth(token, shein_pnl_token)
+    url, shop_key = ensure_inventory_store()
     with psycopg.connect(url, row_factory=dict_row) as conn:
-        if record_id:
-            row = conn.execute(
+        row = conn.execute(
+            """
+            DELETE FROM inventory_tickets
+            WHERE id = %s AND shop_key = %s
+            RETURNING id
+            """,
+            (ticket_id, shop_key),
+        ).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="inventory ticket not found")
+    return JSONResponse({"deleted": True})
+
+
+@app.get("/api/inventory-cost-templates")
+def api_inventory_cost_templates(
+    token: str | None = None,
+    shein_pnl_token: str | None = Cookie(default=None, alias=COOKIE_NAME),
+) -> JSONResponse:
+    require_auth(token, shein_pnl_token)
+    url, shop_key = ensure_inventory_store()
+    with psycopg.connect(url, row_factory=dict_row) as conn:
+        ensure_inventory_template(conn, shop_key)
+        return inventory_template_response(conn, shop_key)
+
+
+@app.post("/api/inventory-cost-templates")
+def api_create_inventory_cost_template(
+    payload: dict[str, Any] = Body(...),
+    token: str | None = None,
+    shein_pnl_token: str | None = Cookie(default=None, alias=COOKIE_NAME),
+) -> JSONResponse:
+    require_auth(token, shein_pnl_token)
+    url, shop_key = ensure_inventory_store()
+    name = inventory_name(payload_value(payload, "name"), "name")
+    try:
+        with psycopg.connect(url, row_factory=dict_row) as conn:
+            ensure_inventory_template(conn, shop_key)
+            conn.execute(
                 """
-                UPDATE shein_inventory_records
-                SET order_no = %s,
-                    warehouse_sku = %s,
-                    quantity = %s,
-                    unit_price = %s,
-                    amount = %s,
-                    note = %s,
-                    updated_at = now()
+                INSERT INTO inventory_cost_templates (shop_key, name)
+                VALUES (%s, %s)
+                """,
+                (shop_key, name),
+            )
+            return inventory_template_response(conn, shop_key)
+    except psycopg.errors.UniqueViolation:
+        raise HTTPException(status_code=409, detail="cost template name already exists")
+
+
+@app.patch("/api/inventory-cost-templates/{template_id}")
+def api_update_inventory_cost_template(
+    template_id: int,
+    payload: dict[str, Any] = Body(...),
+    token: str | None = None,
+    shein_pnl_token: str | None = Cookie(default=None, alias=COOKIE_NAME),
+) -> JSONResponse:
+    require_auth(token, shein_pnl_token)
+    url, shop_key = ensure_inventory_store()
+    name = inventory_name(payload_value(payload, "name"), "name")
+    try:
+        with psycopg.connect(url, row_factory=dict_row) as conn:
+            updated = conn.execute(
+                """
+                UPDATE inventory_cost_templates
+                SET name = %s, updated_at = now()
                 WHERE id = %s AND shop_key = %s
                 RETURNING id
                 """,
-                (order_no, warehouse_sku, quantity, unit_price, amount, note, record_id, shop_key),
+                (name, template_id, shop_key),
             ).fetchone()
-            if not row:
-                raise HTTPException(status_code=404, detail="inventory record not found")
-        else:
-            row = conn.execute(
+            if not updated:
+                raise HTTPException(status_code=404, detail="cost template not found")
+            return inventory_template_response(conn, shop_key)
+    except psycopg.errors.UniqueViolation:
+        raise HTTPException(status_code=409, detail="cost template name already exists")
+
+
+@app.delete("/api/inventory-cost-templates/{template_id}")
+def api_delete_inventory_cost_template(
+    template_id: int,
+    token: str | None = None,
+    shein_pnl_token: str | None = Cookie(default=None, alias=COOKIE_NAME),
+) -> JSONResponse:
+    require_auth(token, shein_pnl_token)
+    url, shop_key = ensure_inventory_store()
+    with psycopg.connect(url, row_factory=dict_row) as conn:
+        impact = conn.execute(
+            """
+            SELECT COUNT(DISTINCT i.id) AS tickets,
+                   COUNT(DISTINCT e.id) AS entries
+            FROM inventory_cost_templates tm
+            LEFT JOIN inventory_tickets i ON i.cost_template_id = tm.id
+            LEFT JOIN inventory_cost_categories c ON c.template_id = tm.id
+            LEFT JOIN inventory_cost_types t ON t.category_id = c.id
+            LEFT JOIN inventory_cost_entries e ON e.cost_type_id = t.id
+            WHERE tm.id = %s AND tm.shop_key = %s
+            """,
+            (template_id, shop_key),
+        ).fetchone()
+        deleted = conn.execute(
+            """
+            DELETE FROM inventory_cost_templates
+            WHERE id = %s AND shop_key = %s
+            RETURNING id
+            """,
+            (template_id, shop_key),
+        ).fetchone()
+        if not deleted:
+            raise HTTPException(status_code=404, detail="cost template not found")
+        response = inventory_template_response(conn, shop_key)
+        body = json.loads(response.body)
+        body["deleted"] = True
+        body["affectedTickets"] = int(impact.get("tickets") or 0)
+        body["deletedEntries"] = int(impact.get("entries") or 0)
+        return JSONResponse(body)
+
+
+@app.get("/api/inventory-cost-categories")
+def api_inventory_cost_categories(
+    token: str | None = None,
+    shein_pnl_token: str | None = Cookie(default=None, alias=COOKIE_NAME),
+) -> JSONResponse:
+    return api_inventory_cost_templates(token, shein_pnl_token)
+
+
+@app.post("/api/inventory-cost-categories")
+def api_create_inventory_cost_category(
+    payload: dict[str, Any] = Body(...),
+    token: str | None = None,
+    shein_pnl_token: str | None = Cookie(default=None, alias=COOKIE_NAME),
+) -> JSONResponse:
+    require_auth(token, shein_pnl_token)
+    url, shop_key = ensure_inventory_store()
+    try:
+        template_id = int(payload_value(payload, "templateId", "template_id"))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="templateId is required")
+    name = inventory_name(payload_value(payload, "name"), "name")
+    currency = inventory_currency(payload_value(payload, "currency"))
+    try:
+        with psycopg.connect(url, row_factory=dict_row) as conn:
+            template = conn.execute(
                 """
-                INSERT INTO shein_inventory_records (shop_key, order_no, warehouse_sku, quantity, unit_price, amount, note)
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT (shop_key, order_no, warehouse_sku) DO UPDATE SET
-                    quantity = EXCLUDED.quantity,
-                    unit_price = EXCLUDED.unit_price,
-                    amount = EXCLUDED.amount,
-                    note = EXCLUDED.note,
-                    updated_at = now()
-                RETURNING id
+                SELECT id FROM inventory_cost_templates
+                WHERE id = %s AND shop_key = %s
                 """,
-                (shop_key, order_no, warehouse_sku, quantity, unit_price, amount, note),
+                (template_id, shop_key),
             ).fetchone()
-        upsert_inventory_fee_rows(conn, shop_key=shop_key, order_no=order_no, fees_payload=payload.get("fees"))
-    return JSONResponse({"saved": True, "id": row.get("id")})
+            if not template:
+                raise HTTPException(status_code=404, detail="cost template not found")
+            default_order = conn.execute(
+                """
+                SELECT COALESCE(MAX(sort_order), 0) + 10 AS sort_order
+                FROM inventory_cost_categories
+                WHERE template_id = %s
+                """,
+                (template_id,),
+            ).fetchone().get("sort_order")
+            conn.execute(
+                """
+                INSERT INTO inventory_cost_categories (
+                    shop_key, template_id, name, currency, sort_order
+                )
+                VALUES (%s, %s, %s, %s, %s)
+                """,
+                (
+                    shop_key,
+                    template_id,
+                    name,
+                    currency,
+                    inventory_sort_order(payload_value(payload, "sortOrder"), int(default_order or 10)),
+                ),
+            )
+            conn.execute(
+                "UPDATE inventory_cost_templates SET updated_at = now() WHERE id = %s",
+                (template_id,),
+            )
+            return inventory_template_response(conn, shop_key)
+    except psycopg.errors.UniqueViolation:
+        raise HTTPException(status_code=409, detail="cost category name already exists in template")
+
+
+@app.patch("/api/inventory-cost-categories/{category_id}")
+def api_update_inventory_cost_category(
+    category_id: int,
+    payload: dict[str, Any] = Body(...),
+    token: str | None = None,
+    shein_pnl_token: str | None = Cookie(default=None, alias=COOKIE_NAME),
+) -> JSONResponse:
+    require_auth(token, shein_pnl_token)
+    url, shop_key = ensure_inventory_store()
+    try:
+        with psycopg.connect(url, row_factory=dict_row) as conn:
+            current = conn.execute(
+                """
+                SELECT c.id, c.template_id, c.name, c.currency, c.sort_order
+                FROM inventory_cost_categories c
+                JOIN inventory_cost_templates tm ON tm.id = c.template_id
+                WHERE c.id = %s AND tm.shop_key = %s
+                """,
+                (category_id, shop_key),
+            ).fetchone()
+            if not current:
+                raise HTTPException(status_code=404, detail="cost category not found")
+            name = (
+                inventory_name(payload.get("name"), "name")
+                if "name" in payload
+                else clean_text(current.get("name"))
+            )
+            currency = (
+                inventory_currency(payload.get("currency"))
+                if "currency" in payload
+                else clean_text(current.get("currency"))
+            )
+            sort_order = inventory_sort_order(
+                payload.get("sortOrder"),
+                int(current.get("sort_order") or 0),
+            )
+            conn.execute(
+                """
+                UPDATE inventory_cost_categories
+                SET name = %s, currency = %s, sort_order = %s, updated_at = now()
+                WHERE id = %s
+                """,
+                (name, currency, sort_order, category_id),
+            )
+            conn.execute(
+                "UPDATE inventory_cost_templates SET updated_at = now() WHERE id = %s",
+                (current.get("template_id"),),
+            )
+            return inventory_template_response(conn, shop_key)
+    except psycopg.errors.UniqueViolation:
+        raise HTTPException(status_code=409, detail="cost category name already exists in template")
+
+
+@app.delete("/api/inventory-cost-categories/{category_id}")
+def api_delete_inventory_cost_category(
+    category_id: int,
+    token: str | None = None,
+    shein_pnl_token: str | None = Cookie(default=None, alias=COOKIE_NAME),
+) -> JSONResponse:
+    require_auth(token, shein_pnl_token)
+    url, shop_key = ensure_inventory_store()
+    with psycopg.connect(url, row_factory=dict_row) as conn:
+        impact = conn.execute(
+            """
+            SELECT c.template_id,
+                   COUNT(DISTINCT e.inventory_ticket_id) AS tickets,
+                   COUNT(e.id) AS entries
+            FROM inventory_cost_categories c
+            JOIN inventory_cost_templates tm ON tm.id = c.template_id
+            LEFT JOIN inventory_cost_types t ON t.category_id = c.id
+            LEFT JOIN inventory_cost_entries e ON e.cost_type_id = t.id
+            WHERE c.id = %s AND tm.shop_key = %s
+            GROUP BY c.template_id
+            """,
+            (category_id, shop_key),
+        ).fetchone()
+        if not impact:
+            raise HTTPException(status_code=404, detail="cost category not found")
+        conn.execute("DELETE FROM inventory_cost_categories WHERE id = %s", (category_id,))
+        conn.execute(
+            "UPDATE inventory_cost_templates SET updated_at = now() WHERE id = %s",
+            (impact.get("template_id"),),
+        )
+        response = inventory_template_response(conn, shop_key)
+        body = json.loads(response.body)
+        body["deleted"] = True
+        body["affectedTickets"] = int(impact.get("tickets") or 0)
+        body["deletedEntries"] = int(impact.get("entries") or 0)
+        return JSONResponse(body)
+
+
+@app.post("/api/inventory-cost-types")
+def api_create_inventory_cost_type(
+    payload: dict[str, Any] = Body(...),
+    token: str | None = None,
+    shein_pnl_token: str | None = Cookie(default=None, alias=COOKIE_NAME),
+) -> JSONResponse:
+    require_auth(token, shein_pnl_token)
+    url, shop_key = ensure_inventory_store()
+    try:
+        category_id = int(payload_value(payload, "categoryId", "category_id"))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="categoryId is required")
+    name = inventory_name(payload_value(payload, "name"), "name")
+    mode = inventory_calculation_mode(payload_value(payload, "calculationMode", "calculation_mode"))
+    try:
+        with psycopg.connect(url, row_factory=dict_row) as conn:
+            category = conn.execute(
+                """
+                SELECT c.id, c.template_id
+                FROM inventory_cost_categories c
+                JOIN inventory_cost_templates tm ON tm.id = c.template_id
+                WHERE c.id = %s AND tm.shop_key = %s
+                """,
+                (category_id, shop_key),
+            ).fetchone()
+            if not category:
+                raise HTTPException(status_code=404, detail="cost category not found")
+            default_order = conn.execute(
+                """
+                SELECT COALESCE(MAX(sort_order), 0) + 10 AS sort_order
+                FROM inventory_cost_types
+                WHERE category_id = %s
+                """,
+                (category_id,),
+            ).fetchone().get("sort_order")
+            conn.execute(
+                """
+                INSERT INTO inventory_cost_types (category_id, name, calculation_mode, sort_order)
+                VALUES (%s, %s, %s, %s)
+                """,
+                (
+                    category_id,
+                    name,
+                    mode,
+                    inventory_sort_order(payload_value(payload, "sortOrder"), int(default_order or 10)),
+                ),
+            )
+            conn.execute(
+                "UPDATE inventory_cost_templates SET updated_at = now() WHERE id = %s",
+                (category.get("template_id"),),
+            )
+            return inventory_template_response(conn, shop_key)
+    except psycopg.errors.UniqueViolation:
+        raise HTTPException(status_code=409, detail="cost type name already exists in category")
+
+
+@app.patch("/api/inventory-cost-types/{cost_type_id}")
+def api_update_inventory_cost_type(
+    cost_type_id: int,
+    payload: dict[str, Any] = Body(...),
+    token: str | None = None,
+    shein_pnl_token: str | None = Cookie(default=None, alias=COOKIE_NAME),
+) -> JSONResponse:
+    require_auth(token, shein_pnl_token)
+    url, shop_key = ensure_inventory_store()
+    try:
+        with psycopg.connect(url, row_factory=dict_row) as conn:
+            current = conn.execute(
+                """
+                SELECT t.id, c.template_id, t.name, t.calculation_mode, t.sort_order
+                FROM inventory_cost_types t
+                JOIN inventory_cost_categories c ON c.id = t.category_id
+                JOIN inventory_cost_templates tm ON tm.id = c.template_id
+                WHERE t.id = %s AND tm.shop_key = %s
+                """,
+                (cost_type_id, shop_key),
+            ).fetchone()
+            if not current:
+                raise HTTPException(status_code=404, detail="cost type not found")
+            name = (
+                inventory_name(payload.get("name"), "name")
+                if "name" in payload
+                else clean_text(current.get("name"))
+            )
+            mode = (
+                inventory_calculation_mode(payload.get("calculationMode"))
+                if "calculationMode" in payload
+                else clean_text(current.get("calculation_mode"))
+            )
+            sort_order = inventory_sort_order(
+                payload.get("sortOrder"),
+                int(current.get("sort_order") or 0),
+            )
+            previous_mode = clean_text(current.get("calculation_mode"))
+            if previous_mode != mode and mode == "direct_amount":
+                conn.execute(
+                    """
+                    UPDATE inventory_cost_entries
+                    SET quantity = NULL, unit_price = NULL, updated_at = now()
+                    WHERE cost_type_id = %s
+                    """,
+                    (cost_type_id,),
+                )
+            elif previous_mode != mode:
+                conn.execute(
+                    """
+                    UPDATE inventory_cost_entries
+                    SET quantity = CASE WHEN amount IS NULL THEN NULL ELSE 1 END,
+                        unit_price = amount,
+                        updated_at = now()
+                    WHERE cost_type_id = %s
+                    """,
+                    (cost_type_id,),
+                )
+            conn.execute(
+                """
+                UPDATE inventory_cost_types
+                SET name = %s, calculation_mode = %s, sort_order = %s, updated_at = now()
+                WHERE id = %s
+                """,
+                (name, mode, sort_order, cost_type_id),
+            )
+            conn.execute(
+                "UPDATE inventory_cost_templates SET updated_at = now() WHERE id = %s",
+                (current.get("template_id"),),
+            )
+            return inventory_template_response(conn, shop_key)
+    except psycopg.errors.UniqueViolation:
+        raise HTTPException(status_code=409, detail="cost type name already exists in category")
+
+
+@app.delete("/api/inventory-cost-types/{cost_type_id}")
+def api_delete_inventory_cost_type(
+    cost_type_id: int,
+    token: str | None = None,
+    shein_pnl_token: str | None = Cookie(default=None, alias=COOKIE_NAME),
+) -> JSONResponse:
+    require_auth(token, shein_pnl_token)
+    url, shop_key = ensure_inventory_store()
+    with psycopg.connect(url, row_factory=dict_row) as conn:
+        impact = conn.execute(
+            """
+            SELECT c.template_id,
+                   COUNT(DISTINCT e.inventory_ticket_id) AS tickets,
+                   COUNT(e.id) AS entries
+            FROM inventory_cost_types t
+            JOIN inventory_cost_categories c ON c.id = t.category_id
+            JOIN inventory_cost_templates tm ON tm.id = c.template_id
+            LEFT JOIN inventory_cost_entries e ON e.cost_type_id = t.id
+            WHERE t.id = %s AND tm.shop_key = %s
+            GROUP BY c.template_id
+            """,
+            (cost_type_id, shop_key),
+        ).fetchone()
+        if not impact:
+            raise HTTPException(status_code=404, detail="cost type not found")
+        conn.execute("DELETE FROM inventory_cost_types WHERE id = %s", (cost_type_id,))
+        conn.execute(
+            "UPDATE inventory_cost_templates SET updated_at = now() WHERE id = %s",
+            (impact.get("template_id"),),
+        )
+        response = inventory_template_response(conn, shop_key)
+        body = json.loads(response.body)
+        body["deleted"] = True
+        body["affectedTickets"] = int(impact.get("tickets") or 0)
+        body["deletedEntries"] = int(impact.get("entries") or 0)
+        return JSONResponse(body)
+
 
 
 def build_relation_row(

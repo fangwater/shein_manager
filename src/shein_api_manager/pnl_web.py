@@ -38,15 +38,45 @@ SESSION_TTL_SECONDS = 7 * 24 * 3600
 SESSION_SECRET_PATH = Path(os.getenv("SHEIN_WEB_SESSION_SECRET_FILE", BASE_DIR / ".web_session_secret"))
 ALL_PERMISSIONS = "*"
 VIEW_PROFIT = "view_profit"
+VIEW_RETURNS = "view_returns"
+VIEW_LOGISTICS = "view_logistics"
+VIEW_SHIPPING_FEE = "view_shipping_fee"
+ACCESS_SKU_MAPPINGS = "access_sku_mappings"
+VIEW_WAREHOUSE_RELATIONS = "view_warehouse_relations"
+VIEW_WAREHOUSE_COST = "view_warehouse_cost"
+ACCESS_INVENTORY = "access_inventory"
+ACCESS_COST_TEMPLATES = "access_cost_templates"
 ROLE_ADMIN = "admin"
 ROLE_TEST = "test"
 ROLE_OPERATIONS = "operations"
 ROLE_ORDER_FOLLOW_UP = "order_follow_up"
 ROLE_PERMISSIONS: dict[str, frozenset[str]] = {
     ROLE_ADMIN: frozenset({ALL_PERMISSIONS}),
-    ROLE_TEST: frozenset(),
-    ROLE_OPERATIONS: frozenset(),
-    ROLE_ORDER_FOLLOW_UP: frozenset(),
+    ROLE_TEST: frozenset({
+        VIEW_RETURNS,
+        VIEW_LOGISTICS,
+        VIEW_SHIPPING_FEE,
+        ACCESS_SKU_MAPPINGS,
+        VIEW_WAREHOUSE_RELATIONS,
+        VIEW_WAREHOUSE_COST,
+        ACCESS_INVENTORY,
+        ACCESS_COST_TEMPLATES,
+    }),
+    ROLE_OPERATIONS: frozenset({
+        VIEW_RETURNS,
+        VIEW_LOGISTICS,
+        VIEW_SHIPPING_FEE,
+        ACCESS_SKU_MAPPINGS,
+        VIEW_WAREHOUSE_RELATIONS,
+    }),
+    ROLE_ORDER_FOLLOW_UP: frozenset({
+        VIEW_RETURNS,
+        ACCESS_SKU_MAPPINGS,
+        VIEW_WAREHOUSE_RELATIONS,
+        VIEW_WAREHOUSE_COST,
+        ACCESS_INVENTORY,
+        ACCESS_COST_TEMPLATES,
+    }),
 }
 ROLE_HOME_PATHS = {
     ROLE_ADMIN: "/",
@@ -57,6 +87,16 @@ ROLE_HOME_PATHS = {
 APP_TITLE = "Panda SHEIN PNL"
 ACTUAL_PNL_MODE = "actual"
 ESTIMATED_PNL_MODE = "estimated"
+NAV_PERMISSION_HREFS = {
+    VIEW_PROFIT: ("./",),
+    VIEW_LOGISTICS: ("logistics",),
+    VIEW_SHIPPING_FEE: ("shipping-fee",),
+    VIEW_RETURNS: ("returns",),
+    ACCESS_SKU_MAPPINGS: ("sku-mappings",),
+    VIEW_WAREHOUSE_RELATIONS: ("warehouse-relations",),
+    ACCESS_INVENTORY: ("inventory",),
+    ACCESS_COST_TEMPLATES: ("inventory-templates",),
+}
 ESTIMATE_METHOD_ZERO = "zero"
 ESTIMATE_METHOD_SKU_AVG = "sku_avg"
 RETURN_PROFIT_ZEROED_POLICY = "return_profit_zeroed"
@@ -97,6 +137,7 @@ class Account:
     username: str
     password: str
     role: str
+
     @property
     def permissions(self) -> frozenset[str]:
         return ROLE_PERMISSIONS[self.role]
@@ -197,9 +238,21 @@ def read_template(name: str) -> str:
 
 def render_template(name: str, account: Account) -> str:
     html = read_template(name)
-    if not account.can(VIEW_PROFIT):
-        html = re.sub(r'<a\b[^>]*href="(?:\./|returns)"[^>]*>.*?</a>', "", html)
-    return html.replace("{{username}}", escape(account.username)).replace("{{role}}", escape(account.role))
+    for permission, hrefs in NAV_PERMISSION_HREFS.items():
+        if not account.can(permission):
+            href_pattern = "|".join(re.escape(href) for href in hrefs)
+            html = re.sub(rf'<a\b[^>]*href="(?:{href_pattern})"[^>]*>.*?</a>', "", html)
+    if name == "warehouse_relations.html" and not account.can(VIEW_WAREHOUSE_COST):
+        html = html.replace("<div>成本</div><div>${esc(r.costText||'-')}</div>", "")
+        html = re.sub(
+            r"\$\{detailList\('成本',r\.costList,.*?(?=\$\{detailList\('库存')",
+            "",
+            html,
+        )
+    return (
+        html.replace("{{username}}", escape(account.username))
+        .replace("{{role}}", escape(account.role))
+    )
 
 
 def login_html(message: str = "") -> str:
@@ -233,39 +286,39 @@ def index(token: str | None = None, shein_pnl_token: str | None = Cookie(default
 
 @app.get("/returns", response_class=HTMLResponse)
 def returns_page(token: str | None = None, shein_pnl_token: str | None = Cookie(default=None, alias=COOKIE_NAME)) -> HTMLResponse:
-    return page_response("returns.html", shein_pnl_token, permission=VIEW_PROFIT)
+    return page_response("returns.html", shein_pnl_token, permission=VIEW_RETURNS)
 
 
 @app.get("/sku-mappings", response_class=HTMLResponse)
 def sku_mappings_page(token: str | None = None, shein_pnl_token: str | None = Cookie(default=None, alias=COOKIE_NAME)) -> HTMLResponse:
-    return page_response("sku_mappings.html", shein_pnl_token)
+    return page_response("sku_mappings.html", shein_pnl_token, permission=ACCESS_SKU_MAPPINGS)
 
 
 
 
 @app.get("/warehouse-relations", response_class=HTMLResponse)
 def warehouse_relations_page(token: str | None = None, shein_pnl_token: str | None = Cookie(default=None, alias=COOKIE_NAME)) -> HTMLResponse:
-    return page_response("warehouse_relations.html", shein_pnl_token)
+    return page_response("warehouse_relations.html", shein_pnl_token, permission=VIEW_WAREHOUSE_RELATIONS)
 
 
 @app.get("/inventory", response_class=HTMLResponse)
 def inventory_page(token: str | None = None, shein_pnl_token: str | None = Cookie(default=None, alias=COOKIE_NAME)) -> HTMLResponse:
-    return page_response("inventory.html", shein_pnl_token)
+    return page_response("inventory.html", shein_pnl_token, permission=ACCESS_INVENTORY)
 
 
 @app.get("/inventory-templates", response_class=HTMLResponse)
 def inventory_templates_page(token: str | None = None, shein_pnl_token: str | None = Cookie(default=None, alias=COOKIE_NAME)) -> HTMLResponse:
-    return page_response("inventory_templates.html", shein_pnl_token)
+    return page_response("inventory_templates.html", shein_pnl_token, permission=ACCESS_COST_TEMPLATES)
 
 
 @app.get("/logistics", response_class=HTMLResponse)
 def logistics_page(token: str | None = None, shein_pnl_token: str | None = Cookie(default=None, alias=COOKIE_NAME)) -> HTMLResponse:
-    return page_response("logistics.html", shein_pnl_token)
+    return page_response("logistics.html", shein_pnl_token, permission=VIEW_LOGISTICS)
 
 
 @app.get("/shipping-fee", response_class=HTMLResponse)
 def shipping_fee_page(token: str | None = None, shein_pnl_token: str | None = Cookie(default=None, alias=COOKIE_NAME)) -> HTMLResponse:
-    return page_response("shipping_fee.html", shein_pnl_token)
+    return page_response("shipping_fee.html", shein_pnl_token, permission=VIEW_SHIPPING_FEE)
 
 
 @app.post("/login")
@@ -1580,7 +1633,7 @@ def shipping_fee_empty_response(
 
 @app.get("/api/shipping-fee/filters")
 def api_shipping_fee_filters(token: str | None = None, shein_pnl_token: str | None = Cookie(default=None, alias=COOKIE_NAME)) -> JSONResponse:
-    require_auth(token, shein_pnl_token)
+    require_auth(token, shein_pnl_token, permission=VIEW_SHIPPING_FEE)
     df = shipping_fee_effective_items()
     min_dt = df["shipping_fee_day"].min() if not df.empty else pd.NaT
     max_dt = df["shipping_fee_day"].max() if not df.empty else pd.NaT
@@ -1618,7 +1671,7 @@ def api_shipping_fee_data(
     topN: int | None = None,
     shein_pnl_token: str | None = Cookie(default=None, alias=COOKIE_NAME),
 ) -> JSONResponse:
-    require_auth(token, shein_pnl_token)
+    require_auth(token, shein_pnl_token, permission=VIEW_SHIPPING_FEE)
     selected_dimension = normalize_shipping_fee_dimension(dimension)
     rolling_days = normalize_int_range(rolling, default=SHIPPING_FEE_DEFAULT_ROLLING_DAYS, min_value=1, max_value=90)
     min_periods = normalize_int_range(minPeriods, default=rolling_days, min_value=1, max_value=rolling_days)
@@ -1804,7 +1857,7 @@ def api_shipping_fee_data(
 
 @app.get("/api/logistics/filters")
 def api_logistics_filters(token: str | None = None, shein_pnl_token: str | None = Cookie(default=None, alias=COOKIE_NAME)) -> JSONResponse:
-    require_auth(token, shein_pnl_token)
+    require_auth(token, shein_pnl_token, permission=VIEW_LOGISTICS)
     df = prepare_logistics_items(load_items())
     effective = df.loc[df["logistics_effective_line"]] if not df.empty else df
     sku_source = effective if not effective.empty else df
@@ -1850,7 +1903,7 @@ def api_logistics_data(
     end: str | None = None,
     shein_pnl_token: str | None = Cookie(default=None, alias=COOKIE_NAME),
 ) -> JSONResponse:
-    require_auth(token, shein_pnl_token)
+    require_auth(token, shein_pnl_token, permission=VIEW_LOGISTICS)
     all_items = prepare_logistics_items(load_items())
     filtered = filter_logistics_items(all_items, sku_keys=sku or [], start=start, end=end)
     effective = filtered.loc[filtered["logistics_effective_line"]].copy() if not filtered.empty else filtered.copy()
@@ -1937,7 +1990,7 @@ def api_logistics_data(
 
 @app.get("/api/returns/filters")
 def api_return_filters(token: str | None = None, shein_pnl_token: str | None = Cookie(default=None, alias=COOKIE_NAME)) -> JSONResponse:
-    require_auth(token, shein_pnl_token, permission=VIEW_PROFIT)
+    require_auth(token, shein_pnl_token, permission=VIEW_RETURNS)
     df = load_return_orders()
     min_time, max_time = return_time_bounds(df)
     statuses = []
@@ -1971,7 +2024,7 @@ def api_return_data(
     timeField: str = "request",
     shein_pnl_token: str | None = Cookie(default=None, alias=COOKIE_NAME),
 ) -> JSONResponse:
-    require_auth(token, shein_pnl_token, permission=VIEW_PROFIT)
+    require_auth(token, shein_pnl_token, permission=VIEW_RETURNS)
     df, time_label = filter_return_orders(load_return_orders(), start=start, end=end, statuses=status or [], time_field=timeField)
     pnl_by_order = order_pnl_lookup()
     rows: list[dict[str, Any]] = []
@@ -3299,7 +3352,7 @@ def api_inventory(
     token: str | None = None,
     shein_pnl_token: str | None = Cookie(default=None, alias=COOKIE_NAME),
 ) -> JSONResponse:
-    require_auth(token, shein_pnl_token)
+    require_auth(token, shein_pnl_token, permission=ACCESS_INVENTORY)
     url, shop_key = ensure_inventory_store()
     filters = ["t.shop_key = %s"]
     params: list[Any] = [shop_key]
@@ -3385,7 +3438,7 @@ def api_inventory_ticket(
     token: str | None = None,
     shein_pnl_token: str | None = Cookie(default=None, alias=COOKIE_NAME),
 ) -> JSONResponse:
-    require_auth(token, shein_pnl_token)
+    require_auth(token, shein_pnl_token, permission=ACCESS_INVENTORY)
     url, shop_key = ensure_inventory_store()
     with psycopg.connect(url, row_factory=dict_row) as conn:
         ensure_inventory_template(conn, shop_key)
@@ -3402,7 +3455,7 @@ def api_create_inventory_ticket(
     token: str | None = None,
     shein_pnl_token: str | None = Cookie(default=None, alias=COOKIE_NAME),
 ) -> JSONResponse:
-    require_auth(token, shein_pnl_token)
+    require_auth(token, shein_pnl_token, permission=ACCESS_INVENTORY)
     url, shop_key = ensure_inventory_store()
     try:
         with psycopg.connect(url, row_factory=dict_row) as conn:
@@ -3421,7 +3474,7 @@ def api_update_inventory_ticket(
     token: str | None = None,
     shein_pnl_token: str | None = Cookie(default=None, alias=COOKIE_NAME),
 ) -> JSONResponse:
-    require_auth(token, shein_pnl_token)
+    require_auth(token, shein_pnl_token, permission=ACCESS_INVENTORY)
     url, shop_key = ensure_inventory_store()
     try:
         with psycopg.connect(url, row_factory=dict_row) as conn:
@@ -3444,7 +3497,7 @@ def api_delete_inventory_ticket(
     token: str | None = None,
     shein_pnl_token: str | None = Cookie(default=None, alias=COOKIE_NAME),
 ) -> JSONResponse:
-    require_auth(token, shein_pnl_token)
+    require_auth(token, shein_pnl_token, permission=ACCESS_INVENTORY)
     url, shop_key = ensure_inventory_store()
     with psycopg.connect(url, row_factory=dict_row) as conn:
         row = conn.execute(
@@ -3465,7 +3518,7 @@ def api_inventory_cost_templates(
     token: str | None = None,
     shein_pnl_token: str | None = Cookie(default=None, alias=COOKIE_NAME),
 ) -> JSONResponse:
-    require_auth(token, shein_pnl_token)
+    require_auth(token, shein_pnl_token, permission=ACCESS_COST_TEMPLATES)
     url, shop_key = ensure_inventory_store()
     with psycopg.connect(url, row_factory=dict_row) as conn:
         ensure_inventory_template(conn, shop_key)
@@ -3478,7 +3531,7 @@ def api_create_inventory_cost_template(
     token: str | None = None,
     shein_pnl_token: str | None = Cookie(default=None, alias=COOKIE_NAME),
 ) -> JSONResponse:
-    require_auth(token, shein_pnl_token)
+    require_auth(token, shein_pnl_token, permission=ACCESS_COST_TEMPLATES)
     url, shop_key = ensure_inventory_store()
     name = inventory_name(payload_value(payload, "name"), "name")
     try:
@@ -3503,7 +3556,7 @@ def api_update_inventory_cost_template(
     token: str | None = None,
     shein_pnl_token: str | None = Cookie(default=None, alias=COOKIE_NAME),
 ) -> JSONResponse:
-    require_auth(token, shein_pnl_token)
+    require_auth(token, shein_pnl_token, permission=ACCESS_COST_TEMPLATES)
     url, shop_key = ensure_inventory_store()
     name = inventory_name(payload_value(payload, "name"), "name")
     try:
@@ -3530,7 +3583,7 @@ def api_delete_inventory_cost_template(
     token: str | None = None,
     shein_pnl_token: str | None = Cookie(default=None, alias=COOKIE_NAME),
 ) -> JSONResponse:
-    require_auth(token, shein_pnl_token)
+    require_auth(token, shein_pnl_token, permission=ACCESS_COST_TEMPLATES)
     url, shop_key = ensure_inventory_store()
     with psycopg.connect(url, row_factory=dict_row) as conn:
         impact = conn.execute(
@@ -3578,7 +3631,7 @@ def api_create_inventory_cost_category(
     token: str | None = None,
     shein_pnl_token: str | None = Cookie(default=None, alias=COOKIE_NAME),
 ) -> JSONResponse:
-    require_auth(token, shein_pnl_token)
+    require_auth(token, shein_pnl_token, permission=ACCESS_COST_TEMPLATES)
     url, shop_key = ensure_inventory_store()
     try:
         template_id = int(payload_value(payload, "templateId", "template_id"))
@@ -3636,7 +3689,7 @@ def api_update_inventory_cost_category(
     token: str | None = None,
     shein_pnl_token: str | None = Cookie(default=None, alias=COOKIE_NAME),
 ) -> JSONResponse:
-    require_auth(token, shein_pnl_token)
+    require_auth(token, shein_pnl_token, permission=ACCESS_COST_TEMPLATES)
     url, shop_key = ensure_inventory_store()
     try:
         with psycopg.connect(url, row_factory=dict_row) as conn:
@@ -3688,7 +3741,7 @@ def api_delete_inventory_cost_category(
     token: str | None = None,
     shein_pnl_token: str | None = Cookie(default=None, alias=COOKIE_NAME),
 ) -> JSONResponse:
-    require_auth(token, shein_pnl_token)
+    require_auth(token, shein_pnl_token, permission=ACCESS_COST_TEMPLATES)
     url, shop_key = ensure_inventory_store()
     with psycopg.connect(url, row_factory=dict_row) as conn:
         impact = conn.execute(
@@ -3726,7 +3779,7 @@ def api_create_inventory_cost_type(
     token: str | None = None,
     shein_pnl_token: str | None = Cookie(default=None, alias=COOKIE_NAME),
 ) -> JSONResponse:
-    require_auth(token, shein_pnl_token)
+    require_auth(token, shein_pnl_token, permission=ACCESS_COST_TEMPLATES)
     url, shop_key = ensure_inventory_store()
     try:
         category_id = int(payload_value(payload, "categoryId", "category_id"))
@@ -3783,7 +3836,7 @@ def api_update_inventory_cost_type(
     token: str | None = None,
     shein_pnl_token: str | None = Cookie(default=None, alias=COOKIE_NAME),
 ) -> JSONResponse:
-    require_auth(token, shein_pnl_token)
+    require_auth(token, shein_pnl_token, permission=ACCESS_COST_TEMPLATES)
     url, shop_key = ensure_inventory_store()
     try:
         with psycopg.connect(url, row_factory=dict_row) as conn:
@@ -3857,7 +3910,7 @@ def api_delete_inventory_cost_type(
     token: str | None = None,
     shein_pnl_token: str | None = Cookie(default=None, alias=COOKIE_NAME),
 ) -> JSONResponse:
-    require_auth(token, shein_pnl_token)
+    require_auth(token, shein_pnl_token, permission=ACCESS_COST_TEMPLATES)
     url, shop_key = ensure_inventory_store()
     with psycopg.connect(url, row_factory=dict_row) as conn:
         impact = conn.execute(
@@ -3972,9 +4025,17 @@ def relation_group_summary(rows: list[dict[str, Any]], key: str) -> list[dict[st
     return sorted(out, key=lambda item: (-item["skuCount"], item["key"]))
 
 
+def warehouse_relation_rows_for_account(rows: list[dict[str, Any]], account: Account) -> list[dict[str, Any]]:
+    if account.can(VIEW_WAREHOUSE_COST):
+        return rows
+    return [
+        {key: value for key, value in row.items() if key not in {"costText", "costList"}}
+        for row in rows
+    ]
+
 @app.get("/api/warehouse-relations")
 def api_warehouse_relations(token: str | None = None, shein_pnl_token: str | None = Cookie(default=None, alias=COOKIE_NAME)) -> JSONResponse:
-    require_auth(token, shein_pnl_token)
+    account = require_auth(token, shein_pnl_token, permission=VIEW_WAREHOUSE_RELATIONS)
     url, shop_key = ensure_warehouse_relation_store()
     with psycopg.connect(url, row_factory=dict_row) as conn:
         default_row = conn.execute(
@@ -4032,6 +4093,8 @@ def api_warehouse_relations(token: str | None = None, shein_pnl_token: str | Non
         )
 
     product_sku_count = len(catalog)
+    rows = warehouse_relation_rows_for_account(rows, account)
+
     summary = {
         "warehouseSkus": len({clean_text(row.get("warehouse_sku")) for row in warehouse_rows if clean_text(row.get("warehouse_sku"))}),
         "enabledWarehouseSkus": sum(1 for row in warehouse_rows if row.get("enabled")),
@@ -4073,7 +4136,7 @@ def api_warehouse_relations(token: str | None = None, shein_pnl_token: str | Non
 
 @app.get("/api/sku-mappings")
 def api_sku_mappings(q: str | None = None, token: str | None = None, shein_pnl_token: str | None = Cookie(default=None, alias=COOKIE_NAME)) -> JSONResponse:
-    require_auth(token, shein_pnl_token)
+    require_auth(token, shein_pnl_token, permission=ACCESS_SKU_MAPPINGS)
     from .db import get_sku_mapping_settings, list_sku_mappings, list_warehouse_skus
 
     url, shop_key = ensure_sku_mapping_store()
@@ -4109,7 +4172,7 @@ def api_save_warehouse_sku(
     token: str | None = None,
     shein_pnl_token: str | None = Cookie(default=None, alias=COOKIE_NAME),
 ) -> JSONResponse:
-    require_auth(token, shein_pnl_token)
+    require_auth(token, shein_pnl_token, permission=ACCESS_SKU_MAPPINGS)
     from .db import upsert_warehouse_sku
 
     values = normalize_warehouse_sku_payload(payload)
@@ -4132,7 +4195,7 @@ def api_save_sku_mapping_settings(
     token: str | None = None,
     shein_pnl_token: str | None = Cookie(default=None, alias=COOKIE_NAME),
 ) -> JSONResponse:
-    require_auth(token, shein_pnl_token)
+    require_auth(token, shein_pnl_token, permission=ACCESS_SKU_MAPPINGS)
     from .db import save_sku_mapping_settings
 
     default_warehouse_sku = clean_text(payload_value(payload, "default_warehouse_sku", "defaultWarehouseSku"))
@@ -4149,7 +4212,7 @@ def api_save_sku_mapping(
     token: str | None = None,
     shein_pnl_token: str | None = Cookie(default=None, alias=COOKIE_NAME),
 ) -> JSONResponse:
-    require_auth(token, shein_pnl_token)
+    require_auth(token, shein_pnl_token, permission=ACCESS_SKU_MAPPINGS)
     from .db import upsert_sku_mapping, upsert_warehouse_sku
 
     url, shop_key = ensure_sku_mapping_store()
@@ -4182,7 +4245,7 @@ def api_delete_sku_mapping(
     token: str | None = None,
     shein_pnl_token: str | None = Cookie(default=None, alias=COOKIE_NAME),
 ) -> JSONResponse:
-    require_auth(token, shein_pnl_token)
+    require_auth(token, shein_pnl_token, permission=ACCESS_SKU_MAPPINGS)
     from .db import delete_sku_mapping
 
     url, shop_key = ensure_sku_mapping_store()
@@ -4198,7 +4261,7 @@ async def api_import_sku_mappings(
     token: str | None = None,
     shein_pnl_token: str | None = Cookie(default=None, alias=COOKIE_NAME),
 ) -> JSONResponse:
-    require_auth(token, shein_pnl_token)
+    require_auth(token, shein_pnl_token, permission=ACCESS_SKU_MAPPINGS)
     from .db import list_sku_mappings, upsert_sku_mapping, upsert_warehouse_sku
 
     content = await file.read()
@@ -4255,7 +4318,7 @@ async def api_import_sku_mappings(
 
 @app.get("/api/sku-mappings/export")
 def api_export_sku_mappings(token: str | None = None, shein_pnl_token: str | None = Cookie(default=None, alias=COOKIE_NAME)) -> Response:
-    require_auth(token, shein_pnl_token)
+    require_auth(token, shein_pnl_token, permission=ACCESS_SKU_MAPPINGS)
     from .db import list_sku_mappings, list_warehouse_skus
 
     url, shop_key = ensure_sku_mapping_store()
@@ -4293,7 +4356,7 @@ def api_export_sku_mappings(token: str | None = None, shein_pnl_token: str | Non
 
 @app.get("/api/sku-mappings/template")
 def api_sku_mapping_template(token: str | None = None, shein_pnl_token: str | None = Cookie(default=None, alias=COOKIE_NAME)) -> Response:
-    require_auth(token, shein_pnl_token)
+    require_auth(token, shein_pnl_token, permission=ACCESS_SKU_MAPPINGS)
     output = io.StringIO()
     writer = csv.writer(output)
     writer.writerow(SKU_MAPPING_IMPORT_HEADERS)
@@ -4308,7 +4371,7 @@ def api_sku_mapping_template(token: str | None = None, shein_pnl_token: str | No
 
 @app.get("/api/sku-mappings/template.xlsx")
 def api_sku_mapping_excel_template(token: str | None = None, shein_pnl_token: str | None = Cookie(default=None, alias=COOKIE_NAME)) -> Response:
-    require_auth(token, shein_pnl_token)
+    require_auth(token, shein_pnl_token, permission=ACCESS_SKU_MAPPINGS)
     try:
         from openpyxl import Workbook
     except ModuleNotFoundError:

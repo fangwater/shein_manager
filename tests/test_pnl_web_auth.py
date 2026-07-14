@@ -9,7 +9,16 @@ from fastapi.testclient import TestClient
 
 os.environ["SHEIN_WEB_COOKIE_SECURE"] = "false"
 
-from shein_api_manager.pnl_web import COOKIE_NAME, app
+from shein_api_manager.pnl_web import (
+    COOKIE_NAME,
+    ROLE_ADMIN,
+    ROLE_OPERATIONS,
+    ROLE_ORDER_FOLLOW_UP,
+    ROLE_TEST,
+    VIEW_PROFIT,
+    app,
+    load_accounts,
+)
 
 
 class PnlWebAuthTests(unittest.TestCase):
@@ -21,6 +30,31 @@ class PnlWebAuthTests(unittest.TestCase):
 
     def login(self, username: str, password: str):
         return self.client.post("/login", data={"username": username, "password": password})
+
+    def test_accounts_have_expected_roles(self) -> None:
+        accounts = load_accounts()
+
+        self.assertEqual(accounts["pyy"].role, ROLE_ADMIN)
+        self.assertEqual(accounts["temu-test"].role, ROLE_TEST)
+        self.assertEqual(accounts["operations"].role, ROLE_OPERATIONS)
+        self.assertEqual(accounts["order-follow-up"].role, ROLE_ORDER_FOLLOW_UP)
+        self.assertTrue(accounts["pyy"].can(VIEW_PROFIT))
+        self.assertFalse(accounts["temu-test"].can(VIEW_PROFIT))
+        self.assertFalse(accounts["operations"].can(VIEW_PROFIT))
+        self.assertFalse(accounts["order-follow-up"].can(VIEW_PROFIT))
+
+    def test_new_role_accounts_can_login(self) -> None:
+        operations = self.login("operations", "operations")
+
+        self.assertEqual(operations.status_code, 303)
+        self.assertEqual(operations.headers["location"], "/logistics")
+        self.assertEqual(self.client.get("/returns").status_code, 403)
+
+        self.client.get("/logout")
+        follow_up = self.login("order-follow-up", "order-follow-up")
+        self.assertEqual(follow_up.status_code, 303)
+        self.assertEqual(follow_up.headers["location"], "/sku-mappings")
+        self.assertEqual(self.client.get("/returns").status_code, 403)
 
     def test_login_page_uses_username_and_password(self) -> None:
         response = self.client.get("/")
@@ -57,7 +91,7 @@ class PnlWebAuthTests(unittest.TestCase):
         self.assertIn(">PNL<", dashboard.text)
         self.assertIn("退货明细", dashboard.text)
 
-    def test_admin_cannot_open_profit_pages_or_apis(self) -> None:
+    def test_test_role_cannot_open_profit_pages_or_apis(self) -> None:
         login = self.login("temu-test", "temu-test")
 
         self.assertEqual(login.status_code, 303)

@@ -36,7 +36,24 @@ LEGACY_COOKIE_NAME = "shein_pnl_token"
 COOKIE_SECURE = os.getenv("SHEIN_WEB_COOKIE_SECURE", "true").strip().lower() not in {"0", "false", "no"}
 SESSION_TTL_SECONDS = 7 * 24 * 3600
 SESSION_SECRET_PATH = Path(os.getenv("SHEIN_WEB_SESSION_SECRET_FILE", BASE_DIR / ".web_session_secret"))
+ALL_PERMISSIONS = "*"
 VIEW_PROFIT = "view_profit"
+ROLE_ADMIN = "admin"
+ROLE_TEST = "test"
+ROLE_OPERATIONS = "operations"
+ROLE_ORDER_FOLLOW_UP = "order_follow_up"
+ROLE_PERMISSIONS: dict[str, frozenset[str]] = {
+    ROLE_ADMIN: frozenset({ALL_PERMISSIONS}),
+    ROLE_TEST: frozenset(),
+    ROLE_OPERATIONS: frozenset(),
+    ROLE_ORDER_FOLLOW_UP: frozenset(),
+}
+ROLE_HOME_PATHS = {
+    ROLE_ADMIN: "/",
+    ROLE_TEST: "/sku-mappings",
+    ROLE_OPERATIONS: "/logistics",
+    ROLE_ORDER_FOLLOW_UP: "/sku-mappings",
+}
 APP_TITLE = "Panda SHEIN PNL"
 ACTUAL_PNL_MODE = "actual"
 ESTIMATED_PNL_MODE = "estimated"
@@ -80,11 +97,16 @@ class Account:
     username: str
     password: str
     role: str
-    permissions: frozenset[str]
-    home_path: str
+    @property
+    def permissions(self) -> frozenset[str]:
+        return ROLE_PERMISSIONS[self.role]
+
+    @property
+    def home_path(self) -> str:
+        return ROLE_HOME_PATHS[self.role]
 
     def can(self, permission: str) -> bool:
-        return permission in self.permissions
+        return ALL_PERMISSIONS in self.permissions or permission in self.permissions
 
 
 def load_accounts() -> dict[str, Account]:
@@ -92,16 +114,22 @@ def load_accounts() -> dict[str, Account]:
         "pyy": Account(
             username="pyy",
             password=os.getenv("SHEIN_WEB_PYY_PASSWORD", "12345"),
-            role="user",
-            permissions=frozenset({VIEW_PROFIT}),
-            home_path="/",
+            role=ROLE_ADMIN,
         ),
         "temu-test": Account(
             username="temu-test",
             password=os.getenv("SHEIN_WEB_TEMU_TEST_PASSWORD", "temu-test"),
-            role="admin",
-            permissions=frozenset(),
-            home_path="/sku-mappings",
+            role=ROLE_TEST,
+        ),
+        "operations": Account(
+            username="operations",
+            password=os.getenv("SHEIN_WEB_OPERATIONS_PASSWORD", "operations"),
+            role=ROLE_OPERATIONS,
+        ),
+        "order-follow-up": Account(
+            username="order-follow-up",
+            password=os.getenv("SHEIN_WEB_ORDER_FOLLOW_UP_PASSWORD", "order-follow-up"),
+            role=ROLE_ORDER_FOLLOW_UP,
         ),
     }
 

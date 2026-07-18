@@ -2096,8 +2096,9 @@ SKU_MAPPING_HEIGHT_ALIASES = {"height_cm", "heightcm", "height", "高", "高度"
 SKU_MAPPING_WEIGHT_ALIASES = {"weight_kg", "weightkg", "weight", "重量", "重", "重量kg", "product_weight", "package_weight"}
 SKU_MAPPING_PURCHASE_PRICE_ALIASES = {"purchase_price", "purchaseprice", "purchase", "采购价", "采购价格", "买入价", "进货价"}
 SKU_MAPPING_OCEAN_FREIGHT_PRICE_ALIASES = {"ocean_freight_price", "oceanfreightprice", "ocean_freight", "sea_freight", "shipping_price", "海运价格", "海运价", "海运费"}
+SKU_MAPPING_OPERATION_FEE_ALIASES = {"operation_fee_price", "operationfeeprice", "operation_fee", "operationfee", "handling_fee", "操作费", "操作费用"}
 DEFAULT_SKU_GROUP = "default"
-SKU_MAPPING_IMPORT_HEADERS = ["warehouse_sku", "shein_sku", "length_cm", "width_cm", "height_cm", "weight_kg", "purchase_price", "ocean_freight_price"]
+SKU_MAPPING_IMPORT_HEADERS = ["warehouse_sku", "shein_sku", "length_cm", "width_cm", "height_cm", "weight_kg", "purchase_price", "ocean_freight_price", "operation_fee_price"]
 SKU_MAPPING_HEADER_ALIASES = (
     SKU_MAPPING_WAREHOUSE_ALIASES
     | SKU_MAPPING_SHEIN_ALIASES
@@ -2107,6 +2108,7 @@ SKU_MAPPING_HEADER_ALIASES = (
     | SKU_MAPPING_WEIGHT_ALIASES
     | SKU_MAPPING_PURCHASE_PRICE_ALIASES
     | SKU_MAPPING_OCEAN_FREIGHT_PRICE_ALIASES
+    | SKU_MAPPING_OPERATION_FEE_ALIASES
 )
 
 
@@ -2154,6 +2156,7 @@ def sku_mapping_record_from_header_row(row: dict[str, Any]) -> dict[str, Any]:
         "weight_kg": read_table_value(row, SKU_MAPPING_WEIGHT_ALIASES),
         "purchase_price": read_table_value(row, SKU_MAPPING_PURCHASE_PRICE_ALIASES),
         "ocean_freight_price": read_table_value(row, SKU_MAPPING_OCEAN_FREIGHT_PRICE_ALIASES),
+        "operation_fee_price": read_table_value(row, SKU_MAPPING_OPERATION_FEE_ALIASES),
     }
 
 
@@ -2264,6 +2267,7 @@ WAREHOUSE_DETAIL_PAYLOAD_KEYS = {
     "weight_kg", "weightKg", "weight", "productWeight",
     "purchase_price", "purchasePrice", "purchase", "purchaseCost",
     "ocean_freight_price", "oceanFreightPrice", "oceanFreight", "seaFreight", "shippingPrice",
+    "operation_fee_price", "operationFeePrice", "operationFee", "handlingFee",
 }
 
 
@@ -2281,6 +2285,7 @@ def normalize_warehouse_sku_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "cost_price": None,
         "purchase_price": sku_mapping_decimal(payload_value(payload, "purchase_price", "purchasePrice", "purchase", "purchaseCost"), "purchase_price"),
         "ocean_freight_price": sku_mapping_decimal(payload_value(payload, "ocean_freight_price", "oceanFreightPrice", "oceanFreight", "seaFreight", "shippingPrice"), "ocean_freight_price"),
+        "operation_fee_price": sku_mapping_decimal(payload_value(payload, "operation_fee_price", "operationFeePrice", "operationFee", "handlingFee"), "operation_fee_price"),
         "note": clean_text(payload_value(payload, "note")) or None,
         "enabled": bool(payload_value(payload, "enabled")) if payload_value(payload, "enabled") is not None else True,
     }
@@ -2352,6 +2357,7 @@ def serialize_warehouse_sku(row: dict[str, Any]) -> dict[str, Any]:
         "weightKg": sku_mapping_number(row.get("weight_kg")),
         "purchasePrice": sku_mapping_number(row.get("purchase_price")),
         "oceanFreightPrice": sku_mapping_number(row.get("ocean_freight_price")),
+        "operationFeePrice": sku_mapping_number(row.get("operation_fee_price")) or 0.0,
         "note": clean_text(row.get("note")),
         "enabled": bool(row.get("enabled", True)),
         "updatedAt": updated_at.strftime("%Y-%m-%d %H:%M") if hasattr(updated_at, "strftime") else clean_text(updated_at),
@@ -4346,6 +4352,7 @@ def api_export_sku_mappings(token: str | None = None, shein_pnl_token: str | Non
                 warehouse.get("weight_kg") if warehouse.get("weight_kg") is not None else "",
                 warehouse.get("purchase_price") if warehouse.get("purchase_price") is not None else "",
                 warehouse.get("ocean_freight_price") if warehouse.get("ocean_freight_price") is not None else "",
+                warehouse.get("operation_fee_price") if warehouse.get("operation_fee_price") is not None else 0,
             ])
     return Response(
         "\ufeff" + output.getvalue(),
@@ -4360,8 +4367,8 @@ def api_sku_mapping_template(token: str | None = None, shein_pnl_token: str | No
     output = io.StringIO()
     writer = csv.writer(output)
     writer.writerow(SKU_MAPPING_IMPORT_HEADERS)
-    writer.writerow(["WH-SKU-001", "SHEIN-SKU-001", "30", "20", "10", "0.5", "4.20", "0.80"])
-    writer.writerow(["WH-SKU-001", "SHEIN-SKU-002", "", "", "", "", "", ""])
+    writer.writerow(["WH-SKU-001", "SHEIN-SKU-001", "30", "20", "10", "0.5", "4.20", "0.80", "0"])
+    writer.writerow(["WH-SKU-001", "SHEIN-SKU-002", "", "", "", "", "", "", ""])
     return Response(
         "\ufeff" + output.getvalue(),
         media_type="text/csv; charset=utf-8",
@@ -4381,8 +4388,8 @@ def api_sku_mapping_excel_template(token: str | None = None, shein_pnl_token: st
     worksheet = workbook.active
     worksheet.title = "sku_mappings"
     worksheet.append(SKU_MAPPING_IMPORT_HEADERS)
-    worksheet.append(["WH-SKU-001", "SHEIN-SKU-001", "30", "20", "10", "0.5", "4.20", "0.80"])
-    worksheet.append(["WH-SKU-001", "SHEIN-SKU-002", "", "", "", "", "", ""])
+    worksheet.append(["WH-SKU-001", "SHEIN-SKU-001", "30", "20", "10", "0.5", "4.20", "0.80", "0"])
+    worksheet.append(["WH-SKU-001", "SHEIN-SKU-002", "", "", "", "", "", "", ""])
     output = io.BytesIO()
     workbook.save(output)
     return Response(

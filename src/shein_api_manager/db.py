@@ -332,6 +332,7 @@ CREATE TABLE IF NOT EXISTS shein_warehouse_skus (
     cost_price numeric,
     purchase_price numeric,
     ocean_freight_price numeric,
+    operation_fee_price numeric NOT NULL DEFAULT 0,
     note text,
     enabled boolean NOT NULL DEFAULT true,
     created_at timestamptz NOT NULL DEFAULT now(),
@@ -347,6 +348,7 @@ ALTER TABLE shein_warehouse_skus
     ADD COLUMN IF NOT EXISTS cost_price numeric,
     ADD COLUMN IF NOT EXISTS purchase_price numeric,
     ADD COLUMN IF NOT EXISTS ocean_freight_price numeric,
+    ADD COLUMN IF NOT EXISTS operation_fee_price numeric NOT NULL DEFAULT 0,
     ADD COLUMN IF NOT EXISTS note text,
     ADD COLUMN IF NOT EXISTS enabled boolean NOT NULL DEFAULT true,
     ADD COLUMN IF NOT EXISTS created_at timestamptz NOT NULL DEFAULT now(),
@@ -470,6 +472,7 @@ CREATE TABLE IF NOT EXISTS shein_warehouse_skus (
     cost_price numeric,
     purchase_price numeric,
     ocean_freight_price numeric,
+    operation_fee_price numeric NOT NULL DEFAULT 0,
     note text,
     enabled boolean NOT NULL DEFAULT true,
     created_at timestamptz NOT NULL DEFAULT now(),
@@ -485,6 +488,7 @@ ALTER TABLE shein_warehouse_skus
     ADD COLUMN IF NOT EXISTS cost_price numeric,
     ADD COLUMN IF NOT EXISTS purchase_price numeric,
     ADD COLUMN IF NOT EXISTS ocean_freight_price numeric,
+    ADD COLUMN IF NOT EXISTS operation_fee_price numeric NOT NULL DEFAULT 0,
     ADD COLUMN IF NOT EXISTS note text,
     ADD COLUMN IF NOT EXISTS enabled boolean NOT NULL DEFAULT true,
     ADD COLUMN IF NOT EXISTS created_at timestamptz NOT NULL DEFAULT now(),
@@ -1189,10 +1193,11 @@ def serialize_warehouse_sku_row(row: Any) -> dict[str, Any]:
         "cost_price": row[7],
         "purchase_price": row[8],
         "ocean_freight_price": row[9],
-        "note": row[10],
-        "enabled": row[11],
-        "created_at": row[12],
-        "updated_at": row[13],
+        "operation_fee_price": row[10],
+        "note": row[11],
+        "enabled": row[12],
+        "created_at": row[13],
+        "updated_at": row[14],
     }
 
 
@@ -1217,7 +1222,8 @@ def list_warehouse_skus(
         rows = conn.execute(
             f"""
             SELECT id, shop_key, warehouse_sku, length_cm, width_cm, height_cm, weight_kg,
-                   cost_price, purchase_price, ocean_freight_price, note, enabled, created_at, updated_at
+                   cost_price, purchase_price, ocean_freight_price, operation_fee_price,
+                   note, enabled, created_at, updated_at
             FROM shein_warehouse_skus
             WHERE {where_sql}
             ORDER BY enabled DESC, warehouse_sku, id
@@ -1239,6 +1245,7 @@ def upsert_warehouse_sku(
     cost_price: Any = None,
     purchase_price: Any = None,
     ocean_freight_price: Any = None,
+    operation_fee_price: Any = None,
     note: str | None = None,
     enabled: bool = True,
     preserve_existing_values: bool = False,
@@ -1252,9 +1259,9 @@ def upsert_warehouse_sku(
             """
             INSERT INTO shein_warehouse_skus (
                 shop_key, warehouse_sku, length_cm, width_cm, height_cm, weight_kg,
-                cost_price, purchase_price, ocean_freight_price, note, enabled
+                cost_price, purchase_price, ocean_freight_price, operation_fee_price, note, enabled
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, COALESCE(%s, 0), %s, %s)
             ON CONFLICT (shop_key, warehouse_sku) DO UPDATE SET
                 length_cm = CASE WHEN %s THEN COALESCE(EXCLUDED.length_cm, shein_warehouse_skus.length_cm) ELSE EXCLUDED.length_cm END,
                 width_cm = CASE WHEN %s THEN COALESCE(EXCLUDED.width_cm, shein_warehouse_skus.width_cm) ELSE EXCLUDED.width_cm END,
@@ -1263,11 +1270,12 @@ def upsert_warehouse_sku(
                 cost_price = CASE WHEN %s THEN COALESCE(EXCLUDED.cost_price, shein_warehouse_skus.cost_price) ELSE COALESCE(EXCLUDED.cost_price, shein_warehouse_skus.cost_price) END,
                 purchase_price = CASE WHEN %s THEN COALESCE(EXCLUDED.purchase_price, shein_warehouse_skus.purchase_price) ELSE EXCLUDED.purchase_price END,
                 ocean_freight_price = CASE WHEN %s THEN COALESCE(EXCLUDED.ocean_freight_price, shein_warehouse_skus.ocean_freight_price) ELSE EXCLUDED.ocean_freight_price END,
+                operation_fee_price = CASE WHEN %s THEN COALESCE(%s, shein_warehouse_skus.operation_fee_price) ELSE EXCLUDED.operation_fee_price END,
                 note = COALESCE(EXCLUDED.note, shein_warehouse_skus.note),
                 enabled = EXCLUDED.enabled,
                 updated_at = now()
             RETURNING id, shop_key, warehouse_sku, length_cm, width_cm, height_cm, weight_kg,
-                      cost_price, purchase_price, ocean_freight_price, note, enabled,
+                      cost_price, purchase_price, ocean_freight_price, operation_fee_price, note, enabled,
                       created_at, updated_at, (xmax = 0) AS inserted
             """,
             (
@@ -1280,6 +1288,7 @@ def upsert_warehouse_sku(
                 cost_price,
                 purchase_price,
                 ocean_freight_price,
+                operation_fee_price,
                 note,
                 enabled,
                 preserve_existing_values,
@@ -1289,10 +1298,12 @@ def upsert_warehouse_sku(
                 preserve_existing_values,
                 preserve_existing_values,
                 preserve_existing_values,
+                preserve_existing_values,
+                operation_fee_price,
             ),
         ).fetchone()
     data = serialize_warehouse_sku_row(row)
-    return data, bool(row[14])
+    return data, bool(row[15])
 
 
 def bulk_upsert_warehouse_skus(database_url: str, *, shop_key: str, warehouse_skus: list[str]) -> dict[str, Any]:

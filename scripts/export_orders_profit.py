@@ -10,6 +10,7 @@ import pandas as pd
 import psycopg
 
 from shein_api_manager.config import load_settings
+from shein_api_manager.db import ensure_sku_mapping_schema
 
 
 BASE_DIR = Path(__file__).resolve().parents[1]
@@ -19,18 +20,9 @@ ORDER_ITEMS_PARQUET = EXPORT_DIR / "shein_order_items_profit.parquet"
 ORDERS_PARQUET = EXPORT_DIR / "shein_orders_profit_summary.parquet"
 NOTEBOOK_PATH = NOTEBOOK_DIR / "shein_order_profit_analysis.ipynb"
 
-# User supplied cost rules, USD per SKU package.
 REVENUE_EXCLUDED_ORDER_STATUSES = {"1", "2", "6"}
 AFTER_SALES_COST_ORDER_STATUSES = {"8", "9"}
 PENDING_PICKUP_ORDER_STATUS = "7"
-
-COST_RULES = {
-    10: {"product_cost": 1.87, "packaging_fee": 0.90, "composition": "10"},
-    20: {"product_cost": 2.69, "packaging_fee": 0.90, "composition": "20"},
-    30: {"product_cost": 1.87 + 2.69, "packaging_fee": 0.90 + 0.50, "composition": "10+20"},
-    50: {"product_cost": 6.21, "packaging_fee": 0.90, "composition": "50"},
-    100: {"product_cost": 6.21 * 2, "packaging_fee": 0.90 + 0.50, "composition": "50*2"},
-}
 
 
 def money(value: Any, default: float = 0.0) -> float:
@@ -40,6 +32,75 @@ def money(value: Any, default: float = 0.0) -> float:
         return float(value)
     except (TypeError, ValueError):
         return default
+
+
+def fetch_warehouse_costs() -> dict[str, dict[str, Any]]:
+    settings = load_settings()
+    if not settings.database_url:
+        raise RuntimeError("DATABASE_URL is required")
+    ensure_sku_mapping_schema(settings.database_url)
+    with psycopg.connect(settings.database_url) as conn:
+        rows = conn.execute(
+            """
+            SELECT m.shein_sku, m.warehouse_sku, m.warehouse_qty,
+                   w.purchase_price, w.ocean_freight_price, w.operation_fee_price
+            FROM shein_sku_mappings m
+            JOIN shein_warehouse_skus w
+              ON w.shop_key = m.shop_key AND w.warehouse_sku = m.warehouse_sku
+            WHERE m.shop_key = %s AND m.enabled = true AND w.enabled = true
+            ORDER BY m.updated_at DESC, m.id DESC
+            """,
+            (settings.shop_key,),
+        ).fetchall()
+    costs: dict[str, dict[str, Any]] = {}
+    for shein_sku, warehouse_sku, warehouse_qty, purchase_price, ocean_freight_price, operation_fee_price in rows:
+        sku_code = str(shein_sku or "").strip()
+        if not sku_code or sku_code in costs:
+            continue
+        costs[sku_code] = {
+            "warehouse_sku": str(warehouse_sku or "").strip(),
+            "warehouse_qty": warehouse_qty,
+            "purchase_price": purchase_price,
+            "ocean_freight_price": ocean_freight_price,
+            "operation_fee_price": operation_fee_price,
+        }
+    return costs
+
+
+def warehouse_cost_for_sku(sku_code: Any, costs: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    row = costs.get(str(sku_code or "").strip())
+    if not row:
+        return {
+            "warehouse_sku": "",
+            "warehouse_qty": 0.0,
+            "purchase": 0.0,
+            "ocean_freight": 0.0,
+            "operation_fee": 0.0,
+            "total": 0.0,
+            "matched": False,
+            "composition": "warehouse_cost_unmapped",
+        }
+    quantity = money(row.get("warehouse_qty"))
+    purchase = money(row.get("purchase_price"))
+    ocean_freight = money(row.get("ocean_freight_price"))
+    operation_fee = money(row.get("operation_fee_price"))
+    complete = quantity > 0 and all(
+        row.get(field) is not None
+        for field in ("purchase_price", "ocean_freight_price", "operation_fee_price")
+    )
+    return {
+        "warehouse_sku": row.get("warehouse_sku") or "",
+        "warehouse_qty": quantity,
+        "purchase": purchase * quantity,
+        "ocean_freight": ocean_freight * quantity,
+        "operation_fee": operation_fee * quantity,
+        "total": (purchase + ocean_freight + operation_fee) * quantity,
+        "matched": complete,
+        "composition": (
+            f"warehouse:{row.get('warehouse_sku') or ''}; "
+            f"({purchase:.4f}+{ocean_freight:.4f}+{operation_fee:.4f})x{quantity:g}"
+        ),
+    }
 
 
 def find_us_attr(goods: dict[str, Any]) -> str:
@@ -59,7 +120,7 @@ def find_us_attr(goods: dict[str, Any]) -> str:
 
 
 def _pcs_matches(value: str) -> list[int]:
-    pattern = r"(100|50|30|20|10)\s*[- ]?\s*(?:pcs?|pieces?|packs?)\b"
+    pattern = r"(\d+)\s*[- ]?\s*(?:pcs?|pieces?|packs?)\b"
     return [int(match) for match in re.findall(pattern, value or "", flags=re.IGNORECASE)]
 
 
@@ -79,18 +140,6 @@ def infer_pcs(goods: dict[str, Any]) -> int | None:
     if len(title_matches) == 1:
         return title_matches[0]
     return None
-
-
-def product_cost_for_pcs(pcs: int | None) -> tuple[float, float, str, bool]:
-    if pcs in COST_RULES:
-        rule = COST_RULES[pcs]
-        return (
-            float(rule["product_cost"]),
-            float(rule["packaging_fee"]),
-            str(rule["composition"]),
-            True,
-        )
-    return 0.0, 0.0, "unknown", False
 
 
 def fetch_orders() -> list[
@@ -136,6 +185,7 @@ def fetch_orders() -> list[
 
 def build_dataframes() -> tuple[pd.DataFrame, pd.DataFrame]:
     rows = fetch_orders()
+    warehouse_costs = fetch_warehouse_costs()
     item_rows: list[dict[str, Any]] = []
     for (
         order_no,
@@ -198,7 +248,11 @@ def build_dataframes() -> tuple[pd.DataFrame, pd.DataFrame]:
                 allocation_method = "equal"
 
             pcs = infer_pcs(goods)
-            product_cost, packaging_fee, composition, cost_rule_matched = product_cost_for_pcs(pcs)
+            warehouse_cost = warehouse_cost_for_sku(goods.get("skuCode"), warehouse_costs)
+            product_cost = warehouse_cost["total"]
+            packaging_fee = 0.0
+            composition = warehouse_cost["composition"]
+            cost_rule_matched = warehouse_cost["matched"]
             item_estimated_income = money(goods.get("estimatedIncome"))
             item_shein_cost_price = money(goods.get("costPrice"))
             item_performance_service_charge = money(goods.get("performanceServiceCharge"))
@@ -291,6 +345,11 @@ def build_dataframes() -> tuple[pd.DataFrame, pd.DataFrame]:
                     "goods_weight": goods_weight,
                     "allocation_method": allocation_method,
                     "allocation_ratio": allocation_ratio,
+                    "cost_warehouse_sku": warehouse_cost["warehouse_sku"],
+                    "cost_warehouse_qty": warehouse_cost["warehouse_qty"],
+                    "purchase_cost_usd": warehouse_cost["purchase"],
+                    "ocean_freight_cost_usd": warehouse_cost["ocean_freight"],
+                    "operation_fee_cost_usd": warehouse_cost["operation_fee"],
                     "cost_composition": composition,
                     "cost_rule_matched": cost_rule_matched,
                     "product_cost_rule_usd": product_cost,
@@ -333,6 +392,10 @@ def build_dataframes() -> tuple[pd.DataFrame, pd.DataFrame]:
     numeric_cols = [
         "goods_weight",
         "allocation_ratio",
+        "cost_warehouse_qty",
+        "purchase_cost_usd",
+        "ocean_freight_cost_usd",
+        "operation_fee_cost_usd",
         "product_cost_rule_usd",
         "packaging_fee_rule_usd",
         "internal_cost_usd",
@@ -420,13 +483,13 @@ def create_notebook() -> None:
     nb = nbf.v4.new_notebook()
     nb.cells = [
         nbf.v4.new_markdown_cell(
-            """# SHEIN 订单利润分析\n\n本 Notebook 基于已导出的 Parquet 数据分析最近同步订单利润。成本规则来自人工输入：\n\n- 10pcs：货品成本 1.87，打包费 0.90\n- 20pcs：货品成本 2.69，打包费 0.90\n- 50pcs：货品成本 6.21，打包费 0.90\n- 30pcs = 10 + 20，打包费 0.90 + 0.50 续件\n- 100pcs = 50 * 2，打包费 0.90 + 0.50 续件\n\n利润口径：非退货订单 `利润 = goods_estimatedIncome + sellerShippingFee按重量分摊 - totalPerformanceServiceCharge按重量分摊 - 货品成本 - 打包费`。订单级运费收入和履约物流费优先按商品 `goodsWeight` 分摊；缺重量时按收入占比分摊，再缺则平均分摊。订单状态 1/2/6 的收入和利润从 PnL 剔除；订单状态 7 仅在 `totalPerformanceServiceCharge > 0` 时计入，否则从 PnL 剔除；订单状态 8/9 的原始收入计入售后成本 `after_sales_cost_usd`；退货订单仍计入货品成本和打包费，但有效收入、有效运费、有效履约费和利润均按 0 进入 PnL；原始未调整金额保留在 `original_*` 字段。"""
+            """# SHEIN 订单利润分析\n\n本 Notebook 基于已导出的 Parquet 数据分析最近同步订单利润。货品成本来自仓库 SKU 主数据：(采购价 + 海运费 + 操作费) × 映射数量。未配置完整仓库成本的订单行会标记为未匹配，不使用 SHEIN 成本兜底。\n\n利润口径：非退货订单 `利润 = goods_estimatedIncome + sellerShippingFee按重量分摊 - totalPerformanceServiceCharge按重量分摊 - 货品成本 - 打包费`。订单级运费收入和履约物流费优先按商品 `goodsWeight` 分摊；缺重量时按收入占比分摊，再缺则平均分摊。订单状态 1/2/6 的收入和利润从 PnL 剔除；订单状态 7 仅在 `totalPerformanceServiceCharge > 0` 时计入，否则从 PnL 剔除；订单状态 8/9 的原始收入计入售后成本 `after_sales_cost_usd`；退货订单仍计入货品成本和打包费，但有效收入、有效运费、有效履约费和利润均按 0 进入 PnL；原始未调整金额保留在 `original_*` 字段。"""
         ),
         nbf.v4.new_code_cell(
             """from pathlib import Path\nimport pandas as pd\n\nBASE_DIR = Path('/home/ubuntu/shein-api-manager')\nitems = pd.read_parquet(BASE_DIR / 'exports/shein_order_items_profit.parquet')\norders = pd.read_parquet(BASE_DIR / 'exports/shein_orders_profit_summary.parquet')\n\nitems.shape, orders.shape"""
         ),
         nbf.v4.new_code_cell(
-            """summary = pd.DataFrame([{\n    '订单数': orders['order_no'].nunique(),\n    '商品行数': len(items),\n    '总收入_美元': items['gross_revenue_allocated_usd'].sum(),\n    '货品成本_美元': items['product_cost_rule_usd'].sum(),\n    '打包费_美元': items['packaging_fee_rule_usd'].sum(),\n    '内部成本_美元': items['internal_cost_usd'].sum(),\n    '利润_美元': items['profit_usd'].sum(),\n    '利润率': items['profit_usd'].sum() / items['gross_revenue_allocated_usd'].sum(),\n    '成本规则未匹配行数': (~items['cost_rule_matched']).sum(),\n}])\nsummary"""
+            """summary = pd.DataFrame([{\n    '订单数': orders['order_no'].nunique(),\n    '商品行数': len(items),\n    '总收入_美元': items['gross_revenue_allocated_usd'].sum(),\n    '货品成本_美元': items['product_cost_rule_usd'].sum(),\n    '打包费_美元': items['packaging_fee_rule_usd'].sum(),\n    '内部成本_美元': items['internal_cost_usd'].sum(),\n    '利润_美元': items['profit_usd'].sum(),\n    '利润率': items['profit_usd'].sum() / items['gross_revenue_allocated_usd'].sum(),\n    '仓库成本未匹配行数': (~items['cost_rule_matched']).sum(),\n}])\nsummary"""
         ),
         nbf.v4.new_code_cell(
             """by_pcs = (items.groupby('pcs', dropna=False)\n    .agg(商品行数=('goods_id','count'),\n         订单数=('order_no','nunique'),\n         收入=('gross_revenue_allocated_usd','sum'),\n         货品成本=('product_cost_rule_usd','sum'),\n         打包费=('packaging_fee_rule_usd','sum'),\n         利润=('profit_usd','sum'))\n    .reset_index())\nby_pcs['利润率'] = by_pcs['利润'] / by_pcs['收入']\nby_pcs.sort_values('利润', ascending=False)"""

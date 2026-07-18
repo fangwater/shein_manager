@@ -7,7 +7,9 @@ from fastapi import HTTPException
 
 os.environ["SHEIN_WEB_COOKIE_SECURE"] = "false"
 
-from shein_api_manager.db import INVENTORY_SCHEMA_SQL
+from shein_api_manager.db import INVENTORY_SCHEMA_SQL, SKU_MAPPING_SCHEMA_SQL
+from scripts.export_orders_profit import infer_pcs, warehouse_cost_for_sku
+
 from shein_api_manager.pnl_web import (
     inventory_cost_totals,
     inventory_currency,
@@ -43,6 +45,38 @@ class InventoryModelTests(unittest.TestCase):
         self.assertIn("cost_template_id bigint", INVENTORY_SCHEMA_SQL)
         self.assertIn("inventory_ticket_id bigint", INVENTORY_SCHEMA_SQL)
         self.assertNotIn("CREATE TABLE IF NOT EXISTS shein_inventory_tickets", INVENTORY_SCHEMA_SQL)
+
+    def test_warehouse_operation_fee_schema_defaults_to_zero(self) -> None:
+        self.assertIn("operation_fee_price numeric NOT NULL DEFAULT 0", SKU_MAPPING_SCHEMA_SQL)
+
+    def test_warehouse_cost_combines_three_costs_and_mapping_quantity(self) -> None:
+        costs = {
+            "SHEIN-1": {
+                "warehouse_sku": "WH-1",
+                "warehouse_qty": 2,
+                "purchase_price": 1.61,
+                "ocean_freight_price": 1.5,
+                "operation_fee_price": 0,
+            }
+        }
+
+        result = warehouse_cost_for_sku("SHEIN-1", costs)
+
+        self.assertTrue(result["matched"])
+        self.assertAlmostEqual(result["purchase"], 3.22)
+        self.assertAlmostEqual(result["ocean_freight"], 3.0)
+        self.assertAlmostEqual(result["operation_fee"], 0.0)
+        self.assertAlmostEqual(result["total"], 6.22)
+
+    def test_warehouse_cost_does_not_fallback_when_mapping_is_missing(self) -> None:
+        result = warehouse_cost_for_sku("UNKNOWN", {})
+
+        self.assertFalse(result["matched"])
+        self.assertEqual(result["total"], 0.0)
+        self.assertEqual(result["composition"], "warehouse_cost_unmapped")
+
+    def test_pcs_metadata_is_not_limited_to_old_cost_rule_sizes(self) -> None:
+        self.assertEqual(infer_pcs({"sellerSku": "SP+D-1PC-41CM"}), 1)
 
     def test_inventory_lines_support_multiple_skus_and_calculate_amount(self) -> None:
         lines = normalize_inventory_lines(

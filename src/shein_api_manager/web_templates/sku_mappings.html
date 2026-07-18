@@ -47,7 +47,7 @@
   <div class="modal-card">
     <div class="modal-head"><h2>导入映射</h2><button class="close-btn" type="button" data-close="importModal">×</button></div>
     <div class="field"><label>Excel / CSV</label><input id="importFile" type="file" accept=".csv,.xlsx,.xlsm,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel.sheet.macroenabled.12"></div>
-    <div class="hint">列：warehouse_sku, shein_sku, length_cm, width_cm, height_cm, weight_kg, purchase_price, ocean_freight_price。</div>
+    <div class="hint">列：warehouse_sku, shein_sku, length_cm, width_cm, height_cm, weight_kg, purchase_price, ocean_freight_price, operation_fee_price。</div>
     <div class="hint" id="importStatus"></div>
     <div class="modal-actions"><button class="btn secondary" type="button" data-close="importModal">取消</button><button class="btn" id="importBtn" type="button">导入</button></div>
   </div>
@@ -65,8 +65,8 @@
 const $=id=>document.getElementById(id);
 const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 let state={rows:[],unmappedRows:[],warehouseSkus:[],sheinSkus:[],settings:{},warehouseDrafts:{},mappingDrafts:{},addWarehouseSku:''};
-const numberFields=['lengthCm','widthCm','heightCm','weightKg','purchasePrice','oceanFreightPrice'];
-const fieldLabels={lengthCm:'长cm',widthCm:'宽cm',heightCm:'高cm',weightKg:'重量kg',purchasePrice:'采购',oceanFreightPrice:'海运'};
+const numberFields=['lengthCm','widthCm','heightCm','weightKg','purchasePrice','oceanFreightPrice','operationFeePrice'];
+const fieldLabels={lengthCm:'长cm',widthCm:'宽cm',heightCm:'高cm',weightKg:'重量kg',purchasePrice:'采购',oceanFreightPrice:'海运',operationFeePrice:'操作'};
 function toast(msg,bad=false){const el=$('toast');el.textContent=msg;el.className='toast show'+(bad?' bad':'');clearTimeout(window.toastTimer);window.toastTimer=setTimeout(()=>el.className='toast',3000)}
 function hasValue(v){return v!==null&&v!==undefined&&v!==''}
 function num(v,d=3){if(!hasValue(v))return '';const n=Number(v);return Number.isFinite(n)?n.toLocaleString('en-US',{maximumFractionDigits:d}):''}
@@ -76,7 +76,7 @@ function optionalNumber(v){const text=String(v??'').trim();return text===''?null
 function sameNumber(a,b){const av=optionalNumber(a),bv=optionalNumber(b);return av===bv||(Number.isNaN(av)&&Number.isNaN(bv))}
 function skuMeta(code){return state.sheinSkus.find(s=>s.sku===code)||{}}
 function imageMarkup(url){return url?`<img class="thumb" src="${esc(url)}" alt="" loading="lazy">`:'<div class="thumb placeholder">SKU</div>'}
-function warehouseBase(w){return {warehouseSku:w.warehouseSku||'',lengthCm:w.lengthCm??null,widthCm:w.widthCm??null,heightCm:w.heightCm??null,weightKg:w.weightKg??null,purchasePrice:w.purchasePrice??null,oceanFreightPrice:w.oceanFreightPrice??null}}
+function warehouseBase(w){return {warehouseSku:w.warehouseSku||'',lengthCm:w.lengthCm??null,widthCm:w.widthCm??null,heightCm:w.heightCm??null,weightKg:w.weightKg??null,purchasePrice:w.purchasePrice??null,oceanFreightPrice:w.oceanFreightPrice??null,operationFeePrice:w.operationFeePrice??0}}
 function currentWarehouse(w){return state.warehouseDrafts[w.warehouseSku]||warehouseBase(w)}
 function warehouseChanged(base,next){return numberFields.some(k=>!sameNumber(base[k],next[k]))}
 function allMappingRows(){return [...state.rows.map(r=>({...r,type:'mapped'})),...state.unmappedRows.map(r=>({...r,type:'unmapped',id:null,warehouseSku:''}))]}

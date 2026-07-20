@@ -128,6 +128,7 @@ SHIPPING_FEE_DEFAULT_TOP_N = 12
 app = FastAPI(title=APP_TITLE)
 REFRESH_EXPORT_LOCK = threading.Lock()
 SYNC_LATEST_ORDERS_LOCK = threading.Lock()
+SYNC_LATEST_RETURNS_LOCK = threading.Lock()
 SESSION_SECRET_LOCK = threading.Lock()
 _SESSION_SECRET: bytes | None = None
 
@@ -1151,18 +1152,20 @@ def api_filters(token: str | None = None, shein_pnl_token: str | None = Cookie(d
     })
 
 
-@app.post("/api/refresh-pnl-export")
-def api_refresh_pnl_export(token: str | None = None, shein_pnl_token: str | None = Cookie(default=None, alias=COOKIE_NAME)) -> JSONResponse:
-    require_auth(token, shein_pnl_token, permission=VIEW_PROFIT)
-    script_path = BASE_DIR / "scripts" / "export_orders_profit.py"
-    if not script_path.exists():
-        raise HTTPException(status_code=500, detail=f"missing export script: {script_path}")
-    if not REFRESH_EXPORT_LOCK.acquire(blocking=False):
-        raise HTTPException(status_code=409, detail="profit export is already running")
+def run_json_script(
+    command: list[str],
+    *,
+    lock: threading.Lock,
+    busy_message: str,
+    failure_message: str,
+    timeout_message: str,
+) -> dict[str, Any]:
+    if not lock.acquire(blocking=False):
+        raise HTTPException(status_code=409, detail=busy_message)
     try:
         try:
             result = subprocess.run(
-                [sys.executable, str(script_path)],
+                command,
                 cwd=str(BASE_DIR),
                 capture_output=True,
                 text=True,
@@ -1170,67 +1173,100 @@ def api_refresh_pnl_export(token: str | None = None, shein_pnl_token: str | None
                 check=False,
             )
         except subprocess.TimeoutExpired as exc:
-            raise HTTPException(status_code=504, detail="profit export timed out after 300 seconds") from exc
+            raise HTTPException(status_code=504, detail=timeout_message) from exc
     finally:
-        REFRESH_EXPORT_LOCK.release()
+        lock.release()
     stdout = (result.stdout or "").strip()
     stderr = (result.stderr or "").strip()
     if result.returncode != 0:
         raise HTTPException(
             status_code=500,
             detail={
-                "message": "profit export failed",
+                "message": failure_message,
                 "returnCode": result.returncode,
                 "stdout": stdout[-4000:],
                 "stderr": stderr[-4000:],
             },
         )
     try:
-        export = json.loads(stdout) if stdout else {}
+        return json.loads(stdout) if stdout else {}
     except json.JSONDecodeError:
-        export = {"stdout": stdout[-4000:]}
-    return JSONResponse({"status": "ok", "export": export})
+        return {"stdout": stdout[-4000:]}
+
+
+def refresh_pnl_export() -> dict[str, Any]:
+    script_path = BASE_DIR / "scripts" / "export_orders_profit.py"
+    if not script_path.exists():
+        raise HTTPException(status_code=500, detail=f"missing export script: {script_path}")
+    return run_json_script(
+        [sys.executable, str(script_path)],
+        lock=REFRESH_EXPORT_LOCK,
+        busy_message="profit export is already running",
+        failure_message="profit export failed",
+        timeout_message="profit export timed out after 300 seconds",
+    )
+
+
+def sync_latest_dataset(data_type: str) -> dict[str, Any]:
+    script_path = BASE_DIR / "scripts" / "sync_latest_shein_data.py"
+    if not script_path.exists():
+        raise HTTPException(status_code=500, detail=f"missing sync script: {script_path}")
+    locks = {
+        "orders": SYNC_LATEST_ORDERS_LOCK,
+        "returns": SYNC_LATEST_RETURNS_LOCK,
+    }
+    if data_type not in locks:
+        raise ValueError(f"unsupported latest sync data type: {data_type}")
+    label = "order" if data_type == "orders" else "return"
+    return run_json_script(
+        [sys.executable, str(script_path), "--data", data_type],
+        lock=locks[data_type],
+        busy_message=f"latest {label} sync is already running",
+        failure_message=f"latest {label} sync failed",
+        timeout_message=f"latest {label} sync timed out after 300 seconds",
+    )
+
+
+def sync_order_backed_page_data() -> dict[str, Any]:
+    sync = sync_latest_dataset("orders")
+    export = refresh_pnl_export()
+    return {"status": "ok", "sync": sync, "export": export}
+
+
+def sync_return_page_data() -> dict[str, Any]:
+    sync = sync_latest_dataset("returns")
+    export = refresh_pnl_export()
+    return {"status": "ok", "sync": sync, "export": export}
+
+
+@app.post("/api/refresh-pnl-export")
+def api_refresh_pnl_export(token: str | None = None, shein_pnl_token: str | None = Cookie(default=None, alias=COOKIE_NAME)) -> JSONResponse:
+    require_auth(token, shein_pnl_token, permission=VIEW_PROFIT)
+    return JSONResponse({"status": "ok", "export": refresh_pnl_export()})
 
 
 @app.post("/api/sync-latest-orders")
 def api_sync_latest_orders(token: str | None = None, shein_pnl_token: str | None = Cookie(default=None, alias=COOKIE_NAME)) -> JSONResponse:
     require_auth(token, shein_pnl_token, permission=VIEW_PROFIT)
-    script_path = BASE_DIR / "scripts" / "sync_latest_shein_data.py"
-    if not script_path.exists():
-        raise HTTPException(status_code=500, detail=f"missing sync script: {script_path}")
-    if not SYNC_LATEST_ORDERS_LOCK.acquire(blocking=False):
-        raise HTTPException(status_code=409, detail="latest order sync is already running")
-    try:
-        try:
-            result = subprocess.run(
-                [sys.executable, str(script_path), "--data", "orders"],
-                cwd=str(BASE_DIR),
-                capture_output=True,
-                text=True,
-                timeout=300,
-                check=False,
-            )
-        except subprocess.TimeoutExpired as exc:
-            raise HTTPException(status_code=504, detail="latest order sync timed out after 300 seconds") from exc
-    finally:
-        SYNC_LATEST_ORDERS_LOCK.release()
-    stdout = (result.stdout or "").strip()
-    stderr = (result.stderr or "").strip()
-    if result.returncode != 0:
-        raise HTTPException(
-            status_code=500,
-            detail={
-                "message": "latest order sync failed",
-                "returnCode": result.returncode,
-                "stdout": stdout[-4000:],
-                "stderr": stderr[-4000:],
-            },
-        )
-    try:
-        sync = json.loads(stdout) if stdout else {}
-    except json.JSONDecodeError:
-        sync = {"stdout": stdout[-4000:]}
-    return JSONResponse({"status": "ok", "sync": sync})
+    return JSONResponse({"status": "ok", "sync": sync_latest_dataset("orders")})
+
+
+@app.post("/api/returns/sync-latest")
+def api_sync_latest_returns(token: str | None = None, shein_pnl_token: str | None = Cookie(default=None, alias=COOKIE_NAME)) -> JSONResponse:
+    require_auth(token, shein_pnl_token, permission=VIEW_RETURNS)
+    return JSONResponse(sync_return_page_data())
+
+
+@app.post("/api/shipping-fee/sync-latest")
+def api_sync_latest_shipping_fee(token: str | None = None, shein_pnl_token: str | None = Cookie(default=None, alias=COOKIE_NAME)) -> JSONResponse:
+    require_auth(token, shein_pnl_token, permission=VIEW_SHIPPING_FEE)
+    return JSONResponse(sync_order_backed_page_data())
+
+
+@app.post("/api/logistics/sync-latest")
+def api_sync_latest_logistics(token: str | None = None, shein_pnl_token: str | None = Cookie(default=None, alias=COOKIE_NAME)) -> JSONResponse:
+    require_auth(token, shein_pnl_token, permission=VIEW_LOGISTICS)
+    return JSONResponse(sync_order_backed_page_data())
 
 
 @app.get("/api/data")

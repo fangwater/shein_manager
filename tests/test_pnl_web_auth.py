@@ -195,6 +195,67 @@ class PnlWebAuthTests(unittest.TestCase):
         self.assertEqual(run.call_args.kwargs["cwd"], os.path.dirname(os.path.dirname(__file__)))
         self.assertEqual(run.call_args.kwargs["timeout"], 300)
 
+    def test_operations_can_sync_latest_returns(self) -> None:
+        self.login("operations", "operations")
+        sync_completed = subprocess.CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout='{"returns":{"listReturnsSeen":4,"listReturnsInserted":3}}',
+            stderr="",
+        )
+        export_completed = subprocess.CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout='{"orders":4,"item_rows":7}',
+            stderr="",
+        )
+
+        with patch(
+            "shein_api_manager.pnl_web.subprocess.run",
+            side_effect=[sync_completed, export_completed],
+        ) as run:
+            response = self.client.post("/api/returns/sync-latest")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["sync"]["returns"]["listReturnsSeen"], 4)
+        self.assertEqual(response.json()["export"]["item_rows"], 7)
+        self.assertEqual(run.call_args_list[0].args[0][-2:], ["--data", "returns"])
+        self.assertTrue(run.call_args_list[1].args[0][-1].endswith("export_orders_profit.py"))
+
+    def test_operations_can_sync_and_rebuild_shipping_fee_data(self) -> None:
+        self.login("operations", "operations")
+        sync_completed = subprocess.CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout='{"orders":{"ordersSeen":5,"ordersInserted":4}}',
+            stderr="",
+        )
+        export_completed = subprocess.CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout='{"orders":5,"item_rows":8}',
+            stderr="",
+        )
+
+        with patch(
+            "shein_api_manager.pnl_web.subprocess.run",
+            side_effect=[sync_completed, export_completed],
+        ) as run:
+            response = self.client.post("/api/shipping-fee/sync-latest")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["sync"]["orders"]["ordersSeen"], 5)
+        self.assertEqual(response.json()["export"]["item_rows"], 8)
+        self.assertEqual(run.call_count, 2)
+        self.assertEqual(run.call_args_list[0].args[0][-2:], ["--data", "orders"])
+        self.assertTrue(run.call_args_list[1].args[0][-1].endswith("export_orders_profit.py"))
+
+    def test_page_sync_endpoints_enforce_page_permissions(self) -> None:
+        self.login("order-follow-up", "order-follow-up")
+
+        self.assertEqual(self.client.post("/api/logistics/sync-latest").status_code, 403)
+        self.assertEqual(self.client.post("/api/shipping-fee/sync-latest").status_code, 403)
+
     def test_tampered_cookie_is_rejected(self) -> None:
         login = self.login("temu-test", "temu-test")
         cookie = login.cookies[COOKIE_NAME]

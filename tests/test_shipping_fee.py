@@ -36,7 +36,29 @@ class ShippingFeeTests(unittest.TestCase):
                         "shipping_fee_day": day,
                         "shipping_fee_hit": hit,
                         "shipping_fee_value_usd": 2.5 if hit else 0.0,
-                        "order_no": f"{sku}-{day.date()}",
+                        "shipping_fee_allocated_usd": 2.5 if hit else 0.0,
+                        "order_no": f"ORDER-{day.date()}",
+                        "order_created_dt": day + pd.Timedelta(hours=10),
+                        "order_status_label": "已签收",
+                        "goods_id": f"G-{sku}-{day.date()}",
+                        "skc": f"PLATFORM-SKC-{sku}",
+                        "skc_name": f"SKC Name {sku}",
+                        "goods_title": title,
+                        "item_estimated_income": 10.0 if sku == "WH-A" else 20.0,
+                        "order_currency": "USD",
+                        "allocation_method": "revenue",
+                        "allocation_ratio": 0.4 if sku == "WH-A" else 0.6,
+                        "base_revenue_allocated_usd": 10.0 if sku == "WH-A" else 20.0,
+                        "gross_revenue_allocated_usd": (10.0 if sku == "WH-A" else 20.0) + (2.5 if hit else 0.0),
+                        "performance_service_charge_allocated_usd": 2.0 if sku == "WH-A" else 3.0,
+                        "order_product_total_price": 33.0,
+                        "order_total_service_charge": 3.0,
+                        "pnl_product_cost_usd": 1.0 if sku == "WH-A" else 2.0,
+                        "pnl_packaging_fee_usd": 0.5,
+                        "after_sales_cost_usd": 0.0,
+                        "profit_usd": ((10.0 if sku == "WH-A" else 20.0) + (2.5 if hit else 0.0)) - (2.0 if sku == "WH-A" else 3.0) - (1.0 if sku == "WH-A" else 2.0) - 0.5,
+                        "profit_margin": ((((10.0 if sku == "WH-A" else 20.0) + (2.5 if hit else 0.0)) - (2.0 if sku == "WH-A" else 3.0) - (1.0 if sku == "WH-A" else 2.0) - 0.5) / ((10.0 if sku == "WH-A" else 20.0) + (2.5 if hit else 0.0))),
+                        "pnl_policy": "standard",
                         "warehouse_sku_key": sku,
                         "warehouse_sku_label": sku,
                         "shein_sku_code": shein_sku,
@@ -94,6 +116,43 @@ class ShippingFeeTests(unittest.TestCase):
         data = response.json()
         self.assertEqual(data["summary"]["minPeriods"], 3)
         self.assertIsNone(data["table"][0]["currentRate"])
+
+    def test_unachieved_orders_return_parent_totals_and_all_order_items(self) -> None:
+        with patch("shein_api_manager.pnl_web.shipping_fee_effective_items", return_value=self.shipping_rows()):
+            response = self.client.get(
+                "/api/shipping-fee/unachieved-orders",
+                params={"warehouseSku": "WH-A", "start": "2026-01-01", "end": "2026-01-06"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["summary"]["orders"], 1)
+        self.assertEqual(data["summary"]["skus"], 2)
+        order = data["orders"][0]
+        self.assertEqual(order["orderNo"], "ORDER-2026-01-01")
+        self.assertEqual(order["orderFulfillmentFeeUsd"], 5.0)
+        self.assertEqual(order["orderProductTotalPrice"], 33.0)
+        self.assertEqual(order["orderServiceCharge"], 3.0)
+        self.assertEqual(order["orderRevenueUsd"], 32.5)
+        self.assertEqual(order["orderProfitUsd"], 23.5)
+        self.assertEqual(order["orderProfitMargin"], 0.7231)
+        self.assertEqual(order["orderShippingFeeUsd"], 2.5)
+        self.assertEqual(sum(item["fulfillmentFeeAllocatedUsd"] for item in order["items"]), order["orderFulfillmentFeeUsd"])
+        self.assertEqual(sum(item["revenueAllocatedUsd"] for item in order["items"]), order["orderRevenueUsd"])
+        target = next(item for item in order["items"] if item["warehouseSku"] == "WH-A")
+        self.assertTrue(target["unachievedTarget"])
+        self.assertEqual(target["platformSkc"], "PLATFORM-SKC-WH-A")
+        self.assertEqual(target["price"], 10.0)
+
+    def test_unachieved_order_page_is_available(self) -> None:
+        response = self.client.get(
+            "/shipping-fee/orders?warehouseSku=WH-A&start=2026-01-01&end=2026-01-06"
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("Shipping Fee 未达成订单", response.text)
+        self.assertIn("订单总履约费", response.text)
+        self.assertIn("订单利润", response.text)
 
 
 if __name__ == "__main__":

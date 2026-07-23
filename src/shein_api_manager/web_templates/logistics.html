@@ -19,5 +19,58 @@ function renderScatter(){const rows=state.skuTable;const maxFee=Math.max(1,...ro
 function renderStatus(){const rows=state.statusMix;document.getElementById('statusNote').textContent=`剔除待揽收/待发货/未确认`;chart('status').setOption({color:['#0f766e','#b42318','#b45309'],tooltip:{trigger:'axis',axisPointer:{type:'shadow'},formatter:ps=>ps.map(p=>`${p.marker}${p.seriesName}: ${fmtNum(p.value)}`).join('<br>')},legend:{top:0},grid:{left:82,right:20,top:42,bottom:34},xAxis:{type:'value',axisLabel:{formatter:v=>fmtNum(v)}},yAxis:{type:'category',data:rows.map(r=>r.statusLabel||r.order_status||'未知'),axisLabel:{color:'#667085'}},series:[{name:'有效行',type:'bar',stack:'lines',data:rows.map(r=>Number(r.effectiveLines||0))},{name:'剔除行',type:'bar',stack:'lines',data:rows.map(r=>Number(r.excludedLines||0))},{name:'售后行',type:'bar',data:rows.map(r=>Number(r.afterSalesLines||0))}]})}
 const numericCols=new Set(['lines','orders','fulfillmentFee','avgFulfillmentFee','avgFeePerOrder','medianFulfillmentFee','p75FulfillmentFee','maxFulfillmentFee','feeShare','feeRate','afterSalesLines','zeroFeeLines','avgWeight']);function compareRows(a,b,key,dir){const av=a[key]??'',bv=b[key]??'';if(numericCols.has(key)){const an=Number(av)||0,bn=Number(bv)||0;return (an===bn?0:(an>bn?1:-1))*dir}return String(av).localeCompare(String(bv))*dir}function sortRows(rows,key){const cur=state.sort;const dir=cur[0]===key?-cur[1]:-1;state.sort=[key,dir];return [...rows].sort((a,b)=>compareRows(a,b,key,dir))}
 function renderTable(rows){const q=document.getElementById('search').value.toLowerCase();let filtered=rows.filter(r=>(`${r.logistics_sku_code} ${r.logistics_sku_label}`).toLowerCase().includes(q));const [key,dir]=state.sort;filtered=[...filtered].sort((a,b)=>compareRows(a,b,key,dir));document.getElementById('tableStatus').textContent=`${filtered.length} 个 SKU / ${fmtNum(state.summary.effectiveLines||0)} 有效行`;if(!filtered.length){document.getElementById('skuTable').outerHTML='<table id="skuTable"><tr><td><div class="empty">暂无物流数据</div></td></tr></table>';return}const head='<tr><th data-k="logistics_sku_code">SHEIN SKU Code</th><th data-k="logistics_sku_label">规格</th><th data-k="lines">有效行</th><th data-k="orders">有效订单</th><th data-k="fulfillmentFee">履约费</th><th data-k="avgFulfillmentFee">平均每行</th><th data-k="avgFeePerOrder">平均每单</th><th data-k="medianFulfillmentFee">中位数</th><th data-k="p75FulfillmentFee">P75</th><th data-k="maxFulfillmentFee">最高单行</th><th data-k="feeShare">费用占比</th><th data-k="feeRate">费率</th><th data-k="afterSalesLines">售后行</th><th data-k="zeroFeeLines">0费用行</th><th data-k="avgWeight">平均重量</th></tr>';const body=filtered.map(r=>`<tr>${cell(`<span class="sku">${escapeHtml(r.logistics_sku_code||'-')}</span>`)}${cell(`<span class="sub">${escapeHtml(r.logistics_sku_label||'未匹配')}</span>`)}${cell(fmtNum(r.lines))}${cell(fmtNum(r.orders))}${cell(fmtMoney(r.fulfillmentFee))}${cell(fmtMoney(r.avgFulfillmentFee))}${cell(fmtMoney(r.avgFeePerOrder))}${cell(fmtMoney(r.medianFulfillmentFee))}${cell(fmtMoney(r.p75FulfillmentFee))}${cell(fmtMoney(r.maxFulfillmentFee))}${cell(fmtPct(r.feeShare))}${cell(fmtPct(r.feeRate))}${cell(r.afterSalesLines?`<span class="badge warn">${fmtNum(r.afterSalesLines)}</span>`:'0')}${cell(r.zeroFeeLines?`<span class="badge bad">${fmtNum(r.zeroFeeLines)}</span>`:'0')}${cell(Number(r.avgWeight||0).toFixed(3))}</tr>`).join('');const table=document.getElementById('skuTable');table.innerHTML=head+body;document.querySelectorAll('#skuTable th[data-k]').forEach(th=>th.onclick=()=>{state.skuTable=sortRows(state.skuTable,th.dataset.k);renderTable(state.skuTable)})}
-window.addEventListener('resize',()=>Object.values(charts).forEach(c=>c&&c.resize()));init();
+state.dimension='platform_sku';
+const logisticsFetch=window.fetch.bind(window);
+window.fetch=(input,options)=>{
+  if(typeof input==='string'&&input.includes('api/logistics/')){
+    const url=new URL(input,location.href);
+    url.searchParams.set('dimension',state.dimension);
+    return logisticsFetch(url.toString(),options)
+  }
+  return logisticsFetch(input,options)
+};
+function logisticsDimensionLabel(){return state.dimension==='warehouse_sku'?'仓库 SKU':'平台 SKU'}
+function updateLogisticsDimensionCopy(){
+  const label=logisticsDimensionLabel(),warehouse=state.dimension==='warehouse_sku';
+  const filterLabel=document.querySelector('.filters .field label');
+  if(filterLabel)filterLabel.textContent=label+'（可多选）';
+  document.getElementById('search').placeholder='搜索 '+label+(warehouse?'':' / 规格');
+  document.querySelectorAll('.panel h2').forEach(h=>{
+    if(h.textContent.includes('履约费排行'))h.textContent=label+' 履约费排行';
+    if(h.textContent.includes('费用散点'))h.textContent=label+' 费用散点';
+    if(h.textContent.includes('物流明细'))h.textContent=label+' 物流明细';
+  });
+  const cardKey=document.querySelector('#cards .card .k');
+  if(cardKey)cardKey.textContent='有效 '+label;
+  const headers=document.querySelectorAll('#skuTable th');
+  if(headers[0])headers[0].textContent=label;
+  if(headers[1])headers[1].textContent=warehouse?'平台 SKU 数':'规格';
+  document.getElementById('tableStatus').textContent=`${state.skuTable.length} 个${label} / ${fmtNum(state.summary.effectiveLines||0)} 有效行`;
+}
+async function reloadLogisticsDimension(){
+  const response=await fetch('api/logistics/filters');
+  if(!response.ok){alert('维度切换失败：'+await response.text());return}
+  const data=await response.json(),warehouse=state.dimension==='warehouse_sku';
+  document.getElementById('sku').innerHTML=(data.skus||[]).map(s=>{
+    const detail=warehouse?`${fmtNum(s.platformSkuCount)} 个平台 SKU`:s.label;
+    return `<option value="${escapeHtml(s.key)}">${escapeHtml(s.code||'-')} · ${escapeHtml(detail)} · ${fmtNum(s.lines)}行 · ${fmtMoney(s.fulfillmentFee)}</option>`
+  }).join('');
+  await loadData();
+  updateLogisticsDimensionCopy()
+}
+function installLogisticsDimensionControl(){
+  const field=document.querySelector('.filters .field'),control=document.createElement('div');
+  control.className='seg';control.id='skuDimension';control.style.marginBottom='10px';
+  control.innerHTML='<button type="button" data-dimension="platform_sku" class="active">平台 SKU</button><button type="button" data-dimension="warehouse_sku">仓库 SKU</button>';
+  field.insertBefore(control,field.firstChild);
+  control.querySelectorAll('button').forEach(button=>button.onclick=async()=>{
+    if(button.dataset.dimension===state.dimension)return;
+    state.dimension=button.dataset.dimension;
+    control.querySelectorAll('button').forEach(item=>item.classList.toggle('active',item===button));
+    updateLogisticsDimensionCopy();
+    await reloadLogisticsDimension()
+  })
+}
+installLogisticsDimensionControl();
+window.addEventListener('resize',()=>Object.values(charts).forEach(c=>c&&c.resize()));init().then(updateLogisticsDimensionCopy);
 </script></body></html>

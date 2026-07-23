@@ -112,6 +112,8 @@ SALES_EXCLUDED_POLICIES = {RETURN_PROFIT_ZEROED_POLICY, *REVENUE_EXCLUDED_POLICI
 LOGISTICS_EXCLUDED_STATUS_CODES = {"1", "2", "7"}
 LOGISTICS_EXCLUDED_STATUS_NORMALIZED = {"pending", "pending_shipment", "pending_pickup"}
 LOGISTICS_EXCLUDED_STATUS_PATTERN = r"待揽收|待发货|待处理|未确认|未发货"
+LOGISTICS_SKU_DIMENSION_PLATFORM = "platform_sku"
+LOGISTICS_SKU_DIMENSION_WAREHOUSE = "warehouse_sku"
 SHIPPING_FEE_DIMENSIONS = [
     {"value": "all", "label": "整体"},
     {"value": "warehouse_sku", "label": "仓库 SKU"},
@@ -348,6 +350,11 @@ def logistics_page(token: str | None = None, shein_pnl_token: str | None = Cooki
 @app.get("/shipping-fee", response_class=HTMLResponse)
 def shipping_fee_page(token: str | None = None, shein_pnl_token: str | None = Cookie(default=None, alias=COOKIE_NAME)) -> HTMLResponse:
     return page_response("shipping_fee.html", shein_pnl_token, permission=VIEW_SHIPPING_FEE)
+
+
+@app.get("/shipping-fee/orders", response_class=HTMLResponse)
+def shipping_fee_orders_page(token: str | None = None, shein_pnl_token: str | None = Cookie(default=None, alias=COOKIE_NAME)) -> HTMLResponse:
+    return page_response("shipping_fee_orders.html", shein_pnl_token, permission=VIEW_SHIPPING_FEE)
 
 
 @app.post("/login")
@@ -690,17 +697,36 @@ def logistics_sku_key(code: Any, label: Any) -> str:
     return f"{code_text}||{label_text}"
 
 
-def prepare_logistics_items(df: pd.DataFrame) -> pd.DataFrame:
+def normalize_logistics_sku_dimension(value: str | None) -> str:
+    if clean_text(value).lower() == LOGISTICS_SKU_DIMENSION_WAREHOUSE:
+        return LOGISTICS_SKU_DIMENSION_WAREHOUSE
+    return LOGISTICS_SKU_DIMENSION_PLATFORM
+
+
+def prepare_logistics_items(df: pd.DataFrame, dimension: str = LOGISTICS_SKU_DIMENSION_PLATFORM) -> pd.DataFrame:
     df = df.copy()
     if df.empty:
         return df
-    code_source = df["sku_code"] if "sku_code" in df else pd.Series("", index=df.index)
-    df["logistics_sku_code"] = code_source.fillna("").astype(str).str.strip()
-    df["logistics_sku_label"] = df["sku_label"].fillna("").astype(str).replace({"": "未匹配"})
-    df["logistics_sku_key"] = [
-        logistics_sku_key(code, label)
-        for code, label in zip(df["logistics_sku_code"], df["logistics_sku_label"])
-    ]
+    dimension = normalize_logistics_sku_dimension(dimension)
+    platform_source = df["shein_sku_code"] if "shein_sku_code" in df else df.get("sku_code", pd.Series("", index=df.index))
+    platform_code = platform_source.fillna("").astype(str).str.strip()
+    platform_label = df.get("sku_label", pd.Series("未匹配", index=df.index)).fillna("").astype(str).replace({"": "未匹配"})
+    df["logistics_platform_sku_code"] = platform_code
+    if dimension == LOGISTICS_SKU_DIMENSION_WAREHOUSE:
+        fallback_label = platform_code.map(lambda value: f"未映射 · {value or 'unknown'}")
+        fallback_key = platform_code.map(lambda value: f"__missing__:{value or 'unknown'}")
+        warehouse_label = df.get("warehouse_sku_label", fallback_label).fillna("").astype(str).str.strip()
+        warehouse_key = df.get("warehouse_sku_key", fallback_key).fillna("").astype(str).str.strip()
+        df["logistics_sku_code"] = warehouse_label.where(warehouse_label.ne(""), fallback_label)
+        df["logistics_sku_label"] = df["logistics_sku_code"]
+        df["logistics_sku_key"] = warehouse_key.where(warehouse_key.ne(""), fallback_key)
+    else:
+        df["logistics_sku_code"] = platform_code
+        df["logistics_sku_label"] = platform_label
+        df["logistics_sku_key"] = [
+            logistics_sku_key(code, label)
+            for code, label in zip(platform_code, platform_label)
+        ]
     status_code = df.get("order_status", pd.Series("", index=df.index)).fillna("").astype(str).str.strip()
     status_label = df.get("order_status_label", pd.Series("", index=df.index)).fillna("").astype(str).str.strip()
     status_normalized = df.get("order_status_normalized", pd.Series("", index=df.index)).fillna("").astype(str).str.strip()
@@ -1814,6 +1840,119 @@ def shipping_fee_date_bounds(df: pd.DataFrame, start: str | None, end: str | Non
     return start_day, end_day
 
 
+def shipping_fee_unachieved_order_payload(
+    df: pd.DataFrame,
+    *,
+    warehouse_sku: str,
+    start_day: pd.Timestamp,
+    end_day: pd.Timestamp,
+) -> dict[str, Any]:
+    selected_sku = clean_text(warehouse_sku)
+    if df.empty:
+        return {
+            "warehouseSku": selected_sku,
+            "startDate": start_day.strftime("%Y-%m-%d"),
+            "endDate": end_day.strftime("%Y-%m-%d"),
+            "summary": {"orders": 0, "skus": 0, "targetMissItems": 0, "currency": "", "productTotalPrice": 0.0, "serviceCharge": 0.0, "fulfillmentFeeUsd": 0.0, "revenueUsd": 0.0, "shippingFeeUsd": 0.0, "productCostUsd": 0.0, "packagingFeeUsd": 0.0, "afterSalesCostUsd": 0.0, "profitUsd": 0.0, "profitMargin": None},
+            "orders": [],
+        }
+    df = apply_shipping_fee_dimension(df, "warehouse_sku")
+    period_df = df.loc[df["shipping_fee_day"].between(start_day, end_day)].copy()
+    target_misses = period_df.loc[
+        period_df["shipping_fee_group_key"].eq(selected_sku) & ~period_df["shipping_fee_hit"]
+    ]
+    order_nos = {clean_text(value) for value in target_misses["order_no"].tolist() if clean_text(value)}
+    order_df = period_df.loc[period_df["order_no"].astype(str).isin(order_nos)].copy()
+    orders: list[dict[str, Any]] = []
+    for order_no, group in order_df.groupby("order_no", dropna=False, sort=False):
+        group = group.sort_values(["shein_sku_code", "goods_id"], na_position="last")
+        items: list[dict[str, Any]] = []
+        for row in group.to_dict(orient="records"):
+            platform_skc = clean_text(row.get("skc")) or clean_text(row.get("skc_name"))
+            warehouse_label = clean_text(row.get("warehouse_sku_label"))
+            is_target = clean_text(row.get("shipping_fee_group_key")) == selected_sku
+            shipping_fee = number(row.get("shipping_fee_allocated_usd"))
+            items.append({
+                "platformSkc": platform_skc,
+                "skcName": clean_text(row.get("skc_name")),
+                "platformSku": clean_text(row.get("shein_sku_code")),
+                "warehouseSku": warehouse_label,
+                "title": clean_text(row.get("product_title")) or clean_text(row.get("goods_title")),
+                "attribute": clean_text(row.get("sku_label")),
+                "price": round(number(row.get("item_estimated_income")), 2),
+                "currency": clean_text(row.get("order_currency")) or "USD",
+                "allocationMethod": clean_text(row.get("allocation_method")),
+                "allocationRatio": float_or_none(row.get("allocation_ratio")),
+                "baseRevenueAllocatedUsd": round(number(row.get("base_revenue_allocated_usd")), 2),
+                "revenueAllocatedUsd": round(number(row.get("gross_revenue_allocated_usd")), 2),
+                "fulfillmentFeeAllocatedUsd": round(number(row.get("performance_service_charge_allocated_usd")), 2),
+                "shippingFeeAllocatedUsd": round(shipping_fee, 2),
+                "productCostUsd": round(number(row.get("pnl_product_cost_usd")), 2),
+                "packagingFeeUsd": round(number(row.get("pnl_packaging_fee_usd")), 2),
+                "afterSalesCostUsd": round(number(row.get("after_sales_cost_usd")), 2),
+                "profitUsd": round(number(row.get("profit_usd")), 2),
+                "profitMargin": float_or_none(row.get("profit_margin")),
+                "pnlPolicy": clean_text(row.get("pnl_policy")),
+                "selectedWarehouseSku": is_target,
+                "shippingFeeAchieved": shipping_fee > 0,
+                "unachievedTarget": is_target and shipping_fee <= 0,
+            })
+        created = group["order_created_dt"].min() if "order_created_dt" in group else pd.NaT
+        status = next((clean_text(value) for value in group.get("order_status_label", pd.Series(dtype="string")) if clean_text(value)), "")
+        order_currency = next((clean_text(value) for value in group.get("order_currency", pd.Series(dtype="string")) if clean_text(value)), "USD")
+        order_product_total = number(group["order_product_total_price"].iloc[0]) if "order_product_total_price" in group else 0.0
+        order_service_charge = number(group["order_total_service_charge"].iloc[0]) if "order_total_service_charge" in group else 0.0
+        order_revenue = round(sum(item["revenueAllocatedUsd"] for item in items), 2)
+        order_profit = round(sum(item["profitUsd"] for item in items), 2)
+        orders.append({
+            "orderNo": clean_text(order_no),
+            "orderCreatedAt": "" if pd.isna(created) else created.strftime("%Y-%m-%dT%H:%M:%S"),
+            "orderStatus": status,
+            "orderCurrency": order_currency,
+            "orderProductTotalPrice": round(order_product_total, 2),
+            "orderServiceCharge": round(order_service_charge, 2),
+            "skuCount": len(items),
+            "targetMissItems": sum(1 for item in items if item["unachievedTarget"]),
+            "orderFulfillmentFeeUsd": round(sum(item["fulfillmentFeeAllocatedUsd"] for item in items), 2),
+            "orderRevenueUsd": order_revenue,
+            "orderBaseRevenueUsd": round(sum(item["baseRevenueAllocatedUsd"] for item in items), 2),
+            "orderShippingFeeUsd": round(sum(item["shippingFeeAllocatedUsd"] for item in items), 2),
+            "orderProductCostUsd": round(sum(item["productCostUsd"] for item in items), 2),
+            "orderPackagingFeeUsd": round(sum(item["packagingFeeUsd"] for item in items), 2),
+            "orderAfterSalesCostUsd": round(sum(item["afterSalesCostUsd"] for item in items), 2),
+            "orderProfitUsd": order_profit,
+            "orderProfitMargin": None if not order_revenue else round(order_profit / order_revenue, 4),
+            "items": items,
+        })
+    orders.sort(key=lambda item: (str(item.get("orderCreatedAt") or ""), item["orderNo"]), reverse=True)
+    currencies = {order["orderCurrency"] for order in orders if order.get("orderCurrency")}
+    summary_currency = next(iter(currencies)) if len(currencies) == 1 else ""
+    summary_revenue = round(sum(order["orderRevenueUsd"] for order in orders), 2)
+    summary_profit = round(sum(order["orderProfitUsd"] for order in orders), 2)
+    return {
+        "warehouseSku": selected_sku,
+        "startDate": start_day.strftime("%Y-%m-%d"),
+        "endDate": end_day.strftime("%Y-%m-%d"),
+        "summary": {
+            "orders": len(orders),
+            "skus": sum(order["skuCount"] for order in orders),
+            "targetMissItems": sum(order["targetMissItems"] for order in orders),
+            "currency": summary_currency,
+            "productTotalPrice": round(sum(order["orderProductTotalPrice"] for order in orders), 2),
+            "serviceCharge": round(sum(order["orderServiceCharge"] for order in orders), 2),
+            "fulfillmentFeeUsd": round(sum(order["orderFulfillmentFeeUsd"] for order in orders), 2),
+            "revenueUsd": summary_revenue,
+            "shippingFeeUsd": round(sum(order["orderShippingFeeUsd"] for order in orders), 2),
+            "productCostUsd": round(sum(order["orderProductCostUsd"] for order in orders), 2),
+            "packagingFeeUsd": round(sum(order["orderPackagingFeeUsd"] for order in orders), 2),
+            "afterSalesCostUsd": round(sum(order["orderAfterSalesCostUsd"] for order in orders), 2),
+            "profitUsd": summary_profit,
+            "profitMargin": None if not summary_revenue else round(summary_profit / summary_revenue, 4),
+        },
+        "orders": orders,
+    }
+
+
 def shipping_fee_empty_response(
     *,
     dimension: str,
@@ -1928,10 +2067,12 @@ def api_shipping_fee_data(
     shifted_end = end_day - pd.Timedelta(days=shift_days)
     shifted_start = shifted_end - pd.Timedelta(days=rolling_days - 1)
 
+    period_df["shipping_fee_unachieved_order_no"] = period_df["order_no"].where(~period_df["shipping_fee_hit"], pd.NA)
     period_grouped = period_df.groupby(["shipping_fee_group_key", "shipping_fee_group_label"], dropna=False).agg(
         periodLines=("shipping_fee_hit", "size"),
         periodHitLines=("shipping_fee_hit", "sum"),
         periodOrders=("order_no", "nunique"),
+        periodUnachievedOrders=("shipping_fee_unachieved_order_no", "nunique"),
         periodShippingRevenue=("shipping_fee_value_usd", "sum"),
     ).reset_index()
     period_grouped["periodRate"] = period_grouped["periodHitLines"] / period_grouped["periodLines"].replace({0: pd.NA})
@@ -1951,6 +2092,7 @@ def api_shipping_fee_data(
             "periodHitLines": int(row.periodHitLines or 0),
             "periodRate": float_or_none(row.periodRate),
             "periodOrders": int(row.periodOrders or 0),
+            "unachievedOrders": int(row.periodUnachievedOrders or 0),
             "periodShippingRevenue": round(float(row.periodShippingRevenue or 0), 2),
             **group_metadata.get(clean_text(row.shipping_fee_group_key), {"imageUrl": "", "title": "", "sheinSku": ""}),
         }
@@ -2022,6 +2164,7 @@ def api_shipping_fee_data(
             "changePp": None if current_rate is None or shifted_rate is None else current_rate - shifted_rate,
             "periodRate": period.get("periodRate"),
             "periodOrders": int(period.get("periodOrders") or 0),
+            "unachievedOrders": int(period.get("unachievedOrders") or 0),
             "periodShippingRevenue": period.get("periodShippingRevenue") or 0.0,
         })
 
@@ -2077,10 +2220,47 @@ def api_shipping_fee_data(
     })
 
 
+@app.get("/api/shipping-fee/unachieved-orders")
+def api_shipping_fee_unachieved_orders(
+    warehouseSku: str | None = None,
+    start: str | None = None,
+    end: str | None = None,
+    token: str | None = None,
+    shein_pnl_token: str | None = Cookie(default=None, alias=COOKIE_NAME),
+) -> JSONResponse:
+    require_auth(token, shein_pnl_token, permission=VIEW_SHIPPING_FEE)
+    warehouse_sku = clean_text(warehouseSku)
+    if not warehouse_sku:
+        raise HTTPException(status_code=400, detail="warehouseSku is required")
+    df = shipping_fee_effective_items()
+    if df.empty:
+        now = pd.Timestamp.now().floor("D")
+        payload = shipping_fee_unachieved_order_payload(
+            df,
+            warehouse_sku=warehouse_sku,
+            start_day=now,
+            end_day=now,
+        )
+        return JSONResponse(serialize_row(payload))
+    start_day, end_day = shipping_fee_date_bounds(df, start, end)
+    payload = shipping_fee_unachieved_order_payload(
+        df,
+        warehouse_sku=warehouse_sku,
+        start_day=start_day,
+        end_day=end_day,
+    )
+    return JSONResponse(serialize_row(payload))
+
+
 @app.get("/api/logistics/filters")
-def api_logistics_filters(token: str | None = None, shein_pnl_token: str | None = Cookie(default=None, alias=COOKIE_NAME)) -> JSONResponse:
+def api_logistics_filters(
+    dimension: str | None = None,
+    token: str | None = None,
+    shein_pnl_token: str | None = Cookie(default=None, alias=COOKIE_NAME),
+) -> JSONResponse:
     require_auth(token, shein_pnl_token, permission=VIEW_LOGISTICS)
-    df = prepare_logistics_items(load_items())
+    selected_dimension = normalize_logistics_sku_dimension(dimension)
+    df = prepare_logistics_items(enrich_pnl_items_with_relations(load_items()), selected_dimension)
     effective = df.loc[df["logistics_effective_line"]] if not df.empty else df
     sku_source = effective if not effective.empty else df
     skus: list[dict[str, Any]] = []
@@ -2091,6 +2271,7 @@ def api_logistics_filters(token: str | None = None, shein_pnl_token: str | None 
                 lines=("goods_id", "count"),
                 orders=("order_no", "nunique"),
                 fulfillmentFee=("logistics_fulfillment_fee_usd", "sum"),
+                platformSkuCount=("logistics_platform_sku_code", "nunique"),
             )
             .reset_index()
             .sort_values(["fulfillmentFee", "lines", "logistics_sku_label"], ascending=[False, False, True])
@@ -2103,6 +2284,7 @@ def api_logistics_filters(token: str | None = None, shein_pnl_token: str | None 
                 "lines": int(row.lines),
                 "orders": int(row.orders),
                 "fulfillmentFee": round(float(row.fulfillmentFee or 0), 2),
+                "platformSkuCount": int(row.platformSkuCount),
             }
             for row in grouped.itertuples(index=False)
         ]
@@ -2110,6 +2292,7 @@ def api_logistics_filters(token: str | None = None, shein_pnl_token: str | None 
     max_dt = df["order_created_dt"].max() if not df.empty else pd.NaT
     return JSONResponse({
         "shop": "default · shein-us",
+        "dimension": selected_dimension,
         "minTime": "" if pd.isna(min_dt) else min_dt.floor("h").strftime("%Y-%m-%dT%H:%M"),
         "maxTime": "" if pd.isna(max_dt) else max_dt.ceil("h").strftime("%Y-%m-%dT%H:%M"),
         "skus": skus,
@@ -2120,13 +2303,15 @@ def api_logistics_filters(token: str | None = None, shein_pnl_token: str | None 
 @app.get("/api/logistics/data")
 def api_logistics_data(
     token: str | None = None,
+    dimension: str | None = None,
     sku: list[str] | None = Query(default=None),
     start: str | None = None,
     end: str | None = None,
     shein_pnl_token: str | None = Cookie(default=None, alias=COOKIE_NAME),
 ) -> JSONResponse:
     require_auth(token, shein_pnl_token, permission=VIEW_LOGISTICS)
-    all_items = prepare_logistics_items(load_items())
+    selected_dimension = normalize_logistics_sku_dimension(dimension)
+    all_items = prepare_logistics_items(enrich_pnl_items_with_relations(load_items()), selected_dimension)
     filtered = filter_logistics_items(all_items, sku_keys=sku or [], start=start, end=end)
     effective = filtered.loc[filtered["logistics_effective_line"]].copy() if not filtered.empty else filtered.copy()
     excluded = filtered.loc[filtered["logistics_excluded_line"]].copy() if not filtered.empty else filtered.copy()
@@ -2157,12 +2342,13 @@ def api_logistics_data(
     }
 
     if effective.empty:
-        return JSONResponse({"summary": summary, "skuTable": [], "daily": [], "statusMix": [], "feeBuckets": []})
+        return JSONResponse({"dimension": selected_dimension, "summary": summary, "skuTable": [], "daily": [], "statusMix": [], "feeBuckets": []})
 
     group_cols = ["logistics_sku_key", "logistics_sku_code", "logistics_sku_label"]
     sku_table = effective.groupby(group_cols, dropna=False).agg(
         lines=("goods_id", "count"),
         orders=("order_no", "nunique"),
+        platformSkuCount=("logistics_platform_sku_code", "nunique"),
         afterSalesLines=("logistics_after_sales_line", "sum"),
         zeroFeeLines=("logistics_zero_fee_line", "sum"),
         fulfillmentFee=("logistics_fulfillment_fee_usd", "sum"),
@@ -2179,6 +2365,8 @@ def api_logistics_data(
     sku_table["feeRate"] = sku_table["fulfillmentFee"] / sku_table["revenue"].replace({0: pd.NA})
     sku_table["avgWeight"] = sku_table["weight"] / sku_table["lines"].replace({0: pd.NA})
     sku_table = sku_table.sort_values(["fulfillmentFee", "avgFulfillmentFee"], ascending=[False, False])
+    if selected_dimension == LOGISTICS_SKU_DIMENSION_WAREHOUSE:
+        sku_table["logistics_sku_label"] = sku_table["platformSkuCount"].map(lambda value: f"{int(value)} 个平台 SKU")
 
     daily = effective.assign(day=effective["order_created_dt"].dt.floor("d")).groupby("day", dropna=False).agg(
         lines=("goods_id", "count"),
@@ -2201,6 +2389,7 @@ def api_logistics_data(
     ).reset_index().sort_values(["lines", "statusLabel"], ascending=[False, True])
 
     return JSONResponse({
+        "dimension": selected_dimension,
         "summary": summary,
         "skuTable": [serialize_row(row) for row in sku_table.to_dict(orient="records")],
         "daily": [serialize_row(row) for row in daily.to_dict(orient="records")],

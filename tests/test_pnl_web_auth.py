@@ -167,6 +167,7 @@ class PnlWebAuthTests(unittest.TestCase):
         self.assertEqual(self.client.get("/").status_code, 303)
         self.assertEqual(self.client.get("/api/filters").status_code, 403)
         self.assertEqual(self.client.get("/api/data").status_code, 403)
+        self.assertEqual(self.client.get("/api/orders").status_code, 403)
         self.assertEqual(self.client.post("/api/sync-latest-orders").status_code, 403)
 
         mappings = self.client.get("/sku-mappings")

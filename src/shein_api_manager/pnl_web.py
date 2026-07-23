@@ -26,11 +26,13 @@ from psycopg.rows import dict_row
 from fastapi import Body, Cookie, FastAPI, File, Form, HTTPException, Query, UploadFile
 
 from .config import load_settings
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
 
 BASE_DIR = Path(__file__).resolve().parents[2]
 TEMPLATE_DIR = Path(__file__).resolve().parent / "web_templates"
+STATIC_DIR = Path(__file__).resolve().parent / "web_static"
 ITEMS_PATH = BASE_DIR / "exports" / "shein_order_items_profit.parquet"
+ECHARTS_PATH = STATIC_DIR / "echarts-5.5.1.min.js"
 COOKIE_NAME = "shein_pnl_session"
 LEGACY_COOKIE_NAME = "shein_pnl_token"
 COOKIE_SECURE = os.getenv("SHEIN_WEB_COOKIE_SECURE", "true").strip().lower() not in {"0", "false", "no"}
@@ -124,6 +126,21 @@ SHIPPING_FEE_DEFAULT_ROLLING_DAYS = 7
 SHIPPING_FEE_DEFAULT_MIN_PERIODS = SHIPPING_FEE_DEFAULT_ROLLING_DAYS
 SHIPPING_FEE_DEFAULT_SHIFT_DAYS = 7
 SHIPPING_FEE_DEFAULT_TOP_N = 12
+PNL_ORDER_PAGE_SIZE = 100
+PNL_ORDER_MAX_PAGE_SIZE = 200
+PNL_ORDER_SCATTER_LIMIT = 2000
+PNL_ORDER_SORT_COLUMNS = {
+    "order_no",
+    "orderCreated",
+    "lines",
+    "grossRevenue",
+    "performanceFee",
+    "productCost",
+    "packagingFee",
+    "afterSalesCost",
+    "profit",
+    "margin",
+}
 
 app = FastAPI(title=APP_TITLE)
 REFRESH_EXPORT_LOCK = threading.Lock()
@@ -273,6 +290,17 @@ def page_response(template_name: str, cookie_value: str | None, *, permission: s
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.get("/assets/echarts-5.5.1.min.js", include_in_schema=False)
+def echarts_asset() -> FileResponse:
+    if not ECHARTS_PATH.exists():
+        raise HTTPException(status_code=404, detail="ECharts asset is missing")
+    return FileResponse(
+        ECHARTS_PATH,
+        media_type="text/javascript",
+        headers={"Cache-Control": "public, max-age=31536000, immutable"},
+    )
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -1114,6 +1142,120 @@ def add_profit_comparison(summary: dict[str, Any], actual_summary: dict[str, Any
     }
 
 
+def daily_profit_trend(df: pd.DataFrame) -> pd.DataFrame:
+    daily = df.assign(day=df["order_created_dt"].dt.floor("D")).groupby("day", dropna=False).agg(
+        orders=("order_no", "nunique"),
+        estimatedOrders=("estimated_order_no", "nunique"),
+        revenue=("gross_revenue_allocated_usd", "sum"),
+        profit=("profit_usd", "sum"),
+        salesRevenue=("sales_gross_revenue", "sum"),
+        salesProfit=("sales_profit", "sum"),
+    ).reset_index().sort_values("day")
+    daily["margin"] = daily["salesProfit"] / daily["salesRevenue"].replace({0: pd.NA})
+    return daily
+
+
+def build_pnl_order_table(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return pd.DataFrame(columns=[
+            "order_no", "orderCreated", "orderStatus", "pnlPolicy", "isEstimated",
+            "estimatedLines", "estimateMissingLines", "estimatedFulfillmentFee",
+            "returnDetected", "returnStatus", "lines", "skus", "sheinSkus", "skcs",
+            "missingMappingLines", "grossRevenue", "performanceFee", "productCost",
+            "packagingFee", "afterSalesCost", "profit", "margin",
+        ])
+    order_table = df.groupby("order_no", dropna=False).agg(
+        orderCreated=("order_created_at", "first"),
+        orderStatus=("order_status_label", "first"),
+        pnlPolicy=("pnl_policy", "first"),
+        isEstimated=("is_estimated_pnl", "max"),
+        estimatedLines=("is_estimated_pnl", "sum"),
+        estimateMissingLines=("pnl_estimate_missing", "sum"),
+        estimatedFulfillmentFee=("estimated_fulfillment_fee_allocated_usd", "sum"),
+        returnDetected=("return_detected", "max"),
+        returnStatus=("return_status", compact_series),
+        lines=("goods_id", "count"),
+        skus=("warehouse_sku_label", compact_series),
+        sheinSkus=("shein_sku_code", compact_series),
+        skcs=("skc_name", compact_series),
+        missingMappingLines=("warehouse_mapping_missing", "sum"),
+        grossRevenue=("gross_revenue_allocated_usd", "sum"),
+        performanceFee=("performance_service_charge_allocated_usd", "sum"),
+        productCost=("pnl_product_cost_usd", "sum"),
+        packagingFee=("pnl_packaging_fee_usd", "sum"),
+        afterSalesCost=("after_sales_cost_usd", "sum"),
+        profit=("profit_usd", "sum"),
+    ).reset_index()
+    order_table["margin"] = order_table["profit"] / order_table["grossRevenue"].replace({0: pd.NA})
+    return order_table
+
+
+def paginate_pnl_orders(
+    order_table: pd.DataFrame,
+    *,
+    page: int = 1,
+    page_size: int = PNL_ORDER_PAGE_SIZE,
+    search: str | None = None,
+    sort_key: str | None = None,
+    direction: str | None = None,
+) -> tuple[pd.DataFrame, dict[str, int]]:
+    try:
+        page = max(1, int(page))
+    except (TypeError, ValueError):
+        page = 1
+    try:
+        page_size = max(1, min(PNL_ORDER_MAX_PAGE_SIZE, int(page_size)))
+    except (TypeError, ValueError):
+        page_size = PNL_ORDER_PAGE_SIZE
+
+    filtered = order_table
+    query = clean_text(search).lower()
+    if query and not filtered.empty:
+        haystack = pd.Series("", index=filtered.index, dtype="string")
+        for column in ("order_no", "skus", "sheinSkus", "skcs", "returnStatus"):
+            if column in filtered:
+                haystack = haystack.str.cat(filtered[column].fillna("").astype("string"), sep=" ")
+        filtered = filtered.loc[haystack.str.lower().str.contains(query, regex=False, na=False)]
+
+    selected_sort = sort_key if sort_key in PNL_ORDER_SORT_COLUMNS else "profit"
+    ascending = clean_text(direction).lower() != "desc"
+    if not filtered.empty:
+        filtered = filtered.sort_values(selected_sort, ascending=ascending, kind="stable", na_position="last")
+
+    total = len(filtered)
+    pages = max(1, (total + page_size - 1) // page_size)
+    page = min(page, pages)
+    start = (page - 1) * page_size
+    rows = filtered.iloc[start:start + page_size].copy()
+    return rows, {"page": page, "pageSize": page_size, "pages": pages, "total": total}
+
+
+def pnl_order_scatter_rows(order_table: pd.DataFrame) -> pd.DataFrame:
+    if order_table.empty:
+        return order_table
+    columns = ["order_no", "grossRevenue", "profit", "margin", "isEstimated", "missingMappingLines"]
+    return order_table.sort_values("profit", ascending=False).head(PNL_ORDER_SCATTER_LIMIT).loc[:, columns]
+
+
+def load_selected_pnl_items(
+    *,
+    skus: list[str],
+    start: str | None,
+    end: str | None,
+    mode: str,
+    estimate_method: str,
+) -> pd.DataFrame:
+    all_items = enrich_pnl_items_with_relations(load_items())
+    sku_fee_averages = build_sku_fulfillment_fee_averages(all_items)
+    filtered_items = filter_items(all_items, skus=skus, start=start, end=end)
+    return apply_pnl_mode(
+        filtered_items,
+        mode=mode,
+        estimate_method=estimate_method,
+        sku_fee_averages=sku_fee_averages,
+    )
+
+
 @app.get("/api/filters")
 def api_filters(token: str | None = None, shein_pnl_token: str | None = Cookie(default=None, alias=COOKIE_NAME)) -> JSONResponse:
     require_auth(token, shein_pnl_token, permission=VIEW_PROFIT)
@@ -1270,7 +1412,20 @@ def api_sync_latest_logistics(token: str | None = None, shein_pnl_token: str | N
 
 
 @app.get("/api/data")
-def api_data(token: str | None = None, sku: list[str] | None = Query(default=None), start: str | None = None, end: str | None = None, pnlMode: str | None = None, estimateMethod: str | None = None, shein_pnl_token: str | None = Cookie(default=None, alias=COOKIE_NAME)) -> JSONResponse:
+def api_data(
+    token: str | None = None,
+    sku: list[str] | None = Query(default=None),
+    start: str | None = None,
+    end: str | None = None,
+    pnlMode: str | None = None,
+    estimateMethod: str | None = None,
+    orderPage: int = 1,
+    orderPageSize: int = PNL_ORDER_PAGE_SIZE,
+    orderSearch: str | None = None,
+    orderSort: str | None = None,
+    orderDirection: str | None = None,
+    shein_pnl_token: str | None = Cookie(default=None, alias=COOKIE_NAME),
+) -> JSONResponse:
     require_auth(token, shein_pnl_token, permission=VIEW_PROFIT)
     mode = normalize_pnl_mode(pnlMode)
     estimate_method = normalize_estimate_method(estimateMethod)
@@ -1288,7 +1443,15 @@ def api_data(token: str | None = None, sku: list[str] | None = Query(default=Non
     summary["mappedWarehouseSkuCount"] = int(df.loc[~df["warehouse_mapping_missing"], "warehouse_sku"].nunique()) if not df.empty else 0
     summary["skcCount"] = nunique_nonempty(df["skc_name"]) if not df.empty else 0
     if df.empty:
-        return JSONResponse({"summary": summary, "skuTable": [], "skcTable": [], "hourly": [], "orders": []})
+        return JSONResponse({
+            "summary": summary,
+            "skuTable": [],
+            "skcTable": [],
+            "daily": [],
+            "orderPoints": [],
+            "orders": [],
+            "orderPagination": {"page": 1, "pageSize": PNL_ORDER_PAGE_SIZE, "pages": 1, "total": 0},
+        })
 
     policy = df.get("pnl_policy", pd.Series("standard", index=df.index)).fillna("standard")
     sales_mask = ~policy.isin(SALES_EXCLUDED_POLICIES)
@@ -1403,44 +1566,67 @@ def api_data(token: str | None = None, sku: list[str] | None = Query(default=Non
     skc_table["avgProfit"] = skc_table["salesProfit"] / skc_table["salesLines"].replace({0: pd.NA})
     skc_table = skc_table.sort_values("profit", ascending=False)
 
-    hourly = df.assign(hour=df["order_created_dt"].dt.floor("h")).groupby("hour", dropna=False).agg(
-        orders=("order_no", "nunique"),
-        estimatedOrders=("estimated_order_no", "nunique"),
-        revenue=("gross_revenue_allocated_usd", "sum"),
-        profit=("profit_usd", "sum"),
-    ).reset_index().sort_values("hour")
+    daily = daily_profit_trend(df)
 
-    order_table = df.groupby("order_no", dropna=False).agg(
-        orderCreated=("order_created_at", "first"),
-        orderStatus=("order_status_label", "first"),
-        pnlPolicy=("pnl_policy", "first"),
-        isEstimated=("is_estimated_pnl", "max"),
-        estimatedLines=("is_estimated_pnl", "sum"),
-        estimateMissingLines=("pnl_estimate_missing", "sum"),
-        estimatedFulfillmentFee=("estimated_fulfillment_fee_allocated_usd", "sum"),
-        returnDetected=("return_detected", "max"),
-        returnStatus=("return_status", compact_series),
-        lines=("goods_id", "count"),
-        skus=("warehouse_sku_label", compact_series),
-        sheinSkus=("shein_sku_code", compact_series),
-        skcs=("skc_name", compact_series),
-        missingMappingLines=("warehouse_mapping_missing", "sum"),
-        grossRevenue=("gross_revenue_allocated_usd", "sum"),
-        performanceFee=("performance_service_charge_allocated_usd", "sum"),
-        productCost=("pnl_product_cost_usd", "sum"),
-        packagingFee=("pnl_packaging_fee_usd", "sum"),
-        afterSalesCost=("after_sales_cost_usd", "sum"),
-        profit=("profit_usd", "sum"),
-    ).reset_index()
-    order_table["margin"] = order_table["profit"] / order_table["grossRevenue"].replace({0: pd.NA})
-    order_table = order_table.sort_values("profit", ascending=False).head(2000)
+    order_table = build_pnl_order_table(df)
+    order_page, order_pagination = paginate_pnl_orders(
+        order_table,
+        page=orderPage,
+        page_size=orderPageSize,
+        search=orderSearch,
+        sort_key=orderSort,
+        direction=orderDirection,
+    )
+    order_points = pnl_order_scatter_rows(order_table)
 
     return JSONResponse({
         "summary": summary,
         "skuTable": [serialize_row(row) for row in sku_table.to_dict(orient="records")],
         "skcTable": [serialize_row(row) for row in skc_table.to_dict(orient="records")],
-        "hourly": [serialize_row(row) for row in hourly.to_dict(orient="records")],
-        "orders": [serialize_row(row) for row in order_table.to_dict(orient="records")],
+        "daily": [serialize_row(row) for row in daily.to_dict(orient="records")],
+        "orderPoints": [serialize_row(row) for row in order_points.to_dict(orient="records")],
+        "orders": [serialize_row(row) for row in order_page.to_dict(orient="records")],
+        "orderPagination": order_pagination,
+    })
+
+
+@app.get("/api/orders")
+def api_pnl_orders(
+    token: str | None = None,
+    sku: list[str] | None = Query(default=None),
+    start: str | None = None,
+    end: str | None = None,
+    pnlMode: str | None = None,
+    estimateMethod: str | None = None,
+    page: int = 1,
+    pageSize: int = PNL_ORDER_PAGE_SIZE,
+    search: str | None = None,
+    sort: str | None = None,
+    direction: str | None = None,
+    shein_pnl_token: str | None = Cookie(default=None, alias=COOKIE_NAME),
+) -> JSONResponse:
+    require_auth(token, shein_pnl_token, permission=VIEW_PROFIT)
+    mode = normalize_pnl_mode(pnlMode)
+    estimate_method = normalize_estimate_method(estimateMethod)
+    df = load_selected_pnl_items(
+        skus=sku or [],
+        start=start,
+        end=end,
+        mode=mode,
+        estimate_method=estimate_method,
+    )
+    order_table = build_pnl_order_table(df)
+    order_page, pagination = paginate_pnl_orders(
+        order_table,
+        page=page,
+        page_size=pageSize,
+        search=search,
+        sort_key=sort,
+        direction=direction,
+    )
+    return JSONResponse({
+        "orders": [serialize_row(row) for row in order_page.to_dict(orient="records")],
+        "orderPagination": pagination,
     })
 
 

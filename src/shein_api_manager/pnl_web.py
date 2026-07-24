@@ -28,6 +28,14 @@ from fastapi import Body, Cookie, FastAPI, File, Form, HTTPException, Query, Upl
 from .config import load_settings
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
 
+from .xlwms_shein_orders import query_shein_cost_order_page
+
+from .xlwms_bridge import (
+    get_sync_status as get_xlwms_sync_status,
+    query_cost_order_detail,
+    start_xlwms_sync,
+)
+
 BASE_DIR = Path(__file__).resolve().parents[2]
 TEMPLATE_DIR = Path(__file__).resolve().parent / "web_templates"
 STATIC_DIR = Path(__file__).resolve().parent / "web_static"
@@ -91,7 +99,7 @@ ACTUAL_PNL_MODE = "actual"
 ESTIMATED_PNL_MODE = "estimated"
 NAV_PERMISSION_HREFS = {
     VIEW_PROFIT: ("./",),
-    VIEW_LOGISTICS: ("logistics",),
+    VIEW_LOGISTICS: ("logistics", "logistics-costs", "../logistics", "../logistics-costs"),
     VIEW_SHIPPING_FEE: ("shipping-fee",),
     VIEW_RETURNS: ("returns",),
     ACCESS_SKU_MAPPINGS: ("sku-mappings",),
@@ -371,6 +379,11 @@ def logistics_page(token: str | None = None, shein_pnl_token: str | None = Cooki
     return page_response("logistics.html", shein_pnl_token, permission=VIEW_LOGISTICS)
 
 
+@app.get("/logistics-costs", response_class=HTMLResponse)
+def logistics_costs_page(token: str | None = None, shein_pnl_token: str | None = Cookie(default=None, alias=COOKIE_NAME)) -> HTMLResponse:
+    return page_response("logistics_costs.html", shein_pnl_token, permission=VIEW_LOGISTICS)
+
+
 @app.get("/shipping-fee", response_class=HTMLResponse)
 def shipping_fee_page(token: str | None = None, shein_pnl_token: str | None = Cookie(default=None, alias=COOKIE_NAME)) -> HTMLResponse:
     return page_response("shipping_fee.html", shein_pnl_token, permission=VIEW_SHIPPING_FEE)
@@ -415,6 +428,61 @@ def require_auth(token: str | None, cookie_token: str | None, *, permission: str
     if permission and not account.can(permission):
         raise HTTPException(status_code=403, detail="permission denied")
     return account
+
+
+@app.get("/api/logistics-costs/orders")
+def api_logistics_cost_orders(
+    search: str = "",
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, alias="pageSize", ge=1, le=200),
+    token: str | None = None,
+    shein_pnl_token: str | None = Cookie(default=None, alias=COOKIE_NAME),
+) -> dict[str, Any]:
+    require_auth(token, shein_pnl_token, permission=VIEW_LOGISTICS)
+    try:
+        return query_shein_cost_order_page(
+            shein_database_url=database_url(),
+            shop_key=load_settings().shop_key,
+            search=search,
+            page=page,
+            page_size=page_size,
+        )
+    except (ValueError, psycopg.Error) as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@app.get("/api/logistics-costs/detail")
+def api_logistics_cost_detail(
+    order_no: str = Query(..., alias="orderNo", min_length=1),
+    token: str | None = None,
+    shein_pnl_token: str | None = Cookie(default=None, alias=COOKIE_NAME),
+) -> dict[str, Any]:
+    require_auth(token, shein_pnl_token, permission=VIEW_LOGISTICS)
+    try:
+        return query_cost_order_detail(order_no)
+    except (ValueError, psycopg.Error) as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@app.get("/api/logistics-costs/sync")
+def api_logistics_cost_sync_status(
+    token: str | None = None,
+    shein_pnl_token: str | None = Cookie(default=None, alias=COOKIE_NAME),
+) -> dict[str, Any]:
+    require_auth(token, shein_pnl_token, permission=VIEW_LOGISTICS)
+    return get_xlwms_sync_status()
+
+
+@app.post("/api/logistics-costs/sync", status_code=202)
+def api_logistics_cost_sync(
+    detail_limit: int = Query(500, alias="detailLimit", ge=1, le=5000),
+    token: str | None = None,
+    shein_pnl_token: str | None = Cookie(default=None, alias=COOKIE_NAME),
+) -> dict[str, Any]:
+    require_auth(token, shein_pnl_token, permission=VIEW_LOGISTICS)
+    if not start_xlwms_sync(detail_limit=detail_limit):
+        raise HTTPException(status_code=409, detail="XLWMS sync is already running")
+    return get_xlwms_sync_status()
 
 
 def parse_shein_datetime(value: Any) -> pd.Series | pd.Timestamp:

@@ -114,6 +114,30 @@ LOGISTICS_EXCLUDED_STATUS_NORMALIZED = {"pending", "pending_shipment", "pending_
 LOGISTICS_EXCLUDED_STATUS_PATTERN = r"待揽收|待发货|待处理|未确认|未发货"
 LOGISTICS_SKU_DIMENSION_PLATFORM = "platform_sku"
 LOGISTICS_SKU_DIMENSION_WAREHOUSE = "warehouse_sku"
+LOGISTICS_SKU_COLOR_TOKENS = frozenset({
+    "apricot",
+    "beige",
+    "black",
+    "champagne",
+    "gray",
+    "grey",
+    "ivory",
+    "orange",
+    "pink",
+    "silver",
+    "white",
+    "blue",
+    "brown",
+    "cream",
+    "gold",
+    "green",
+    "khaki",
+    "navy",
+    "purple",
+    "red",
+    "tan",
+    "yellow",
+})
 SHIPPING_FEE_DIMENSIONS = [
     {"value": "all", "label": "整体"},
     {"value": "warehouse_sku", "label": "仓库 SKU"},
@@ -703,6 +727,95 @@ def normalize_logistics_sku_dimension(value: str | None) -> str:
     return LOGISTICS_SKU_DIMENSION_PLATFORM
 
 
+
+def normalize_logistics_spec_sku(value: Any) -> str:
+    """Remove only standalone color segments from a warehouse SKU."""
+    text = clean_text(value)
+    if not text:
+        return ""
+    color_pattern = "|".join(sorted(LOGISTICS_SKU_COLOR_TOKENS))
+    text = re.sub(rf"^(?:{color_pattern})(?=[\s_-])[\s_-]*", "", text, flags=re.IGNORECASE)
+    parts = [part.strip() for part in re.split(r"-+", text) if part.strip()]
+    spec_parts = [part for part in parts if part.casefold() not in LOGISTICS_SKU_COLOR_TOKENS]
+    return "-".join(spec_parts) or text
+
+
+def logistics_merged_spec_sku(
+    warehouse_sku: Any,
+    cost_warehouse_sku: Any,
+    goods_sn: Any,
+    pcs: Any,
+    sku_label: Any,
+) -> tuple[str, str]:
+    source = clean_text(warehouse_sku) or clean_text(cost_warehouse_sku)
+    if source:
+        label = normalize_logistics_spec_sku(source)
+    else:
+        family = clean_text(goods_sn) or "未映射"
+        attribute = normalize_logistics_spec_sku(sku_label)
+        pcs_number = number(pcs)
+        fallback_spec = attribute or (f"{pcs_number:g}Pcs" if pcs_number else "未匹配")
+        label = f"{family} · {fallback_spec}"
+    return label.casefold(), label
+
+
+def logistics_state_sku_average(df: pd.DataFrame) -> pd.DataFrame:
+    columns = [
+        "province",
+        "specSkuKey",
+        "specSkuLabel",
+        "lines",
+        "orders",
+        "platformSkuCount",
+        "colorSkuCount",
+        "fulfillmentFee",
+        "avgFulfillmentFee",
+    ]
+    if df.empty:
+        return pd.DataFrame(columns=columns)
+    source = df.copy()
+    province = source.get("province", pd.Series("", index=source.index)).fillna("").astype(str).str.strip().str.upper()
+    source["logistics_province"] = province.replace({"": "未知省州"})
+    grouped = source.groupby(
+        ["logistics_province", "logistics_spec_sku_key", "logistics_spec_sku_label"],
+        dropna=False,
+    ).agg(
+        lines=("goods_id", "count"),
+        orders=("order_no", "nunique"),
+        platformSkuCount=("logistics_platform_sku_code", "nunique"),
+        colorSkuCount=("logistics_color_sku", "nunique"),
+        fulfillmentFee=("logistics_fulfillment_fee_usd", "sum"),
+    ).reset_index()
+    grouped["avgFulfillmentFee"] = grouped["fulfillmentFee"] / grouped["lines"].replace({0: pd.NA})
+    grouped = grouped.rename(columns={
+        "logistics_province": "province",
+        "logistics_spec_sku_key": "specSkuKey",
+        "logistics_spec_sku_label": "specSkuLabel",
+    })
+    return grouped[columns].sort_values(
+        ["specSkuLabel", "avgFulfillmentFee", "lines", "province"],
+        ascending=[True, False, False, True],
+    )
+
+
+def logistics_state_order_share(df: pd.DataFrame) -> pd.DataFrame:
+    columns = ["province", "orders", "orderShare", "lines", "fulfillmentFee"]
+    if df.empty:
+        return pd.DataFrame(columns=columns)
+    source = df.copy()
+    province = source.get("province", pd.Series("", index=source.index)).fillna("").astype(str).str.strip().str.upper()
+    source["logistics_province"] = province.replace({"": "未知省州"})
+    grouped = source.groupby("logistics_province", dropna=False).agg(
+        orders=("order_no", "nunique"),
+        lines=("goods_id", "count"),
+        fulfillmentFee=("logistics_fulfillment_fee_usd", "sum"),
+    ).reset_index()
+    total_orders = int(source["order_no"].nunique())
+    grouped["orderShare"] = grouped["orders"] / total_orders if total_orders else 0
+    grouped = grouped.rename(columns={"logistics_province": "province"})
+    return grouped[columns].sort_values(["orders", "lines", "province"], ascending=[False, False, True])
+
+
 def prepare_logistics_items(df: pd.DataFrame, dimension: str = LOGISTICS_SKU_DIMENSION_PLATFORM) -> pd.DataFrame:
     df = df.copy()
     if df.empty:
@@ -712,6 +825,21 @@ def prepare_logistics_items(df: pd.DataFrame, dimension: str = LOGISTICS_SKU_DIM
     platform_code = platform_source.fillna("").astype(str).str.strip()
     platform_label = df.get("sku_label", pd.Series("未匹配", index=df.index)).fillna("").astype(str).replace({"": "未匹配"})
     df["logistics_platform_sku_code"] = platform_code
+    warehouse_source = df.get("warehouse_sku", pd.Series("", index=df.index)).fillna("").astype(str).str.strip()
+    cost_warehouse_source = df.get("cost_warehouse_sku", pd.Series("", index=df.index)).fillna("").astype(str).str.strip()
+    df["logistics_color_sku"] = warehouse_source.where(warehouse_source.ne(""), cost_warehouse_source)
+    merged_specs = [
+        logistics_merged_spec_sku(warehouse_sku, cost_warehouse_sku, goods_sn, pcs, sku_label)
+        for warehouse_sku, cost_warehouse_sku, goods_sn, pcs, sku_label in zip(
+            warehouse_source,
+            cost_warehouse_source,
+            df.get("goods_sn", pd.Series("", index=df.index)),
+            df.get("pcs", pd.Series(0, index=df.index)),
+            platform_label,
+        )
+    ]
+    df["logistics_spec_sku_key"] = [key for key, _ in merged_specs]
+    df["logistics_spec_sku_label"] = [label for _, label in merged_specs]
     if dimension == LOGISTICS_SKU_DIMENSION_WAREHOUSE:
         fallback_label = platform_code.map(lambda value: f"未映射 · {value or 'unknown'}")
         fallback_key = platform_code.map(lambda value: f"__missing__:{value or 'unknown'}")
@@ -2342,8 +2470,10 @@ def api_logistics_data(
     }
 
     if effective.empty:
-        return JSONResponse({"dimension": selected_dimension, "summary": summary, "skuTable": [], "daily": [], "statusMix": [], "feeBuckets": []})
+        return JSONResponse({"dimension": selected_dimension, "summary": summary, "skuTable": [], "stateSkuAverage": [], "stateOrderShare": [], "daily": [], "statusMix": [], "feeBuckets": []})
 
+    state_sku_average = logistics_state_sku_average(effective)
+    state_order_share = logistics_state_order_share(effective)
     group_cols = ["logistics_sku_key", "logistics_sku_code", "logistics_sku_label"]
     sku_table = effective.groupby(group_cols, dropna=False).agg(
         lines=("goods_id", "count"),
@@ -2392,6 +2522,8 @@ def api_logistics_data(
         "dimension": selected_dimension,
         "summary": summary,
         "skuTable": [serialize_row(row) for row in sku_table.to_dict(orient="records")],
+        "stateSkuAverage": [serialize_row(row) for row in state_sku_average.to_dict(orient="records")],
+        "stateOrderShare": [serialize_row(row) for row in state_order_share.to_dict(orient="records")],
         "daily": [serialize_row(row) for row in daily.to_dict(orient="records")],
         "statusMix": [serialize_row(row) for row in status_mix.to_dict(orient="records")],
         "feeBuckets": logistics_fee_buckets(effective["logistics_fulfillment_fee_usd"]),

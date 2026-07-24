@@ -217,3 +217,19 @@ provided.
 - Authorization uses a different host: `https://openapi-sem.sheincorp.com`.
 - App credentials (`APP_ID`/`APP_Secretkey`) are for `/open-api/auth/get-by-token`.
 - Order APIs use store credentials: `openKeyId` and decrypted `secretKey`.
+
+## Web Deployment
+
+All PNL, logistics, shipping-fee, returns, SKU mapping, warehouse relation, and
+inventory pages are served by one FastAPI application. Production runs one PM2
+process on `127.0.0.1:18992`; Nginx is the only public entry point.
+
+Start or update the service and persist the PM2 process list:
+
+```bash
+pm2 startOrReload deploy/ecosystem.config.cjs --only shein-warehouse-relations-public
+pm2 save
+```
+
+The launcher reads the project `.env` before starting Uvicorn. Do not add secrets
+to the PM2 ecosystem file or expose the Uvicorn port directly to the internet.

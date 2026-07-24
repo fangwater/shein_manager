@@ -1,0 +1,17 @@
+module.exports = {
+  apps: [
+    {
+      name: "shein-warehouse-relations-public",
+      cwd: "/home/ubuntu/shein-api-manager",
+      script: "deploy/run-pnl-web.sh",
+      interpreter: "/bin/bash",
+      exec_mode: "fork",
+      instances: 1,
+      autorestart: true,
+      restart_delay: 2000,
+      max_memory_restart: "600M",
+      kill_timeout: 10000,
+      time: true,
+    },
+  ],
+};

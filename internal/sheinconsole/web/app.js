@@ -3,6 +3,7 @@
 const byId = function (id) { return document.getElementById(id); };
 const API = "./api/";
 const SHOP_STORAGE_KEY = "shein_selected_shop";
+const MAX_ACTIONABLE_ORDER_PAGES = 20;
 const state = {
   shopKey: new URLSearchParams(window.location.search).get("shop") || sessionStorage.getItem(SHOP_STORAGE_KEY) || "",
   shops: [],
@@ -155,6 +156,28 @@ function listFromInfo(info, keys) {
 
 function orderList(payload) {
   return listFromInfo(infoOf(payload), ["list", "data", "records", "rows", "orderList", "order_list", "orders", "orderInfoList", "orderListInfo"]);
+}
+
+async function loadOrderPages(baseData, status) {
+  const orders = [];
+  const seen = new Set();
+  for (let page = 1; page <= MAX_ACTIONABLE_ORDER_PAGES; page += 1) {
+    const data = Object.assign({}, baseData, { orderStatus: status, page: page });
+    const payload = await post("order/list", data);
+    const rows = orderList(payload);
+    rows.forEach(function (order) {
+      const number = orderNumber(order);
+      const key = number || JSON.stringify(order);
+      if (!seen.has(key)) {
+        seen.add(key);
+        orders.push(order);
+      }
+    });
+    const rawTotal = firstValue(infoOf(payload), ["total", "totalCount", "total_count", "count", "recordCount"]);
+    const total = rawTotal === "" ? null : Number(rawTotal);
+    if (rows.length < data.pageSize || Number.isFinite(total) && orders.length >= total) break;
+  }
+  return orders;
 }
 
 function detailFrom(payload) {
@@ -372,6 +395,24 @@ function renderOrders(rows) {
   filterOrders();
 }
 
+function orderAction(order, number) {
+  const status = String(orderStatus(order));
+  const orderType = String(firstValue(order, ["orderType", "order_type"]));
+  const printStatus = String(firstValue(order, ["printOrderStatus", "print_order_status"]));
+  if (status === "1") {
+    const reason = orderType === "5"
+      ? "认证仓订单不能导出地址或在线履约"
+      : display(firstValue(order, ["unProcessReason", "un_process_reason"]), "平台标记订单暂不可处理");
+    const disabled = orderType === "5" || printStatus && printStatus !== "1";
+    return '<button class="table-action primary" data-transition-order="' + escapeHTML(number) + '"' +
+      (disabled ? ' disabled title="' + escapeHTML(reason) + '"' : "") + ">转待发货</button>";
+  }
+  if (status === "2") {
+    return '<button class="table-action primary" data-fulfill-order="' + escapeHTML(number) + '">发货</button>';
+  }
+  return '<button class="table-action" disabled>不可操作</button>';
+}
+
 function filterOrders() {
   const query = byId("order-search").value.trim().toLowerCase();
   const filtered = state.orders.filter(function (order) {
@@ -395,7 +436,6 @@ function filterOrders() {
       return item.skuCode || item.sku || item.goodsId || item.goodsName || "";
     }).filter(Boolean);
     const status = orderStatus(order);
-    const fulfillAttributes = String(status) === "2" ? "" : ' disabled title="仅待发货订单可操作"';
     return "<tr><td><button class=\"order-link\" data-detail-order=\"" + escapeHTML(number) + "\">" +
       escapeHTML(number) + "</button></td><td class=\"product-cell\"><strong>" +
       escapeHTML(skus.join(" / ") || "商品信息待详情") + "</strong><span>" +
@@ -403,8 +443,7 @@ function filterOrders() {
       "</span></td><td>" + escapeHTML(display(firstValue(order, ["salesSite", "site"]))) +
       "</td><td><span class=\"badge " + statusClass(status) + "\">" + escapeHTML(statusLabel(status)) +
       "</span></td><td>" + escapeHTML(display(orderTime(order))) +
-      "</td><td><button class=\"table-action primary\" data-fulfill-order=\"" + escapeHTML(number) +
-      "\"" + fulfillAttributes + ">发货</button></td></tr>";
+      "</td><td>" + orderAction(order, number) + "</td></tr>";
   }).join("");
   byId("order-total").textContent = "共 " + filtered.length + " 条";
   byId("metric-orders").textContent = String(filtered.length);
@@ -426,13 +465,63 @@ async function loadOrders(button) {
       page: 1,
       pageSize: 30
     };
-    if (byId("order-status").value) data.orderStatus = Number(byId("order-status").value);
+    const selectedStatus = byId("order-status").value;
     try {
-      const payload = await post("order/list", data);
-      renderOrders(orderList(payload));
+      if (selectedStatus === "actionable") {
+        const results = await Promise.all([
+          loadOrderPages(data, 1),
+          loadOrderPages(data, 2)
+        ]);
+        renderOrders(results[0].concat(results[1]).sort(function (left, right) {
+          return String(orderTime(right)).localeCompare(String(orderTime(left)));
+        }));
+      } else {
+        if (selectedStatus) data.orderStatus = Number(selectedStatus);
+        const payload = await post("order/list", data);
+        renderOrders(orderList(payload));
+      }
       byId("metric-updated").textContent = formatChinaTime(new Date());
     } catch (error) {
       renderOrders([]);
+      toast(error.message, true);
+    }
+  });
+}
+
+async function transitionToShipping(orderNo, button) {
+  if (!window.confirm("确认导出订单地址并将订单 " + orderNo + " 流转到待发货？")) return;
+  await busy(button, async function () {
+    try {
+      const detailPayload = await post("order/detail", { orderNoList: [orderNo] });
+      const detail = detailFrom(detailPayload) || {};
+      const status = String(orderStatus(detail));
+      if (status === "2") {
+        await loadOrders();
+        toast("订单已经处于待发货状态");
+        openFulfillment(orderNo);
+        return;
+      }
+      if (status !== "1") throw new Error("订单当前不是待处理状态，请刷新后重试");
+      if (String(firstValue(detail, ["orderType", "order_type"])) === "5") {
+        throw new Error("认证仓订单不能导出地址或在线履约");
+      }
+      const printStatus = String(firstValue(detail, ["printOrderStatus", "print_order_status"]));
+      if (printStatus && printStatus !== "1") {
+        throw new Error(display(
+          firstValue(detail, ["unProcessReason", "un_process_reason"]),
+          "平台标记订单暂不可处理"
+        ));
+      }
+      await sensitivePost(
+        "order/export-address",
+        { orderNo: orderNo, handleType: 2 },
+        "export-address-transition",
+        orderNo
+      );
+      await loadOrders();
+      toast("订单已流转到待发货");
+      openFulfillment(orderNo);
+    } catch (error) {
       toast(error.message, true);
     }
   });
@@ -732,8 +821,10 @@ byId("shop-select").addEventListener("change", function (event) {
 });
 byId("order-rows").addEventListener("click", function (event) {
   const detailButton = event.target.closest("[data-detail-order]");
+  const transitionButton = event.target.closest("[data-transition-order]");
   const fulfillmentButton = event.target.closest("[data-fulfill-order]");
   if (detailButton) showOrderDetail(detailButton.dataset.detailOrder);
+  if (transitionButton) transitionToShipping(transitionButton.dataset.transitionOrder, transitionButton);
   if (fulfillmentButton) openFulfillment(fulfillmentButton.dataset.fulfillOrder);
 });
 byId("task-rows").addEventListener("click", function (event) {

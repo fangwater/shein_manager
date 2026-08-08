@@ -18,8 +18,10 @@ import (
 	"shein-api-manager/internal/shein"
 )
 
-//go:embed web/index.html
+//go:embed web/*
 var webFiles embed.FS
+
+const shopHeader = "X-Shein-Shop"
 
 type Server struct {
 	store          *shein.Store
@@ -53,7 +55,9 @@ func New(store *shein.Store, verifier *shein.SessionVerifier, defaultShopKey str
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", server.health)
 	mux.Handle("GET /", server.requireAuth(http.HandlerFunc(server.index)))
+	mux.Handle("GET /assets/{name}", server.requireAuth(http.HandlerFunc(server.asset)))
 	mux.Handle("GET /api/status", server.requireAuth(http.HandlerFunc(server.status)))
+	mux.Handle("GET /api/system/shops", server.requireAuth(http.HandlerFunc(server.status)))
 	mux.Handle("POST /api/order/list", server.requireAuth(server.operationHandler("order-list")))
 	mux.Handle("POST /api/order/detail", server.requireAuth(server.operationHandler("order-detail")))
 	mux.Handle("POST /api/order/export-address", server.requireAuth(server.operationHandler("export-address")))
@@ -81,6 +85,28 @@ func (s *Server) index(writer http.ResponseWriter, _ *http.Request) {
 	_, _ = writer.Write(content)
 }
 
+func (s *Server) asset(writer http.ResponseWriter, request *http.Request) {
+	name := request.PathValue("name")
+	contentType := ""
+	switch name {
+	case "app.js":
+		contentType = "text/javascript; charset=utf-8"
+	case "styles.css":
+		contentType = "text/css; charset=utf-8"
+	default:
+		http.NotFound(writer, request)
+		return
+	}
+	content, err := webFiles.ReadFile("web/" + name)
+	if err != nil {
+		http.NotFound(writer, request)
+		return
+	}
+	writer.Header().Set("Content-Type", contentType)
+	writer.Header().Set("Cache-Control", "no-store")
+	_, _ = writer.Write(content)
+}
+
 func (s *Server) status(writer http.ResponseWriter, request *http.Request) {
 	ctx, cancel := context.WithTimeout(request.Context(), s.requestTimeout)
 	defer cancel()
@@ -89,9 +115,14 @@ func (s *Server) status(writer http.ResponseWriter, request *http.Request) {
 		s.internalError(writer, "list shops", err)
 		return
 	}
+	shopKey, err := s.requestedShopKey(request, "")
+	if err != nil {
+		writeJSON(writer, http.StatusBadRequest, response{Success: false, Error: err.Error()})
+		return
+	}
 	writeJSON(writer, http.StatusOK, response{Success: true, Data: map[string]any{
 		"service": "shein-go-manager", "user": authenticatedUser(request.Context()),
-		"default_shop_key": s.defaultShopKey, "shops": shops, "endpoints": len(shein.Endpoints),
+		"default_shop_key": s.defaultShopKey, "current_shop_key": shopKey, "shops": shops, "endpoints": len(shein.Endpoints),
 	}})
 }
 
@@ -105,12 +136,10 @@ func (s *Server) operationHandler(operation string) http.Handler {
 			writeJSON(writer, http.StatusBadRequest, response{Success: false, Error: err.Error()})
 			return
 		}
-		shopKey := strings.TrimSpace(payload.ShopKey)
-		if shopKey == "" {
-			shopKey = s.defaultShopKey
-		}
-		if shopKey == "" {
-			shopKey = "default"
+		shopKey, err := s.requestedShopKey(request, payload.ShopKey)
+		if err != nil {
+			writeJSON(writer, http.StatusBadRequest, response{Success: false, Error: err.Error()})
+			return
 		}
 		confirmValue, requiresIdempotency, err := requiredConfirmation(operation, payload.Data)
 		if err != nil {
@@ -174,9 +203,10 @@ func (s *Server) operationHandler(operation string) http.Handler {
 }
 
 func (s *Server) logisticsTrack(writer http.ResponseWriter, request *http.Request) {
-	shopKey := strings.TrimSpace(request.URL.Query().Get("shop_key"))
-	if shopKey == "" {
-		shopKey = s.defaultShopKey
+	shopKey, err := s.requestedShopKey(request, request.URL.Query().Get("shop_key"))
+	if err != nil {
+		writeJSON(writer, http.StatusBadRequest, response{Success: false, Error: err.Error()})
+		return
 	}
 	ctx, cancel := context.WithTimeout(request.Context(), s.requestTimeout)
 	defer cancel()
@@ -197,6 +227,24 @@ func (s *Server) logisticsTrack(writer http.ResponseWriter, request *http.Reques
 		return
 	}
 	writeJSON(writer, http.StatusOK, response{Success: true, Data: result})
+}
+
+func (s *Server) requestedShopKey(request *http.Request, payloadShopKey string) (string, error) {
+	headerShopKey := strings.TrimSpace(request.Header.Get(shopHeader))
+	payloadShopKey = strings.TrimSpace(payloadShopKey)
+	if headerShopKey != "" && payloadShopKey != "" && headerShopKey != payloadShopKey {
+		return "", errors.New("X-Shein-Shop does not match shop_key")
+	}
+	if headerShopKey != "" {
+		return headerShopKey, nil
+	}
+	if payloadShopKey != "" {
+		return payloadShopKey, nil
+	}
+	if shopKey := strings.TrimSpace(s.defaultShopKey); shopKey != "" {
+		return shopKey, nil
+	}
+	return "default", nil
 }
 
 func requiredConfirmation(operation string, data map[string]any) (string, bool, error) {

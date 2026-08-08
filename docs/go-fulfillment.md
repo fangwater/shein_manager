@@ -6,7 +6,10 @@ existing `shein_shops` PostgreSQL table and never returns credential values.
 
 ## Local API
 
-All POST endpoints accept this envelope:
+Use `X-Shein-Shop` to select the shop for every local API request. The
+`shop_key` field remains available for API compatibility; when both are sent
+they must match. `GET /api/system/shops` returns the configured shops and the
+current/default selection. All POST endpoints accept this envelope:
 
 ```json
 {
@@ -26,10 +29,24 @@ All POST endpoints accept this envelope:
 | `POST /api/shipping/check` | `POST /open-api/gsp/check-express-order` |
 | `POST /api/shipping/label` | `POST /open-api/order/print-express-info` |
 | `GET /api/shipping/track` | `GET /open-api/gsp/logistics-track` |
-\nForward tracking requires `orderNo` with either `packageNo` or `waybillNo`; return tracking uses `returnOrderNo` by itself.
+
+Forward tracking requires `orderNo` with either `packageNo` or `waybillNo`;
+return tracking uses `returnOrderNo` by itself.
 
 The production prefix is `/shein`, so `/api/order/list` is publicly routed as
 `/shein/api/order/list`.
+
+## Shop Fulfillment Console
+
+The authenticated page at `/shein/` follows the same shop-level operating model
+as the Temu console. Operators select a shop, query orders, select a SHEIN
+shipping warehouse and channel, submit the online shipment, check its result,
+and retrieve the label from the resulting task.
+
+The selected shop is sent in `X-Shein-Shop` and kept in session storage. The
+browser stores only normalized task references per shop: order number, channel
+code, `placeRequestId`, `deliveryNo`, status, and update time. Customer
+addresses and raw OpenAPI responses are not persisted in browser storage.
 
 ## Safety
 

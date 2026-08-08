@@ -13,5 +13,18 @@ module.exports = {
       kill_timeout: 10000,
       time: true,
     },
+    {
+      name: "shein-go-manager",
+      cwd: "/home/ubuntu/shein-api-manager",
+      script: "deploy/run-go-server.sh",
+      interpreter: "none",
+      exec_mode: "fork",
+      instances: 1,
+      autorestart: true,
+      restart_delay: 2000,
+      max_memory_restart: "256M",
+      kill_timeout: 20000,
+      time: true,
+    },
   ],
 };

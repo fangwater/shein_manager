@@ -1,6 +1,8 @@
 # SHEIN API Manager
 
-Local service code for SHEIN authorization, order API wrappers, and PostgreSQL order downloads.
+Local service code for SHEIN authorization, analytics, PostgreSQL synchronization, and production fulfillment.
+
+The production fulfillment runtime is Go under `cmd/server`. It directly owns the nine consumer-order and integrated-logistics OpenAPI operations: order list/detail, address export, available warehouses and channels, online shipment creation and status checks, label printing, and tracking. Python remains responsible for authorization, historical/bulk synchronization, reporting, and the existing FastAPI management pages.
 
 ## Setup
 
@@ -218,7 +220,21 @@ provided.
 - App credentials (`APP_ID`/`APP_Secretkey`) are for `/open-api/auth/get-by-token`.
 - Order APIs use store credentials: `openKeyId` and decrypted `secretKey`.
 
-## Web Deployment
+## Go Fulfillment Server
+
+Build and test the production fulfillment service:
+
+```bash
+go test ./...
+mkdir -p bin
+go build -o bin/shein-server ./cmd/server
+pm2 startOrReload deploy/ecosystem.config.cjs --only shein-go-manager
+pm2 save
+```
+
+The Go service listens on `127.0.0.1:18084` and is routed under `/shein/`. It reads `DATABASE_URL` from the same private `.env` file and reuses the existing `shein_shops` credentials and `shein_pnl_session` login cookie. See `docs/go-fulfillment.md` for the local API and safety contract.
+
+## Python Web Deployment
 
 All PNL, logistics, shipping-fee, returns, SKU mapping, warehouse relation, and
 inventory pages are served by one FastAPI application. Production runs one PM2

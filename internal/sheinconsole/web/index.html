@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SHEIN Fulfillment Console</title>
+  <style>
+    :root{color-scheme:light;--ink:#19212a;--muted:#65717d;--line:#d9e0e6;--soft:#f3f5f7;--panel:#fff;--red:#d81f2a;--red-dark:#aa111b;--green:#18794e;--amber:#a76009;--blue:#2463a6;--shadow:0 8px 24px rgba(20,31,43,.08)}
+    *{box-sizing:border-box}html,body{margin:0;min-height:100%;font-family:Inter,"PingFang SC","Microsoft YaHei",system-ui,sans-serif;color:var(--ink);background:var(--soft);letter-spacing:0}button,input,select,textarea{font:inherit;letter-spacing:0}button{cursor:pointer}.shell{min-height:100vh;display:grid;grid-template-rows:58px 1fr}.topbar{height:58px;background:#111820;color:#fff;display:flex;align-items:center;padding:0 22px;gap:18px;border-bottom:3px solid var(--red)}.brand{font-size:17px;font-weight:720;white-space:nowrap}.brand span{color:#ff6670}.top-meta{margin-left:auto;display:flex;align-items:center;gap:12px;font-size:12px;color:#c8d0d7}.status-dot{width:8px;height:8px;border-radius:50%;background:#7d8790}.status-dot.ok{background:#35bd82}.workspace{display:grid;grid-template-columns:220px minmax(0,1fr);min-height:0}.sidebar{background:#fff;border-right:1px solid var(--line);padding:18px 12px}.nav-label{font-size:11px;color:#89939e;text-transform:uppercase;padding:0 10px 8px}.nav-button{width:100%;height:42px;border:0;border-left:3px solid transparent;background:transparent;color:#3e4954;text-align:left;padding:0 12px;margin:2px 0;font-weight:620}.nav-button:hover{background:#f5f7f9}.nav-button.active{border-left-color:var(--red);background:#fff1f2;color:#a91620}.main{min-width:0;display:grid;grid-template-columns:minmax(0,1fr) 390px;min-height:calc(100vh - 58px)}.content{min-width:0;padding:22px 24px 40px;overflow:auto}.result-panel{border-left:1px solid var(--line);background:#fff;min-width:0;display:flex;flex-direction:column;position:sticky;top:0;height:calc(100vh - 58px)}.result-head{height:54px;border-bottom:1px solid var(--line);display:flex;align-items:center;padding:0 16px;gap:10px}.result-head strong{font-size:14px}.result-head button{margin-left:auto}.result-body{overflow:auto;padding:14px;flex:1}.page{display:none}.page.active{display:block}.page-head{display:flex;align-items:flex-end;justify-content:space-between;gap:16px;margin-bottom:18px}.page-head h1{font-size:24px;line-height:1.2;margin:0}.page-head p{font-size:12px;color:var(--muted);margin:5px 0 0}.toolbar,.form-grid{display:grid;gap:12px}.toolbar{grid-template-columns:1.2fr 1.2fr .7fr .7fr auto;align-items:end;background:#fff;border-top:1px solid var(--line);border-bottom:1px solid var(--line);padding:14px}.form-grid{grid-template-columns:repeat(4,minmax(130px,1fr));align-items:end}.section{background:#fff;border-top:1px solid var(--line);margin-bottom:18px;padding:16px}.section h2{font-size:15px;margin:0 0 14px}.section-title{display:flex;align-items:center;gap:10px;margin-bottom:14px}.section-title h2{margin:0}.step{width:23px;height:23px;border-radius:50%;display:grid;place-items:center;background:#232d37;color:#fff;font-size:12px;font-weight:700}.field{display:flex;flex-direction:column;gap:6px;min-width:0}.field label{font-size:12px;font-weight:650;color:#4a5561}.field input,.field select,.field textarea{width:100%;border:1px solid #cbd3da;background:#fff;color:var(--ink);border-radius:4px;padding:9px 10px;outline:none;min-height:38px}.field textarea{min-height:105px;resize:vertical;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:12px;line-height:1.5}.field input:focus,.field select:focus,.field textarea:focus{border-color:#707c88;box-shadow:0 0 0 2px rgba(80,94,108,.12)}.button{border:1px solid #bec7cf;background:#fff;color:#27313b;border-radius:4px;height:38px;padding:0 14px;font-weight:650;white-space:nowrap}.button:hover{background:#f5f7f8}.button.primary{border-color:var(--red);background:var(--red);color:#fff}.button.primary:hover{background:var(--red-dark)}.button.danger{border-color:#b3131d;color:#b3131d}.button.small{height:30px;padding:0 10px;font-size:12px}.button:disabled{cursor:wait;opacity:.55}.inline-actions{display:flex;gap:8px;align-items:flex-end}.split{display:grid;grid-template-columns:1fr 1fr;gap:18px}.table-wrap{overflow:auto;border:1px solid var(--line);background:#fff}table{width:100%;border-collapse:collapse;font-size:12px;white-space:nowrap}th,td{padding:10px 12px;border-bottom:1px solid #e7ebef;text-align:left}th{background:#f5f7f9;color:#56616d;font-weight:700;position:sticky;top:0}tbody tr:hover{background:#fff8f8}.link-button{border:0;background:transparent;color:#9e1620;padding:0;text-decoration:underline}.empty{padding:42px 20px;text-align:center;color:#7b8691}.choice-list{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:8px}.choice{border:1px solid var(--line);border-radius:5px;padding:12px;display:flex;gap:10px;align-items:flex-start;background:#fff}.choice:has(input:checked){border-color:#222d37;background:#f6f8fa}.choice input{margin-top:3px}.choice strong{display:block;font-size:13px}.choice span{display:block;color:var(--muted);font-size:11px;margin-top:4px}.badge{display:inline-flex;align-items:center;height:23px;padding:0 8px;border-radius:3px;background:#eef1f4;color:#4e5964;font-size:11px;font-weight:700}.badge.good{background:#e9f7f0;color:var(--green)}.badge.warn{background:#fff3df;color:var(--amber)}.badge.bad{background:#fdebed;color:#b01822}.json{margin:0;background:#171d24;color:#d9e2ea;border-radius:4px;padding:14px;font:12px/1.55 ui-monospace,SFMono-Regular,Consolas,monospace;white-space:pre-wrap;overflow-wrap:anywhere;min-height:160px}.result-links{display:grid;gap:8px;margin-bottom:12px}.result-link{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:9px 10px;border:1px solid var(--line);border-radius:4px;color:#1f5d96;text-decoration:none;font-size:12px}.notice{border-left:3px solid var(--amber);background:#fff8e9;padding:10px 12px;color:#704b16;font-size:12px;margin-bottom:12px}.toast{position:fixed;right:20px;bottom:20px;background:#202932;color:#fff;padding:11px 14px;border-radius:4px;box-shadow:var(--shadow);font-size:12px;z-index:20;max-width:min(420px,calc(100vw - 40px))}.toast.error{background:#a5141e}.muted{color:var(--muted)}
+    @media(max-width:1100px){.main{grid-template-columns:minmax(0,1fr)}.result-panel{position:fixed;right:0;top:58px;width:min(440px,94vw);z-index:10;box-shadow:var(--shadow);transform:translateX(102%);transition:transform .2s}.result-panel.open{transform:translateX(0)}.form-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+    @media(max-width:760px){.shell{grid-template-rows:auto 1fr}.topbar{height:auto;min-height:58px;padding:12px 14px;flex-wrap:wrap}.top-meta{width:100%;margin:0}.workspace{grid-template-columns:1fr}.sidebar{border-right:0;border-bottom:1px solid var(--line);display:flex;overflow:auto;padding:8px}.nav-label{display:none}.nav-button{min-width:130px;text-align:center;border-left:0;border-bottom:3px solid transparent}.nav-button.active{border-bottom-color:var(--red)}.main{min-height:0}.content{padding:16px 12px 32px}.toolbar,.form-grid,.split{grid-template-columns:1fr}.toolbar{align-items:stretch}.page-head{align-items:flex-start}.page-head h1{font-size:21px}.result-panel{top:0;height:100vh}.inline-actions{flex-wrap:wrap}}
+  </style>
+</head>
+<body>
+<div class="shell">
+  <header class="topbar">
+    <div class="brand"><span>SHEIN</span> Fulfillment Console</div>
+    <div class="top-meta"><span id="shopLabel">店铺 --</span><span class="status-dot" id="statusDot"></span><span id="serviceStatus">连接中</span><span id="userLabel"></span></div>
+  </header>
+  <div class="workspace">
+    <nav class="sidebar" aria-label="SHEIN 工具导航">
+      <div class="nav-label">Operations</div>
+      <button class="nav-button active" data-page="orders">订单中心</button>
+      <button class="nav-button" data-page="fulfillment">履约下单</button>
+      <button class="nav-button" data-page="tools">物流工具</button>
+    </nav>
+    <main class="main">
+      <div class="content">
+        <section class="page active" id="page-orders">
+          <div class="page-head"><div><h1>订单中心</h1><p>Order operations</p></div><span class="badge" id="orderCount">0 条</span></div>
+          <form class="toolbar" id="orderListForm">
+            <div class="field"><label for="startTime">开始时间</label><input id="startTime" required></div>
+            <div class="field"><label for="endTime">结束时间</label><input id="endTime" required></div>
+            <div class="field"><label for="queryType">时间维度</label><select id="queryType"><option value="2">更新时间</option><option value="1">下发时间</option></select></div>
+            <div class="field"><label for="orderStatus">订单状态</label><select id="orderStatus"><option value="">全部</option><option value="1">待处理</option><option value="2">待发货</option><option value="7">待揽收</option><option value="4">已发货</option></select></div>
+            <button class="button primary" type="submit">查询订单</button>
+          </form>
+          <div class="table-wrap" id="orderTable"><div class="empty">选择时间范围查询订单</div></div>
+        </section>
+
+        <section class="page" id="page-fulfillment">
+          <div class="page-head"><div><h1>履约下单</h1><p>Integrated shipping workflow</p></div><span class="badge warn">SHEIN 合作物流</span></div>
+          <section class="section">
+            <div class="section-title"><span class="step">1</span><h2>订单与发货仓</h2></div>
+            <form class="form-grid" id="warehouseForm">
+              <div class="field"><label for="fulfillOrderNo">订单号</label><input id="fulfillOrderNo" required></div>
+              <div class="inline-actions"><button class="button" type="button" id="loadOrderDetail">查询详情</button><button class="button primary" type="submit">查询可用仓库</button></div>
+            </form>
+            <div class="choice-list" id="warehouseChoices"></div>
+          </section>
+          <section class="section">
+            <div class="section-title"><span class="step">2</span><h2>包裹与物流渠道</h2></div>
+            <form class="form-grid" id="channelForm">
+              <div class="field"><label for="packageLength">长 (cm)</label><input id="packageLength" inputmode="decimal" value="20" required></div>
+              <div class="field"><label for="packageWidth">宽 (cm)</label><input id="packageWidth" inputmode="decimal" value="15" required></div>
+              <div class="field"><label for="packageHeight">高 (cm)</label><input id="packageHeight" inputmode="decimal" value="5" required></div>
+              <div class="field"><label for="packageWeight">重量 (g)</label><input id="packageWeight" inputmode="decimal" value="300" required></div>
+              <button class="button primary" type="submit">查询物流渠道</button>
+            </form>
+            <div class="choice-list" id="channelChoices"></div>
+          </section>
+          <section class="section">
+            <div class="section-title"><span class="step">3</span><h2>提交在线下单</h2></div>
+            <form class="form-grid" id="placeForm">
+              <div class="field"><label for="selectedWarehouse">发货仓编码</label><input id="selectedWarehouse" readonly required></div>
+              <div class="field"><label for="selectedChannel">渠道编码</label><input id="selectedChannel" readonly required></div>
+              <div class="field"><label for="preRequestId">预判请求 ID</label><input id="preRequestId" readonly required></div>
+              <div class="field"><label for="goodsIds">商品 ID</label><input id="goodsIds" placeholder="多个用逗号分隔"></div>
+              <button class="button danger" type="submit">确认在线下单</button>
+            </form>
+          </section>
+        </section>
+
+        <section class="page" id="page-tools">
+          <div class="page-head"><div><h1>物流工具</h1><p>Address, label and tracking</p></div></div>
+          <div class="split">
+            <section class="section">
+              <h2>导出地址</h2>
+              <form class="form-grid" id="addressForm">
+                <div class="field"><label for="addressOrderNo">订单号</label><input id="addressOrderNo" required></div>
+                <div class="field"><label for="handleType">处理方式</label><select id="handleType"><option value="1">仅导出地址</option><option value="2">导出并转待发货</option></select></div>
+                <button class="button" type="submit">执行</button>
+              </form>
+            </section>
+            <section class="section">
+              <h2>查询下单结果</h2>
+              <form class="form-grid" id="checkForm">
+                <div class="field"><label for="placeRequestLookup">下单请求 ID</label><input id="placeRequestLookup" required></div>
+                <button class="button" type="submit">查询结果</button>
+              </form>
+            </section>
+            <section class="section">
+              <h2>打印面单</h2>
+              <form id="labelForm">
+                <div class="field"><label for="labelJSON">请求参数 JSON</label><textarea id="labelJSON">{"deliveryNo":""}</textarea></div>
+                <div class="inline-actions" style="margin-top:10px"><button class="button danger" type="submit">生成面单</button></div>
+              </form>
+            </section>
+            <section class="section">
+              <h2>物流轨迹</h2>
+              <form class="form-grid" id="trackForm">
+                <div class="field"><label for="trackOrderNo">订单号</label><input id="trackOrderNo" required></div>
+                <div class="field"><label for="trackPackageNo">包裹号</label><input id="trackPackageNo"></div>
+                <button class="button" type="submit">查询轨迹</button>
+              </form>
+            </section>
+          </div>
+        </section>
+      </div>
+      <aside class="result-panel" id="resultPanel">
+        <div class="result-head"><strong id="resultTitle">接口响应</strong><button class="button small" id="closeResult" type="button">关闭</button></div>
+        <div class="result-body"><div class="result-links" id="resultLinks"></div><pre class="json" id="resultJSON">等待操作</pre></div>
+      </aside>
+    </main>
+  </div>
+</div>
+<script>
+  const $=id=>document.getElementById(id);
+  const state={shopKey:'default',warehouse:'',channel:'',preRequestId:'',lastOrder:''};
+  const API='./api/';
+  const toast=(message,error=false)=>{const node=document.createElement('div');node.className='toast'+(error?' error':'');node.textContent=message;document.body.append(node);setTimeout(()=>node.remove(),3600)};
+  const busy=async(button,job)=>{const old=button.textContent;button.disabled=true;button.textContent='处理中';try{return await job()}finally{button.disabled=false;button.textContent=old}};
+  const uuid=()=>crypto.randomUUID?crypto.randomUUID():`${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const request=async(path,options={})=>{const response=await fetch(API+path,{credentials:'same-origin',...options,headers:{'Content-Type':'application/json',...(options.headers||{})}});const payload=await response.json().catch(()=>({success:false,error:'响应格式错误'}));if(!response.ok||!payload.success)throw new Error(payload.error||`HTTP ${response.status}`);return payload};
+  const post=(path,data,action='')=>request(path,{method:'POST',headers:action?{'X-Confirm-Shein-Action':action,'Idempotency-Key':uuid()}:{},body:JSON.stringify({shop_key:state.shopKey,data})});
+  const showResult=(title,payload)=>{ $('resultTitle').textContent=title;$('resultJSON').textContent=JSON.stringify(payload,null,2);const links=[];const walk=value=>{if(Array.isArray(value))value.forEach(walk);else if(value&&typeof value==='object')Object.entries(value).forEach(([key,val])=>{if(typeof val==='string'&&/^https:\/\//.test(val)&&/url/i.test(key))links.push({key,url:val});else walk(val)});};walk(payload);$('resultLinks').innerHTML=links.map(link=>`<a class="result-link" href="${escapeHTML(link.url)}" target="_blank" rel="noreferrer"><span>${escapeHTML(link.key)}</span><strong>打开</strong></a>`).join('');$('resultPanel').classList.add('open')};
+  const escapeHTML=value=>String(value??'').replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
+  const parseInfoList=payload=>{const info=payload?.data?.info;return Array.isArray(info)?info:(info?.list||info?.records||info?.data||[])};
+  const formatTime=date=>{const shifted=new Date(date.getTime()+8*3600000);return shifted.toISOString().slice(0,19).replace('T',' ')};
+  const syncOrderInputs=orderNo=>{state.lastOrder=orderNo;['fulfillOrderNo','addressOrderNo','trackOrderNo'].forEach(id=>$(id).value=orderNo)};
+
+  document.querySelectorAll('.nav-button').forEach(button=>button.addEventListener('click',()=>{document.querySelectorAll('.nav-button').forEach(x=>x.classList.toggle('active',x===button));document.querySelectorAll('.page').forEach(page=>page.classList.toggle('active',page.id===`page-${button.dataset.page}`))}));
+  $('closeResult').addEventListener('click',()=>$('resultPanel').classList.remove('open'));
+
+  async function loadStatus(){try{const payload=await request('status');const data=payload.data;state.shopKey=data.default_shop_key||data.shops?.[0]?.shop_key||'default';$('shopLabel').textContent=`店铺 ${state.shopKey}`;$('userLabel').textContent=data.user||'';$('serviceStatus').textContent='Go 服务正常';$('statusDot').classList.add('ok')}catch(error){$('serviceStatus').textContent='服务异常';toast(error.message,true)}}
+
+  $('orderListForm').addEventListener('submit',event=>{event.preventDefault();busy(event.submitter,async()=>{const data={queryType:Number($('queryType').value),startTime:$('startTime').value,endTime:$('endTime').value,page:1,pageSize:30};if($('orderStatus').value)data.orderStatus=Number($('orderStatus').value);try{const payload=await post('order/list',data);const rows=parseInfoList(payload);$('orderCount').textContent=`${rows.length} 条`;renderOrders(rows);showResult('订单列表',payload)}catch(error){toast(error.message,true)}})});
+  function renderOrders(rows){if(!rows.length){$('orderTable').innerHTML='<div class="empty">当前范围没有订单</div>';return}const body=rows.map(row=>{const no=row.orderNo||row.order_no||row.billNo||'';const status=row.orderStatus??row.newGoodsStatus??'-';const time=row.orderMsgUpdateTime||row.orderAllocateTime||row.updateTime||'-';const site=row.salesSite||row.site||'-';return `<tr><td><button class="link-button" data-order="${escapeHTML(no)}">${escapeHTML(no)}</button></td><td>${escapeHTML(status)}</td><td>${escapeHTML(site)}</td><td>${escapeHTML(time)}</td><td><button class="button small" data-fulfill="${escapeHTML(no)}">履约</button></td></tr>`}).join('');$('orderTable').innerHTML=`<table><thead><tr><th>订单号</th><th>状态</th><th>站点</th><th>更新时间</th><th>操作</th></tr></thead><tbody>${body}</tbody></table>`;$('orderTable').querySelectorAll('[data-order]').forEach(button=>button.addEventListener('click',()=>loadDetail(button.dataset.order)));$('orderTable').querySelectorAll('[data-fulfill]').forEach(button=>button.addEventListener('click',()=>{syncOrderInputs(button.dataset.fulfill);document.querySelector('[data-page="fulfillment"]').click()}))}
+  async function loadDetail(orderNo){syncOrderInputs(orderNo);try{const payload=await post('order/detail',{orderNoList:[orderNo]});showResult(`订单 ${orderNo}`,payload);const detail=parseInfoList(payload)[0]||payload.data?.info?.[0];const goods=detail?.orderGoodsInfoList||[];$('goodsIds').value=goods.map(x=>x.goodsId).filter(Boolean).join(',')}catch(error){toast(error.message,true)}}
+  $('loadOrderDetail').addEventListener('click',event=>busy(event.currentTarget,()=>loadDetail($('fulfillOrderNo').value.trim())));
+
+  $('warehouseForm').addEventListener('submit',event=>{event.preventDefault();const orderNo=$('fulfillOrderNo').value.trim();syncOrderInputs(orderNo);busy(event.submitter,async()=>{try{const payload=await post('shipping/warehouses',{orderNo});renderWarehouses(payload.data?.info?.availableWarehouses||[]);showResult('可用发货仓',payload)}catch(error){toast(error.message,true)}})});
+  function renderWarehouses(rows){state.warehouse='';$('selectedWarehouse').value='';$('warehouseChoices').innerHTML=rows.map((row,index)=>`<label class="choice"><input type="radio" name="warehouse" value="${escapeHTML(row.warehouseAddressCode)}" ${row.availableStatus===1?'':'disabled'}><span><strong>${escapeHTML(row.warehouseName||row.warehouseAddressCode)}</strong><span>${escapeHTML(row.warehouseAddressCode)} · ${row.availableStatus===1?'可用':row.unavailableReason||'不可用'}</span></span></label>`).join('')||'<div class="empty">没有可用仓库</div>';$('warehouseChoices').querySelectorAll('input').forEach(input=>input.addEventListener('change',()=>{state.warehouse=input.value;$('selectedWarehouse').value=input.value}))}
+
+  $('channelForm').addEventListener('submit',event=>{event.preventDefault();if(!state.warehouse){toast('请先选择可用发货仓',true);return}const data={orderNo:$('fulfillOrderNo').value.trim(),warehouseAddressCode:state.warehouse,packageSizeInfo:{packageLength:$('packageLength').value,packageWidth:$('packageWidth').value,packageHeight:$('packageHeight').value,unit:'cm'},packageWeightInfo:{packageWeight:$('packageWeight').value,unit:'g'}};busy(event.submitter,async()=>{try{const payload=await post('shipping/channels',data);const info=payload.data?.info||{};state.preRequestId=info.preRequestId||'';$('preRequestId').value=state.preRequestId;renderChannels(info.channelInfoList||[]);showResult('可用物流渠道',payload)}catch(error){toast(error.message,true)}})});
+  function renderChannels(rows){state.channel='';$('selectedChannel').value='';$('channelChoices').innerHTML=rows.map(row=>`<label class="choice"><input type="radio" name="channel" value="${escapeHTML(row.expressChannelCode)}"><span><strong>${escapeHTML(row.expressShortName||row.expressIdCode||row.expressChannelCode)}</strong><span>${escapeHTML(row.expressChannelCode)} · ${escapeHTML(row.performanceCost??'-')} ${escapeHTML(row.currencyCode||'')}</span></span></label>`).join('')||'<div class="empty">没有可用渠道</div>';$('channelChoices').querySelectorAll('input').forEach(input=>input.addEventListener('change',()=>{state.channel=input.value;$('selectedChannel').value=input.value}))}
+
+  $('placeForm').addEventListener('submit',event=>{event.preventDefault();if(!confirm('确认向 SHEIN 提交在线物流下单？'))return;const ids=$('goodsIds').value.split(',').map(x=>x.trim()).filter(Boolean).map(x=>/^\d+$/.test(x)?Number(x):x);const item={orderNo:$('fulfillOrderNo').value.trim()};if(ids.length)item.goodsIds=ids;const data={expressChannelCode:state.channel,preRequestId:state.preRequestId,packageInfoList:[item]};busy(event.submitter,async()=>{try{const payload=await post('shipping/place',data,'place-express-order');const info=payload.data?.info||{};$('placeRequestLookup').value=info.placeRequestId||'';if(info.deliveryNo)$('labelJSON').value=JSON.stringify({deliveryNo:info.deliveryNo},null,2);showResult('在线下单',payload);toast(payload.cached?'已返回原提交结果':'已提交在线下单')}catch(error){toast(error.message,true)}})});
+
+  $('addressForm').addEventListener('submit',event=>{event.preventDefault();const handleType=Number($('handleType').value);if(handleType===2&&!confirm('确认导出地址并将订单流转到待发货？'))return;busy(event.submitter,async()=>{try{const payload=await post('order/export-address',{orderNo:$('addressOrderNo').value.trim(),handleType},handleType===2?'export-address-transition':'');showResult('地址结果',payload)}catch(error){toast(error.message,true)}})});
+  $('checkForm').addEventListener('submit',event=>{event.preventDefault();busy(event.submitter,async()=>{try{const payload=await post('shipping/check',{placeRequestId:$('placeRequestLookup').value.trim()});showResult('下单结果',payload)}catch(error){toast(error.message,true)}})});
+  $('labelForm').addEventListener('submit',event=>{event.preventDefault();let data;try{data=JSON.parse($('labelJSON').value)}catch{toast('面单请求 JSON 格式错误',true);return}if(!confirm('确认向 SHEIN 请求打印面单？'))return;busy(event.submitter,async()=>{try{const payload=await post('shipping/label',data,'print-express-info');showResult('面单结果',payload)}catch(error){toast(error.message,true)}})});
+  $('trackForm').addEventListener('submit',event=>{event.preventDefault();busy(event.submitter,async()=>{try{const query=new URLSearchParams({shop_key:state.shopKey,orderNo:$('trackOrderNo').value.trim()});if($('trackPackageNo').value.trim())query.set('packageNo',$('trackPackageNo').value.trim());const payload=await request(`shipping/track?${query}`);showResult('物流轨迹',payload)}catch(error){toast(error.message,true)}})});
+
+  const end=new Date(),start=new Date(end.getTime()-2*3600000);$('startTime').value=formatTime(start);$('endTime').value=formatTime(end);loadStatus();
+</script>
+</body>
+</html>

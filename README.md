@@ -4,6 +4,123 @@ Local service code for SHEIN authorization, analytics, PostgreSQL synchronizatio
 
 The production fulfillment runtime is Go under `cmd/server`. It directly owns the nine consumer-order and integrated-logistics OpenAPI operations: order list/detail, address export, available warehouses and channels, online shipment creation and status checks, label printing, and tracking. Python remains responsible for authorization, historical/bulk synchronization, reporting, and the existing FastAPI management pages.
 
+## Label Purchase Price Analysis
+
+The Go fulfillment service stores an immutable price snapshot when a SHEIN
+channel quote actually enters an online-order transaction. Channel previews
+that are never submitted are retained only in the internal quote tables and do
+not appear in the purchase analysis tables. Every row is isolated by
+`shop_key`.
+
+The relationship is:
+
+```text
+shein_go_shipping_quotes (1) -> (0..1) shein_label_purchase_choices
+shein_label_purchase_choices (1) -> (1..3) shein_label_purchase_candidates
+shein_label_purchase_choices (many) -> (1) shein_go_api_operations
+```
+
+The choice-to-operation join uses `shop_key`,
+`operation_idempotency_key = idempotency_key`, and
+`operation = 'place-express-order'`. Successful SHEIN results are also linked
+directly through `place_request_id` and `delivery_no`.
+
+### `shein_label_purchase_choices`
+
+This is the analysis header. It contains one row per `preRequestId` that
+entered a `place-express-order` transaction and always stores the final
+operator-selected channel, including when it is outside the three lowest
+prices.
+
+| Column | Stored data |
+| --- | --- |
+| `shop_key` | Shop isolation key; part of the primary key. |
+| `pre_request_id` | SHEIN quote ID and part of the primary key. |
+| `operation_idempotency_key` | Joins the snapshot to the protected Go operation ledger. |
+| `order_no` | SHEIN consumer order number. |
+| `selection_source` | `manual` for the current operator-selected workflow; `automatic` is reserved for a future server-side rule. |
+| `selected_price_rank` | `1`, `2`, or `3` when selected in the low-price Top 3; `NULL` when outside it. |
+| `selected_warehouse_address_code` | SHEIN warehouse address code used to obtain the quote. |
+| `selected_express_id` | SHEIN logistics-company ID. |
+| `selected_express_id_code` | SHEIN logistics-company code/name. |
+| `selected_express_channel_code` | Channel code sent to online ordering. |
+| `selected_express_short_name` | Channel short name returned by SHEIN. |
+| `selected_performance_cost` | Selected live fulfillment fee as `numeric(18,4)`. |
+| `selected_currency_code` | Currency returned by SHEIN; empty means SHEIN omitted it. |
+| `selected_estimate_min_day` | Fastest estimated delivery days, when returned. |
+| `selected_estimate_max_day` | Slowest estimated delivery days, when returned. |
+| `selection_reason` | Current value is `operator_selected`. |
+| `place_request_id` | Async ordering request ID, populated after a successful API call. |
+| `delivery_no` | SHEIN delivery number, populated after a successful API call. |
+| `purchased_at` | Time the purchase transaction reserved the snapshot. |
+
+### `shein_label_purchase_candidates`
+
+This is the Top 3 detail table. It contains one to three rows for each
+`shop_key + pre_request_id`, ranked by comparable `performanceCost`.
+
+| Column | Stored data |
+| --- | --- |
+| `shop_key` | Shop isolation key and part of the primary key. |
+| `pre_request_id` | Foreign key to the purchase choice and part of the primary key. |
+| `price_rank` | Low-price rank `1` through `3`; part of the primary key. |
+| `warehouse_address_code` | Warehouse selected before this SHEIN quote was requested. |
+| `express_id` | SHEIN logistics-company ID. |
+| `express_id_code` | SHEIN logistics-company code/name. |
+| `express_channel_code` | SHEIN channel code. |
+| `express_short_name` | SHEIN channel short name. |
+| `performance_cost` | Candidate live fulfillment fee as `numeric(18,4)`. |
+| `currency_code` | Candidate currency. |
+| `estimate_min_day` | Fastest estimated delivery days, when returned. |
+| `estimate_max_day` | Slowest estimated delivery days, when returned. |
+| `is_selected` | `true` only when this ranked candidate is the final selection. All rows are `false` when selection is outside the Top 3. |
+
+### Snapshot Rules
+
+1. A successful `order-mapping-channels` response is normalized into internal
+   quote tables keyed by `shop_key + preRequestId`. Customer data and raw API
+   responses are not stored in this Go snapshot.
+2. SHEIN requires `warehouseAddressCode` before returning channel prices.
+   Therefore Top 3 is ranked within that selected warehouse and quote, not
+   across warehouses as in the Temu workflow.
+3. Candidates are comparable only when they use the selected channel's
+   currency and include `performanceCost`. Ranking is by fee, then
+   `expressChannelCode` for deterministic ties.
+4. The final channel is selected separately by the operator. The purchase
+   header is written before the SHEIN online-order call; candidates and the
+   header are committed atomically.
+5. A new Go quote must have a valid snapshot or ordering is blocked. Historical
+   `preRequestId` values created before this feature remain orderable but do
+   not create fabricated analysis rows. Historical data is not backfilled.
+
+Example price-premium query:
+
+```sql
+SELECT
+    choice.shop_key,
+    choice.order_no,
+    choice.purchased_at,
+    choice.selected_express_channel_code,
+    choice.selected_price_rank,
+    choice.selected_performance_cost,
+    min(candidate.performance_cost) AS lowest_eligible_cost,
+    choice.selected_performance_cost - min(candidate.performance_cost)
+        AS selected_price_premium
+FROM shein_label_purchase_choices choice
+JOIN shein_label_purchase_candidates candidate
+  USING (shop_key, pre_request_id)
+GROUP BY
+    choice.shop_key,
+    choice.pre_request_id,
+    choice.order_no,
+    choice.purchased_at,
+    choice.selected_express_channel_code,
+    choice.selected_price_rank,
+    choice.selected_performance_cost
+ORDER BY choice.purchased_at DESC;
+```
+
+
 ## Setup
 
 ```bash

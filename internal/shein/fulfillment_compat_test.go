@@ -43,11 +43,11 @@ func TestLogisticsTrackRejectsIncompleteOrMixedQueries(t *testing.T) {
 	}
 }
 
-func TestAvailableShippingWarehouseAcceptsCurrentAndLegacyShapes(t *testing.T) {
+func TestAvailableShippingWarehouseUsesOfficialShape(t *testing.T) {
 	if err := Validate("available-shipping-warehouse", map[string]any{"orderNo": "ORDER-1"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := Validate("available-shipping-warehouse", map[string]any{"orderNoList": []any{"ORDER-1"}}); err != nil {
-		t.Fatal(err)
+	if err := Validate("available-shipping-warehouse", map[string]any{"orderNoList": []any{"ORDER-1"}}); err == nil {
+		t.Fatal("legacy orderNoList must be rejected")
 	}
 }

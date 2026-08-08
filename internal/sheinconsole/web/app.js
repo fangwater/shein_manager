@@ -192,13 +192,14 @@ function orderTime(order) {
 }
 
 function statusLabel(status) {
-  const labels = { "1": "待处理", "2": "待发货", "4": "已发货", "7": "待揽收" };
+  const labels = { "1": "待处理", "2": "待发货", "4": "已发货", "5": "已签收", "6": "已退款", "7": "待揽收", "8": "已报损", "9": "已拒收" };
   return labels[String(status)] || display(status, "未知");
 }
 
 function statusClass(status) {
   const value = String(status);
-  if (value === "4") return "good";
+  if (value === "4" || value === "5") return "good";
+  if (value === "6" || value === "8" || value === "9") return "error";
   if (value === "7") return "info";
   return "pending";
 }
@@ -248,7 +249,7 @@ function closeResult() {
 }
 
 function selectView(name) {
-  const titles = { orders: "待发货订单", labels: "面单任务", tools: "物流工具" };
+  const titles = { orders: "订单中心", labels: "面单任务", tools: "物流工具" };
   document.querySelectorAll(".nav-button").forEach(function (button) {
     button.classList.toggle("active", button.dataset.view === name);
   });
@@ -259,32 +260,29 @@ function selectView(name) {
   byId("sidebar").classList.remove("open");
 }
 
-function taskStorageKey() {
-  return "shein_fulfillment_tasks:" + state.shopKey;
-}
-
-function loadTasks() {
-  try {
-    const parsed = JSON.parse(localStorage.getItem(taskStorageKey()) || "[]");
-    state.tasks = Array.isArray(parsed) ? parsed : [];
-  } catch (error) {
-    state.tasks = [];
-  }
-  renderTasks();
-}
-
-function saveTasks() {
-  localStorage.setItem(taskStorageKey(), JSON.stringify(state.tasks.slice(0, 200)));
-}
-
-function upsertTask(next) {
-  const index = state.tasks.findIndex(function (task) {
-    return task.order_no === next.order_no && task.place_request_id === next.place_request_id;
+async function loadTasks(button) {
+  await busy(button || null, async function () {
+    try {
+      const payload = await request("shipping/tasks");
+      state.tasks = Array.isArray(payload.data) ? payload.data : [];
+      renderTasks();
+    } catch (error) {
+      toast(error.message, true);
+    }
   });
-  if (index >= 0) state.tasks[index] = Object.assign({}, state.tasks[index], next);
-  else state.tasks.unshift(next);
-  saveTasks();
-  renderTasks();
+}
+
+function formatTaskTime(value) {
+  if (!value) return "-";
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? display(value) : formatChinaTime(parsed);
+}
+
+function taskStatusClass(status) {
+  if (status === "label_ready") return "good";
+  if (status === "ready") return "info";
+  if (status === "failed") return "error";
+  return "pending";
 }
 
 function renderTasks() {
@@ -292,24 +290,40 @@ function renderTasks() {
   const table = rows.closest(".table-shell");
   table.classList.toggle("is-empty", state.tasks.length === 0);
   rows.innerHTML = state.tasks.map(function (task, index) {
+    const identifier = task.place_request_id || task.package_no || task.waybill_no;
+    const canCheck = Boolean(task.place_request_id || task.delivery_no);
+    const platformLabel = Number(task.order_place_type) === 1 && task.order_no && task.package_no;
+    const canPrint = Boolean(platformLabel || (task.status === "ready" || task.status === "label_ready") &&
+      (task.delivery_no || task.order_no && task.package_no));
+    const failureTitle = task.failure_reason ? ' title="' + escapeHTML(task.failure_reason) + '"' : "";
     return "<tr><td><strong>" + escapeHTML(task.order_no) + "</strong></td><td>" +
-      escapeHTML(task.express_channel_code) + "</td><td>" + escapeHTML(task.place_request_id) +
+      escapeHTML(display(task.express_channel_code)) + "</td><td>" + escapeHTML(display(identifier)) +
       "</td><td>" + escapeHTML(display(task.delivery_no)) + "</td><td><span class=\"badge " +
-      (task.status === "label_ready" ? "good" : task.status === "checked" ? "info" : "pending") + "\">" +
-      escapeHTML(taskStatusLabel(task.status)) + "</span></td><td>" + escapeHTML(task.updated_at) +
+      taskStatusClass(task.status) + "\"" + failureTitle + ">" + escapeHTML(taskStatusLabel(task.status)) +
+      "</span></td><td>" + escapeHTML(formatTaskTime(task.updated_at)) +
       "</td><td><div class=\"action-row\"><button class=\"table-action\" data-check-task=\"" + index +
-      "\">查询结果</button><button class=\"table-action primary\" data-label-task=\"" + index +
-      "\" " + (task.delivery_no ? "" : "disabled") + ">获取面单</button></div></td></tr>";
+      "\" " + (canCheck ? "" : "disabled") + ">查询结果</button><button class=\"table-action primary\" data-label-task=\"" + index +
+      "\" " + (canPrint ? "" : "disabled") + ">获取面单</button></div></td></tr>";
   }).join("");
   byId("nav-label-count").textContent = String(state.tasks.length);
   byId("metric-task-total").textContent = String(state.tasks.length);
   byId("metric-task-placed").textContent = String(state.tasks.filter(function (task) { return task.status === "placed"; }).length);
-  byId("metric-task-checked").textContent = String(state.tasks.filter(function (task) { return task.status === "checked"; }).length);
+  byId("metric-task-checked").textContent = String(state.tasks.filter(function (task) {
+    return ["checking", "confirming", "ready"].includes(task.status);
+  }).length);
   byId("metric-task-label").textContent = String(state.tasks.filter(function (task) { return task.status === "label_ready"; }).length);
 }
 
 function taskStatusLabel(status) {
-  return { placed: "下单已提交", checked: "结果已确认", label_ready: "面单已获取" }[status] || status;
+  return {
+    discovered: "历史包裹",
+    placed: "下单已提交",
+    checking: "查询中",
+    confirming: "承运商确认中",
+    ready: "可获取面单",
+    failed: "下单失败",
+    label_ready: "面单已生成"
+  }[status] || status;
 }
 
 async function checkTask(index, button) {
@@ -317,15 +331,11 @@ async function checkTask(index, button) {
   if (!task) return;
   await busy(button, async function () {
     try {
-      const payload = await post("shipping/check", { placeRequestId: task.place_request_id });
-      const info = infoOf(payload);
-      upsertTask(Object.assign({}, task, {
-        delivery_no: firstValue(info, ["deliveryNo"]) || task.delivery_no,
-        package_no: firstValue(info, ["packageNo"]) || task.package_no,
-        waybill_no: firstValue(info, ["waybillNo", "trackingNo"]) || task.waybill_no,
-        status: "checked",
-        updated_at: formatChinaTime(new Date())
-      }));
+      const data = task.place_request_id
+        ? { placeRequestId: task.place_request_id }
+        : { deliveryNo: task.delivery_no };
+      const payload = await post("shipping/check", data);
+      await loadTasks();
       showResult("订单 " + task.order_no + " 下单结果", payload);
     } catch (error) {
       toast(error.message, true);
@@ -335,13 +345,20 @@ async function checkTask(index, button) {
 
 async function fetchLabel(index, button) {
   const task = state.tasks[index];
-  if (!task || !task.delivery_no) return;
+  if (!task) return;
   if (!window.confirm("确认向 SHEIN 获取订单 " + task.order_no + " 的面单？")) return;
   await busy(button, async function () {
     try {
-      const data = { deliveryNo: task.delivery_no };
-      const payload = await sensitivePost("shipping/label", data, "print-express-info", task.delivery_no);
-      upsertTask(Object.assign({}, task, { status: "label_ready", updated_at: formatChinaTime(new Date()) }));
+      let data;
+      if (Number(task.order_place_type) === 1 || !task.delivery_no) {
+        data = { orderNo: task.order_no, packageNo: [task.package_no] };
+      } else {
+        data = { deliveryNo: task.delivery_no };
+      }
+      const reference = (data.deliveryNo || task.order_no + ":" + task.package_no) +
+        ":" + Math.floor(Date.now() / 3600000);
+      const payload = await sensitivePost("shipping/label", data, "print-express-info", reference);
+      await loadTasks();
       showResult("订单 " + task.order_no + " 面单", payload);
       toast(payload.cached ? "已返回此前生成的面单" : "面单已获取");
     } catch (error) {
@@ -378,6 +395,7 @@ function filterOrders() {
       return item.skuCode || item.sku || item.goodsId || item.goodsName || "";
     }).filter(Boolean);
     const status = orderStatus(order);
+    const fulfillAttributes = String(status) === "2" ? "" : ' disabled title="仅待发货订单可操作"';
     return "<tr><td><button class=\"order-link\" data-detail-order=\"" + escapeHTML(number) + "\">" +
       escapeHTML(number) + "</button></td><td class=\"product-cell\"><strong>" +
       escapeHTML(skus.join(" / ") || "商品信息待详情") + "</strong><span>" +
@@ -386,7 +404,7 @@ function filterOrders() {
       "</td><td><span class=\"badge " + statusClass(status) + "\">" + escapeHTML(statusLabel(status)) +
       "</span></td><td>" + escapeHTML(display(orderTime(order))) +
       "</td><td><button class=\"table-action primary\" data-fulfill-order=\"" + escapeHTML(number) +
-      "\">发货</button></td></tr>";
+      "\"" + fulfillAttributes + ">发货</button></td></tr>";
   }).join("");
   byId("order-total").textContent = "共 " + filtered.length + " 条";
   byId("metric-orders").textContent = String(filtered.length);
@@ -423,6 +441,7 @@ async function loadOrders(button) {
 async function showOrderDetail(orderNo) {
   try {
     const payload = await post("order/detail", { orderNoList: [orderNo] });
+    await loadTasks();
     showResult("订单 " + orderNo + " 详情", payload);
   } catch (error) {
     toast(error.message, true);
@@ -480,6 +499,7 @@ async function loadFulfillmentContext() {
     state.detail = detailFrom(results[0]);
     renderOrderSummary(state.detail || {});
     renderWarehouses(warehouseList(results[1]));
+    await loadTasks();
   } catch (error) {
     byId("warehouse-choices").innerHTML = '<div class="empty-inline">查询失败，请刷新重试</div>';
     toast(error.message, true);
@@ -555,6 +575,8 @@ async function loadChannels(button) {
       },
       packageWeightInfo: { packageWeight: byId("package-weight").value.trim(), unit: "g" }
     };
+    const ids = goodsIDs();
+    if (ids.length) data.prePackageInfo = { goodsIds: ids };
     try {
       const payload = await post("shipping/channels", data);
       state.preRequestId = firstValue(infoOf(payload), ["preRequestId"]);
@@ -588,26 +610,19 @@ async function purchaseLabel(button) {
     try {
       const payload = await sensitivePost("shipping/place", data, "place-express-order", state.orderNo);
       const info = infoOf(payload);
-      const placeRequestID = firstValue(info, ["placeRequestId"]);
-      const deliveryNo = firstValue(info, ["deliveryNo"]);
-      if (!placeRequestID) {
+      if (!firstValue(info, ["placeRequestId", "deliveryNo"])) {
         showResult("在线下单响应", payload);
-        throw new Error("在线下单响应缺少 placeRequestId，请检查接口结果");
+        throw new Error("在线下单响应缺少履约编号，请检查接口结果");
       }
-      upsertTask({
-        order_no: state.orderNo,
-        express_channel_code: data.expressChannelCode,
-        place_request_id: String(placeRequestID),
-        delivery_no: deliveryNo ? String(deliveryNo) : "",
-        status: "placed",
-        updated_at: formatChinaTime(new Date())
-      });
+      await loadTasks();
       byId("fulfillment-dialog").close();
       selectView("labels");
       showResult("订单 " + state.orderNo + " 在线下单", payload);
       toast(payload.cached ? "已返回此前的下单结果" : "在线下单已提交");
     } catch (error) {
       toast(error.message, true);
+      state.preRequestId = "";
+      updatePurchaseSummary();
     }
   });
 }
@@ -689,7 +704,7 @@ byId("drawer-backdrop").addEventListener("click", closeResult);
 byId("close-fulfillment").addEventListener("click", function () { byId("fulfillment-dialog").close(); });
 byId("refresh-warehouses").addEventListener("click", loadFulfillmentContext);
 byId("refresh-orders").addEventListener("click", function (event) { loadOrders(event.currentTarget); });
-byId("refresh-tasks").addEventListener("click", loadTasks);
+byId("refresh-tasks").addEventListener("click", function (event) { loadTasks(event.currentTarget); });
 byId("order-search").addEventListener("input", filterOrders);
 byId("order-filter").addEventListener("submit", function (event) {
   event.preventDefault();

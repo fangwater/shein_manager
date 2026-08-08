@@ -104,21 +104,24 @@ func Validate(operation string, data map[string]any) error {
 			return errors.New("handleType is required and must be 1 or 2")
 		}
 	case "available-shipping-warehouse":
-		if hasString(data, "orderNo") {
-			return nil
-		}
-		return validateStringList(data, "orderNoList", 1, MaxOrderDetailBatch)
+		return requireString(data, "orderNo")
 	case "order-mapping-channels":
 		return validateMappingChannels(data)
 	case "place-express-order":
 		return validatePlaceExpressOrder(data)
 	case "check-express-order":
-		if !hasString(data, "placeRequestId", "packageNo", "waybillNo", "trackingNo") {
-			return errors.New("placeRequestId, packageNo, waybillNo or trackingNo is required")
+		if !hasString(data, "placeRequestId", "deliveryNo") {
+			return errors.New("placeRequestId or deliveryNo is required")
 		}
 	case "print-express-info":
-		if !hasString(data, "deliveryNo") && !(hasString(data, "orderNo") && hasString(data, "packageNo")) {
-			return errors.New("deliveryNo or both orderNo and packageNo are required")
+		if hasString(data, "deliveryNo") {
+			return nil
+		}
+		if err := requireString(data, "orderNo"); err != nil {
+			return errors.New("deliveryNo or orderNo with packageNo is required")
+		}
+		if err := validateStringList(data, "packageNo", 1, 100); err != nil {
+			return errors.New("packageNo must contain between 1 and 100 values")
 		}
 	case "logistics-track":
 		return errors.New("logistics-track uses query parameters")

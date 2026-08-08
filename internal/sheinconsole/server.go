@@ -61,6 +61,7 @@ func New(store *shein.Store, verifier *shein.SessionVerifier, defaultShopKey str
 	mux.Handle("POST /api/order/list", server.requireAuth(server.operationHandler("order-list")))
 	mux.Handle("POST /api/order/detail", server.requireAuth(server.operationHandler("order-detail")))
 	mux.Handle("POST /api/order/export-address", server.requireAuth(server.operationHandler("export-address")))
+	mux.Handle("GET /api/shipping/tasks", server.requireAuth(http.HandlerFunc(server.fulfillmentTasks)))
 	mux.Handle("POST /api/shipping/warehouses", server.requireAuth(server.operationHandler("available-shipping-warehouse")))
 	mux.Handle("POST /api/shipping/channels", server.requireAuth(server.operationHandler("order-mapping-channels")))
 	mux.Handle("POST /api/shipping/place", server.requireAuth(server.operationHandler("place-express-order")))
@@ -126,6 +127,22 @@ func (s *Server) status(writer http.ResponseWriter, request *http.Request) {
 	}})
 }
 
+func (s *Server) fulfillmentTasks(writer http.ResponseWriter, request *http.Request) {
+	shopKey, err := s.requestedShopKey(request, request.URL.Query().Get("shop_key"))
+	if err != nil {
+		writeJSON(writer, http.StatusBadRequest, response{Success: false, Error: err.Error()})
+		return
+	}
+	ctx, cancel := context.WithTimeout(request.Context(), s.requestTimeout)
+	defer cancel()
+	tasks, err := s.store.ListFulfillmentTasks(ctx, shopKey, 200)
+	if err != nil {
+		s.internalError(writer, "list fulfillment tasks", err)
+		return
+	}
+	writeJSON(writer, http.StatusOK, response{Success: true, Data: tasks})
+}
+
 func (s *Server) operationHandler(operation string) http.Handler {
 	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		var payload proxyRequest
@@ -163,6 +180,7 @@ func (s *Server) operationHandler(operation string) http.Handler {
 			if !reserved {
 				switch record.Status {
 				case "completed":
+					s.persistFulfillmentState(shopKey, operation, payload.Data, record.Response)
 					writeJSON(writer, http.StatusOK, response{Success: true, Data: record.Response, Cached: true})
 				case "pending":
 					writeJSON(writer, http.StatusConflict, response{Success: false, Error: "the same operation is already in progress"})
@@ -180,6 +198,21 @@ func (s *Server) operationHandler(operation string) http.Handler {
 			writeJSON(writer, http.StatusBadRequest, response{Success: false, Error: err.Error()})
 			return
 		}
+		if operation == "place-express-order" {
+			recorded, snapshotErr := s.store.ReserveLabelPurchaseChoice(
+				ctx, shopKey, firstString(payload.Data, "preRequestId"),
+				firstString(payload.Data, "expressChannelCode"), idempotencyKey,
+			)
+			if snapshotErr != nil {
+				_ = s.store.FailOperation(context.WithoutCancel(ctx), shopKey, operation, idempotencyKey, operationErrorSummary(snapshotErr))
+				s.logger.Error("reserve SHEIN price snapshot failed", "shop", shopKey, "error", sanitizedError(snapshotErr))
+				writeJSON(writer, http.StatusConflict, response{Success: false, Error: "无法保存购单价格快照，请重新查询物流渠道"})
+				return
+			}
+			if !recorded {
+				s.logger.Info("SHEIN legacy quote has no price snapshot", "shop", shopKey)
+			}
+		}
 		started := time.Now()
 		result, err := shein.NewClient(credentials, s.requestTimeout).Call(ctx, operation, payload.Data)
 		if err != nil {
@@ -190,6 +223,12 @@ func (s *Server) operationHandler(operation string) http.Handler {
 			s.logger.Warn("SHEIN operation failed", "operation", operation, "shop", shopKey, "user", authenticatedUser(request.Context()), "duration_ms", time.Since(started).Milliseconds(), "error", sanitizedError(err))
 			return
 		}
+		if operation == "order-mapping-channels" {
+			if err := s.saveShippingQuote(shopKey, payload.Data, result); err != nil {
+				s.internalError(writer, "save shipping quote", err)
+				return
+			}
+		}
 		if requiresIdempotency {
 			storedResult := cacheableOperationResponse(operation, result)
 			if err := s.store.CompleteOperation(context.WithoutCancel(ctx), shopKey, operation, idempotencyKey, storedResult); err != nil {
@@ -197,6 +236,7 @@ func (s *Server) operationHandler(operation string) http.Handler {
 				return
 			}
 		}
+		s.persistFulfillmentState(shopKey, operation, payload.Data, result)
 		s.logger.Info("SHEIN operation completed", "operation", operation, "shop", shopKey, "user", authenticatedUser(request.Context()), "duration_ms", time.Since(started).Milliseconds())
 		writeJSON(writer, http.StatusOK, response{Success: true, Data: result})
 	})

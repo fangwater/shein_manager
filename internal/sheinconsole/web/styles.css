@@ -92,6 +92,7 @@ tbody tr:hover { background: #fff8f8; }
 .badge.pending { background: #fff3df; color: var(--amber); }
 .badge.good { background: #e7f6ee; color: var(--green); }
 .badge.info { background: #eaf2fa; color: var(--blue); }
+.badge.error { background: #fdebec; color: #a6131d; }
 .empty { min-height: 218px; display: grid; place-content: center; justify-items: center; gap: 8px; color: #78848f; }
 .empty svg { width: 30px; height: 30px; }
 .empty strong { color: #46515c; font-size: 13px; }

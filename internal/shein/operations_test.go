@@ -73,17 +73,34 @@ func TestOrderDetailAndShippingValidation(t *testing.T) {
 }
 
 func TestCurrentCheckAndPrintFields(t *testing.T) {
-	if err := Validate("check-express-order", map[string]any{"packageNo": "PKG-1"}); err != nil {
+	if err := Validate("check-express-order", map[string]any{"placeRequestId": "PLACE-1"}); err != nil {
 		t.Fatal(err)
+	}
+	if err := Validate("check-express-order", map[string]any{"deliveryNo": "DELIVERY-1"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, invalid := range []map[string]any{
+		{"packageNo": "PKG-1"},
+		{"waybillNo": "WAYBILL-1"},
+		{"trackingNo": "TRACKING-1"},
+	} {
+		if err := Validate("check-express-order", invalid); err == nil {
+			t.Fatalf("unsupported check fields must fail: %#v", invalid)
+		}
 	}
 	if err := Validate("print-express-info", map[string]any{"deliveryNo": "DELIVERY-1"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := Validate("print-express-info", map[string]any{"orderNo": "ORDER-1", "packageNo": "PKG-1"}); err != nil {
+	if err := Validate("print-express-info", map[string]any{"orderNo": "ORDER-1", "packageNo": []any{"PKG-1"}}); err != nil {
 		t.Fatal(err)
 	}
-	if err := Validate("print-express-info", map[string]any{"orderNo": "ORDER-1"}); err == nil {
-		t.Fatal("orderNo without packageNo must fail")
+	for _, invalid := range []map[string]any{
+		{"orderNo": "ORDER-1"},
+		{"orderNo": "ORDER-1", "packageNo": "PKG-1"},
+	} {
+		if err := Validate("print-express-info", invalid); err == nil {
+			t.Fatalf("invalid print fields must fail: %#v", invalid)
+		}
 	}
 }
 

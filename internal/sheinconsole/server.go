@@ -29,6 +29,7 @@ type Server struct {
 	defaultShopKey string
 	requestTimeout time.Duration
 	logger         *slog.Logger
+	autoQueue      chan autoQueueRef
 }
 
 type response struct {
@@ -50,8 +51,9 @@ type userContextKey struct{}
 func New(store *shein.Store, verifier *shein.SessionVerifier, defaultShopKey string, requestTimeout time.Duration, logger *slog.Logger) http.Handler {
 	server := &Server{
 		store: store, verifier: verifier, defaultShopKey: defaultShopKey,
-		requestTimeout: requestTimeout, logger: logger,
+		requestTimeout: requestTimeout, logger: logger, autoQueue: make(chan autoQueueRef, 500),
 	}
+	server.startAutoWorkers()
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", server.health)
 	mux.Handle("GET /", server.requireAuth(http.HandlerFunc(server.index)))
@@ -61,6 +63,11 @@ func New(store *shein.Store, verifier *shein.SessionVerifier, defaultShopKey str
 	mux.Handle("POST /api/order/list", server.requireAuth(server.operationHandler("order-list")))
 	mux.Handle("POST /api/order/detail", server.requireAuth(server.operationHandler("order-detail")))
 	mux.Handle("POST /api/order/export-address", server.requireAuth(server.operationHandler("export-address")))
+	mux.Handle("GET /api/fulfillment/orders", server.requireAuth(http.HandlerFunc(server.fulfillmentOrders)))
+	mux.Handle("POST /api/fulfillment/orders/sync", server.requireAuth(http.HandlerFunc(server.syncFulfillmentOrders)))
+	mux.Handle("GET /api/auto-fulfillment/jobs", server.requireAuth(http.HandlerFunc(server.autoFulfillmentJobs)))
+	mux.Handle("POST /api/auto-fulfillment/run", server.requireAuth(http.HandlerFunc(server.runAutoFulfillment)))
+	mux.Handle("GET /api/auto-fulfillment/batches/latest", server.requireAuth(http.HandlerFunc(server.latestAutoFulfillmentBatch)))
 	mux.Handle("GET /api/shipping/tasks", server.requireAuth(http.HandlerFunc(server.fulfillmentTasks)))
 	mux.Handle("POST /api/shipping/warehouses", server.requireAuth(server.operationHandler("available-shipping-warehouse")))
 	mux.Handle("POST /api/shipping/channels", server.requireAuth(server.operationHandler("order-mapping-channels")))

@@ -81,11 +81,29 @@ func (s *Store) ReserveLabelPurchaseChoice(
 	ctx context.Context,
 	shopKey, preRequestID, selectedChannelCode, idempotencyKey string,
 ) (bool, error) {
+	return s.ReserveLabelPurchaseSelection(
+		ctx, shopKey, preRequestID, selectedChannelCode, idempotencyKey,
+		"manual", "operator_selected",
+	)
+}
+
+func (s *Store) ReserveLabelPurchaseSelection(
+	ctx context.Context,
+	shopKey, preRequestID, selectedChannelCode, idempotencyKey, selectionSource, selectionReason string,
+) (bool, error) {
 	shopKey = strings.TrimSpace(shopKey)
 	preRequestID = strings.TrimSpace(preRequestID)
 	selectedChannelCode = strings.TrimSpace(selectedChannelCode)
+	selectionSource = strings.TrimSpace(selectionSource)
+	selectionReason = strings.TrimSpace(selectionReason)
 	if shopKey == "" || preRequestID == "" || selectedChannelCode == "" || idempotencyKey == "" {
 		return false, errors.New("shop, preRequestId, selected channel and idempotency key are required")
+	}
+	if selectionSource != "manual" && selectionSource != "automatic" {
+		return false, errors.New("selection source must be manual or automatic")
+	}
+	if selectionReason == "" {
+		return false, errors.New("selection reason is required")
 	}
 
 	tx, err := s.pool.Begin(ctx)
@@ -151,23 +169,53 @@ func (s *Store) ReserveLabelPurchaseChoice(
 		return false, errors.New("selected SHEIN channel has no comparable performance cost")
 	}
 
-	rows, err := tx.Query(ctx, `
-		SELECT express_channel_code, express_id, express_id_code, express_short_name,
-			performance_cost::text, currency_code, estimate_min_day, estimate_max_day
-		FROM shein_go_shipping_quote_candidates
-		WHERE shop_key = $1 AND pre_request_id = $2
-			AND performance_cost IS NOT NULL AND currency_code = $3
-		ORDER BY performance_cost, express_channel_code
+	candidateQuery := `
+		SELECT quote.warehouse_address_code,
+			candidate.express_channel_code, candidate.express_id,
+			candidate.express_id_code, candidate.express_short_name,
+			candidate.performance_cost::text, candidate.currency_code,
+			candidate.estimate_min_day, candidate.estimate_max_day
+		FROM shein_go_shipping_quotes quote
+		JOIN shein_go_shipping_quote_candidates candidate USING (shop_key, pre_request_id)
+		WHERE quote.shop_key = $1 AND quote.pre_request_id = $2
+			AND candidate.performance_cost IS NOT NULL AND candidate.currency_code = $3
+		ORDER BY candidate.performance_cost, quote.warehouse_address_code,
+			candidate.express_channel_code
 		LIMIT 3
-	`, shopKey, preRequestID, selected.CurrencyCode)
+	`
+	candidateArgs := []any{shopKey, preRequestID, selected.CurrencyCode}
+	if selectionSource == "automatic" {
+		candidateQuery = `
+			SELECT quote.warehouse_address_code,
+				candidate.express_channel_code, candidate.express_id,
+				candidate.express_id_code, candidate.express_short_name,
+				candidate.performance_cost::text, candidate.currency_code,
+				candidate.estimate_min_day, candidate.estimate_max_day
+			FROM shein_go_shipping_quotes quote
+			JOIN shein_go_shipping_quote_candidates candidate USING (shop_key, pre_request_id)
+			WHERE quote.shop_key = $1 AND quote.order_no = $2
+				AND candidate.performance_cost IS NOT NULL AND candidate.currency_code = $3
+				AND quote.quoted_at BETWEEN
+					(SELECT quoted_at - interval '2 minutes' FROM shein_go_shipping_quotes
+					 WHERE shop_key = $1 AND pre_request_id = $4)
+					AND
+					(SELECT quoted_at + interval '2 minutes' FROM shein_go_shipping_quotes
+					 WHERE shop_key = $1 AND pre_request_id = $4)
+			ORDER BY candidate.performance_cost, quote.warehouse_address_code,
+				candidate.express_channel_code
+			LIMIT 3
+		`
+		candidateArgs = []any{shopKey, selected.OrderNo, selected.CurrencyCode, preRequestID}
+	}
+	rows, err := tx.Query(ctx, candidateQuery, candidateArgs...)
 	if err != nil {
 		return false, fmt.Errorf("load SHEIN low-price candidates: %w", err)
 	}
 	candidates := make([]purchaseCandidate, 0, 3)
 	for rows.Next() {
-		candidate := purchaseCandidate{WarehouseAddressCode: selected.WarehouseAddressCode}
+		candidate := purchaseCandidate{}
 		if err := rows.Scan(
-			&candidate.ExpressChannelCode, &candidate.ExpressID,
+			&candidate.WarehouseAddressCode, &candidate.ExpressChannelCode, &candidate.ExpressID,
 			&candidate.ExpressIDCode, &candidate.ExpressShortName,
 			&candidate.PerformanceCost, &candidate.CurrencyCode,
 			&candidate.EstimateMinDay, &candidate.EstimateMaxDay,
@@ -189,7 +237,8 @@ func (s *Store) ReserveLabelPurchaseChoice(
 
 	var selectedRank *int
 	for _, candidate := range candidates {
-		if candidate.ExpressChannelCode == selected.ExpressChannelCode {
+		if candidate.WarehouseAddressCode == selected.WarehouseAddressCode &&
+			candidate.ExpressChannelCode == selected.ExpressChannelCode {
 			rank := candidate.PriceRank
 			selectedRank = &rank
 			break
@@ -203,14 +252,14 @@ func (s *Store) ReserveLabelPurchaseChoice(
 			selected_express_short_name, selected_performance_cost, selected_currency_code,
 			selected_estimate_min_day, selected_estimate_max_day, selection_reason
 		) VALUES (
-			$1, $2, $3, $4, 'manual', $5, $6, $7, $8, $9, $10,
-			$11::numeric, $12, $13, $14, 'operator_selected'
+			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
+			$12::numeric, $13, $14, $15, $16
 		)
 		ON CONFLICT DO NOTHING
-	`, shopKey, preRequestID, idempotencyKey, selected.OrderNo, selectedRank,
+	`, shopKey, preRequestID, idempotencyKey, selected.OrderNo, selectionSource, selectedRank,
 		selected.WarehouseAddressCode, selected.ExpressID, selected.ExpressIDCode,
 		selected.ExpressChannelCode, selected.ExpressShortName, selected.PerformanceCost,
-		selected.CurrencyCode, selected.EstimateMinDay, selected.EstimateMaxDay)
+		selected.CurrencyCode, selected.EstimateMinDay, selected.EstimateMaxDay, selectionReason)
 	if err != nil {
 		return false, fmt.Errorf("store SHEIN selected purchase choice: %w", err)
 	}
@@ -226,7 +275,8 @@ func (s *Store) ReserveLabelPurchaseChoice(
 				candidate.ExpressID, candidate.ExpressIDCode, candidate.ExpressChannelCode,
 				candidate.ExpressShortName, candidate.PerformanceCost, candidate.CurrencyCode,
 				candidate.EstimateMinDay, candidate.EstimateMaxDay,
-				candidate.ExpressChannelCode == selected.ExpressChannelCode); err != nil {
+				candidate.WarehouseAddressCode == selected.WarehouseAddressCode &&
+					candidate.ExpressChannelCode == selected.ExpressChannelCode); err != nil {
 				return false, fmt.Errorf("store SHEIN low-price purchase candidate: %w", err)
 			}
 		}

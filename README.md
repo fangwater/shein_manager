@@ -38,7 +38,7 @@ prices.
 | `pre_request_id` | SHEIN quote ID and part of the primary key. |
 | `operation_idempotency_key` | Joins the snapshot to the protected Go operation ledger. |
 | `order_no` | SHEIN consumer order number. |
-| `selection_source` | `manual` for the current operator-selected workflow; `automatic` is reserved for a future server-side rule. |
+| `selection_source` | `manual` for an operator-selected purchase or `automatic` for the automatic fulfillment worker. |
 | `selected_price_rank` | `1`, `2`, or `3` when selected in the low-price Top 3; `NULL` when outside it. |
 | `selected_warehouse_address_code` | SHEIN warehouse address code used to obtain the quote. |
 | `selected_express_id` | SHEIN logistics-company ID. |
@@ -49,7 +49,7 @@ prices.
 | `selected_currency_code` | Currency returned by SHEIN; empty means SHEIN omitted it. |
 | `selected_estimate_min_day` | Fastest estimated delivery days, when returned. |
 | `selected_estimate_max_day` | Slowest estimated delivery days, when returned. |
-| `selection_reason` | Current value is `operator_selected`. |
+| `selection_reason` | `operator_selected` for manual purchases or `lowest_available_price` for automatic purchases. |
 | `place_request_id` | Async ordering request ID, populated after a successful API call. |
 | `delivery_no` | SHEIN delivery number, populated after a successful API call. |
 | `purchased_at` | Time the purchase transaction reserved the snapshot. |
@@ -80,15 +80,17 @@ This is the Top 3 detail table. It contains one to three rows for each
 1. A successful `order-mapping-channels` response is normalized into internal
    quote tables keyed by `shop_key + preRequestId`. Customer data and raw API
    responses are not stored in this Go snapshot.
-2. SHEIN requires `warehouseAddressCode` before returning channel prices.
-   Therefore Top 3 is ranked within that selected warehouse and quote, not
-   across warehouses as in the Temu workflow.
+2. SHEIN requires `warehouseAddressCode` before returning channel prices. The
+   automatic worker queries every available warehouse and ranks the comparable
+   channels across those recent quotes. A manual purchase keeps the candidates
+   within the operator-selected quote and warehouse.
 3. Candidates are comparable only when they use the selected channel's
    currency and include `performanceCost`. Ranking is by fee, then
    `expressChannelCode` for deterministic ties.
-4. The final channel is selected separately by the operator. The purchase
-   header is written before the SHEIN online-order call; candidates and the
-   header are committed atomically.
+4. The automatic worker selects the lowest comparable price across the
+   available warehouses; ties are deterministic. Manual purchases preserve the
+   operator's choice. The purchase header is written before the SHEIN
+   online-order call; candidates and the header are committed atomically.
 5. A new Go quote must have a valid snapshot or ordering is blocked. Historical
    `preRequestId` values created before this feature remain orderable but do
    not create fabricated analysis rows. Historical data is not backfilled.
@@ -119,6 +121,28 @@ GROUP BY
     choice.selected_performance_cost
 ORDER BY choice.purchased_at DESC;
 ```
+
+## Fulfillment Queues
+
+The Go console classifies live store orders into the same operational queues
+used by the Temu service. An order is eligible for automatic fulfillment only
+when it has exactly one goods line, uses integrated logistics, is not an
+authentication-warehouse order, is in a processable label state, has one exact
+`skuCode` mapping, and that mapping has a complete enabled warehouse package
+specification. Orders that do not meet every condition remain visible in the
+manual queue with a concrete reason.
+
+Automatic fulfillment jobs are persisted in
+`shein_go_auto_fulfillment_jobs`. Each job records its current step, attempt,
+selected warehouse and channel, price, result identifiers, and any sanitized
+error. Failed jobs move to the exception queue and can be retried without
+losing their operation-ledger history.
+
+One-click fulfillment creates a persistent batch in
+`shein_go_bulk_fulfillment_batches` with ordered items in
+`shein_go_bulk_fulfillment_items`. A batch runs one order at a time and stops
+at the first failure. Restarting continues from the failed item; already
+completed orders are never submitted again.
 
 
 ## Setup

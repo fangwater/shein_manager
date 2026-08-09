@@ -8,6 +8,11 @@ const state = {
   shopKey: new URLSearchParams(window.location.search).get("shop") || sessionStorage.getItem(SHOP_STORAGE_KEY) || "",
   shops: [],
   orders: [],
+  manualOrders: [],
+  processingJobs: [],
+  exceptionJobs: [],
+  ledgerJobs: [],
+  bulkBatch: null,
   orderPage: 1,
   pageSize: 30,
   detail: null,
@@ -223,7 +228,12 @@ function detailFrom(payload) {
   return list[0] || info || null;
 }
 
+function orderDetail(order) {
+  return order && order.detail && typeof order.detail === "object" ? order.detail : order;
+}
+
 function goodsFrom(order) {
+  order = orderDetail(order);
   if (!order || typeof order !== "object") return [];
   const keys = ["orderGoodsInfoList", "goodsList", "orderGoodsList", "productList", "goodsInfoList"];
   for (let index = 0; index < keys.length; index += 1) {
@@ -247,6 +257,8 @@ function goodsLines(order) {
 }
 
 function orderNumber(order) {
+  if (order && order.order_no) return String(order.order_no);
+  order = orderDetail(order);
   return display(firstValue(order, [
     "orderNo", "order_no", "orderSn", "order_sn", "orderId", "order_id",
     "billno", "billNo", "orderCode", "order_code", "parentOrderNo"
@@ -254,10 +266,13 @@ function orderNumber(order) {
 }
 
 function orderStatus(order) {
+  if (order && order.order_status != null) return order.order_status;
+  order = orderDetail(order);
   return firstValue(order, ["orderStatus", "order_status", "status", "newGoodsStatus"]);
 }
 
 function orderTime(order) {
+  order = orderDetail(order);
   return firstValue(order, [
     "updateTime", "updatedTime", "orderUpdateTime", "order_updated_at",
     "orderMsgUpdateTime", "orderAllocateTime", "createTime", "createdTime", "orderCreateTime"
@@ -265,6 +280,7 @@ function orderTime(order) {
 }
 
 function orderDeadline(order) {
+  order = orderDetail(order);
   return firstValue(order, ["needDeliveryTime", "need_delivery_time"]);
 }
 
@@ -294,6 +310,7 @@ function relativeDeadline(value) {
 }
 
 function logisticsOptions(order) {
+  order = orderDetail(order);
   for (const key of ["optionalLogisticsList", "optional_logistics_list"]) {
     if (Array.isArray(order && order[key])) return order[key].map(Number);
   }
@@ -301,12 +318,14 @@ function logisticsOptions(order) {
 }
 
 function supportsIntegratedLogistics(order) {
+  order = orderDetail(order);
   const options = logisticsOptions(order);
   if (options.length) return options.includes(1);
   return Number(firstValue(order, ["performanceType", "performance_type"])) === 1;
 }
 
 function fulfillmentTypeLabel(order) {
+  order = orderDetail(order);
   const options = logisticsOptions(order);
   if (options.includes(1) && options.includes(2)) return "集成 / 自发货可选";
   if (!supportsIntegratedLogistics(order)) return "商家自发货";
@@ -317,6 +336,7 @@ function fulfillmentTypeLabel(order) {
 }
 
 function unprocessableReason(order) {
+  order = orderDetail(order);
   if (String(firstValue(order, ["orderType", "order_type"])) === "5") return "认证仓订单不可在线履约";
   const printStatus = String(firstValue(order, ["printOrderStatus", "print_order_status"]));
   if (!printStatus || printStatus === "1") return "";
@@ -397,7 +417,15 @@ function closeResult() {
 }
 
 function selectView(name) {
-  const titles = { orders: "待履约订单", labels: "面单任务", tools: "物流工具" };
+  const titles = {
+    orders: "待发货订单",
+    processing: "自动处理中",
+    exceptions: "自动发货异常",
+    manual: "人工订单",
+    ledger: "自动发货账本",
+    labels: "面单任务",
+    tools: "物流工具"
+  };
   document.querySelectorAll(".nav-button").forEach(function (button) {
     button.classList.toggle("active", button.dataset.view === name);
   });
@@ -406,6 +434,11 @@ function selectView(name) {
   });
   byId("crumb-current").textContent = titles[name] || "";
   byId("sidebar").classList.remove("open");
+  if (name === "processing") loadJobQueue("processing");
+  if (name === "exceptions") loadJobQueue("exceptions");
+  if (name === "manual") loadManualOrders();
+  if (name === "ledger") loadJobQueue("all");
+  if (name === "labels") loadTasks();
 }
 
 async function loadTasks(button) {
@@ -523,17 +556,18 @@ function renderOrders(rows) {
 
 function orderAction(order, number) {
   const status = String(orderStatus(order));
+  const automatic = '<button class="table-action primary" data-auto-order="' + escapeHTML(number) + '">自动发货</button>';
   if (status === "1") {
     const reason = unprocessableReason(order);
-    return '<button class="table-action primary" data-transition-order="' + escapeHTML(number) + '"' +
+    return '<div class="action-row">' + automatic + '<button class="table-action" data-transition-order="' + escapeHTML(number) + '"' +
       (reason ? ' disabled title="' + escapeHTML(reason) + '"' : "") + ">" +
-      (reason ? "暂不可处理" : "转待发货") + "</button>";
+      (reason ? "暂不可处理" : "人工发货") + "</button></div>";
   }
   if (status === "2") {
     const integrated = supportsIntegratedLogistics(order);
-    return '<button class="table-action primary" data-fulfill-order="' + escapeHTML(number) + '"' +
+    return '<div class="action-row">' + automatic + '<button class="table-action" data-fulfill-order="' + escapeHTML(number) + '"' +
       (integrated ? "" : ' disabled title="订单仅支持商家自发货"') + ">" +
-      (integrated ? "发货" : "仅自发货") + "</button>";
+      (integrated ? "人工发货" : "仅自发货") + "</button></div>";
   }
   return '<button class="table-action" disabled>不可操作</button>';
 }
@@ -576,67 +610,314 @@ function filterOrders() {
   table.classList.toggle("is-empty", items.length === 0);
   rows.innerHTML = items.map(function (order) {
     const number = orderNumber(order);
-    const lines = goodsLines(order);
-    const lineHTML = lines.map(function (line) {
-      return '<span class="sku-line"><b>' + escapeHTML(line.sku) + '</b><span>× ' + line.quantity + "</span></span>";
-    }).join("");
+    const goods = Array.isArray(order.goods) ? order.goods : [];
+    const sheinSku = order.shein_sku || (goods[0] && goods[0].sku_code) || "SKU待返回";
+    const lineHTML = '<span class="sku-line"><b>' + escapeHTML(sheinSku) + '</b><span>SHEIN</span></span>' +
+      '<span class="sku-line"><b>' + escapeHTML(display(order.warehouse_sku, "未绑定")) + '</b><span>仓库 SKU</span></span>';
     const status = orderStatus(order);
     const deadline = orderDeadline(order);
     const tone = String(status) === "2" ? "info" : "pending";
+    const spec = order.package_spec || {};
+    const packageText = [spec.length_cm, spec.width_cm, spec.height_cm].every(Boolean)
+      ? spec.length_cm + " × " + spec.width_cm + " × " + spec.height_cm + " cm"
+      : "尺寸待维护";
+    const weightText = spec.weight_kg ? spec.weight_kg + " kg" : "重量待维护";
     return '<tr><td><div class="order-id"><button class="order-link" data-detail-order="' + escapeHTML(number) + '">' +
       escapeHTML(number) + "</button><small>更新 " + escapeHTML(shortTime(orderTime(order))) +
       '</small></div></td><td><div class="sku-stack">' + (lineHTML || "-") +
       '</div></td><td><div class="order-id"><strong>' + escapeHTML(relativeDeadline(deadline)) +
       "</strong><small>" + escapeHTML(shortTime(deadline)) +
-      '</small></div></td><td><div class="order-id"><strong>' + escapeHTML(fulfillmentTypeLabel(order)) +
-      "</strong><small>" + escapeHTML(display(firstValue(order, ["salesSite", "site"]), "站点未返回")) +
+      '</small></div></td><td><div class="order-id"><strong>' + escapeHTML(packageText) +
+      "</strong><small>" + escapeHTML(weightText) +
       '</small></div></td><td><span class="badge ' + tone + '">' + escapeHTML(workflowStatusText(order)) +
       "</span></td><td>" + orderAction(order, number) + "</td></tr>";
   }).join("");
   byId("order-total").textContent = "共 " + filtered.length + " 条";
   byId("metric-orders").textContent = String(filtered.length);
-  byId("metric-units").textContent = String(items.reduce(function (total, order) {
-    return total + goodsLines(order).reduce(function (sum, line) { return sum + line.quantity; }, 0);
-  }, 0));
-  byId("metric-actionable").textContent = String(items.filter(orderIsActionable).length);
+  byId("metric-units").textContent = String(filtered.filter(function (order) { return order.item_count === 1; }).length);
+  byId("metric-actionable").textContent = String(filtered.filter(function (order) {
+    return order.auto_eligible && order.warehouse_sku && order.package_spec;
+  }).length);
   byId("nav-order-count").textContent = String(filtered.length);
+  renderBulkBatch();
   renderOrderPager(filtered.length);
 }
 
 async function loadOrders(button) {
   await busy(button, async function () {
-    const endTime = new Date();
-    const startTime = new Date(endTime.getTime() - 47 * 60 * 60 * 1000);
-    const data = {
-      queryType: 2,
-      startTime: formatChinaTime(startTime),
-      endTime: formatChinaTime(endTime),
-      page: 1,
-      pageSize: state.pageSize
-    };
     try {
-      const results = await Promise.all([loadOrderPages(data, 1), loadOrderPages(data, 2)]);
-      const enriched = await loadOrderDetails(results[0].concat(results[1]));
-      enriched.orders.sort(function (left, right) {
-        const leftDeadline = parseOrderTime(orderDeadline(left));
-        const rightDeadline = parseOrderTime(orderDeadline(right));
-        if (leftDeadline && rightDeadline && leftDeadline.getTime() !== rightDeadline.getTime()) {
-          return leftDeadline.getTime() - rightDeadline.getTime();
-        }
-        if (leftDeadline) return -1;
-        if (rightDeadline) return 1;
-        const leftUpdated = parseOrderTime(orderTime(left));
-        const rightUpdated = parseOrderTime(orderTime(right));
-        return (rightUpdated ? rightUpdated.getTime() : 0) - (leftUpdated ? leftUpdated.getTime() : 0);
-      });
-      renderOrders(enriched.orders);
-      byId("metric-sync").textContent = shortTime(new Date());
-      if (enriched.failures) toast(enriched.failures + " 组订单详情暂未加载，请稍后同步", true);
+      const payload = button
+        ? await request("fulfillment/orders/sync", { method: "POST" })
+        : await request("fulfillment/orders?queue=pending");
+      const data = payload.data || {};
+      const orders = Array.isArray(data) ? data : (Array.isArray(data.pending) ? data.pending : []);
+      renderOrders(orders);
+      if (data.manual_count != null) byId("nav-manual-count").textContent = String(data.manual_count);
+      if (button) byId("metric-sync").textContent = shortTime(new Date());
     } catch (error) {
-      renderOrders([]);
       toast(error.message, true);
     }
   });
+}
+
+async function runAutoOrders(orderNos, button) {
+  const values = Array.from(new Set((orderNos || []).filter(Boolean)));
+  if (!values.length) {
+    toast("当前没有可自动发货订单", true);
+    return;
+  }
+  if (!window.confirm("确认将 " + values.length + " 个订单加入自动发货？系统将自动流转订单、匹配最低价物流并购买面单。")) return;
+  await busy(button || null, async function () {
+    try {
+      const payload = await request("auto-fulfillment/run", {
+        method: "POST",
+        headers: { "X-Confirm-Shein-Action": "auto-fulfillment" },
+        body: JSON.stringify({ order_nos: values, confirm: true })
+      });
+      const data = payload.data || {};
+      const queued = data.batch && data.batch.total_orders
+        ? data.batch.total_orders
+        : (Array.isArray(data.queued) ? data.queued.length : 0);
+      toast("已加入 " + queued + " 个自动发货任务");
+      state.bulkBatch = data.batch || state.bulkBatch;
+      renderBulkBatch();
+      await Promise.all([loadOrders(), loadJobQueue("processing")]);
+      selectView("processing");
+    } catch (error) {
+      toast(error.message, true);
+    }
+  });
+  loadBulkBatch();
+}
+
+async function loadBulkBatch() {
+  try {
+    const payload = await request("auto-fulfillment/batches/latest");
+    const batch = payload.data || {};
+    state.bulkBatch = batch.id ? batch : null;
+    renderBulkBatch();
+  } catch (error) {
+    toast(error.message, true);
+  }
+}
+
+function renderBulkBatch() {
+  const batch = state.bulkBatch;
+  const node = byId("batch-state");
+  const button = byId("run-all-auto");
+  if (!batch) {
+    node.hidden = true;
+    button.disabled = state.orders.length === 0;
+    button.innerHTML = '<svg><use href="#i-truck"/></svg>一键发货';
+    return;
+  }
+  const progress = batch.succeeded_orders + " / " + batch.total_orders;
+  node.hidden = false;
+  node.className = "batch-state" +
+    (batch.status === "stopped" ? " error" : batch.status === "completed" ? " good" : "");
+  if (batch.status === "running") {
+    node.textContent = "一键发货进行中 · 已完成 " + progress;
+    button.disabled = true;
+    button.innerHTML = '<svg><use href="#i-truck"/></svg>执行中 ' + progress;
+  } else if (batch.status === "stopped") {
+    node.textContent = "批次已在首个异常处停止 · 已完成 " + progress;
+    button.disabled = state.orders.length === 0;
+    button.innerHTML = '<svg><use href="#i-truck"/></svg>新建一键发货';
+  } else {
+    node.textContent = "最近批次已完成 · " + progress;
+    button.disabled = state.orders.length === 0;
+    button.innerHTML = '<svg><use href="#i-truck"/></svg>一键发货';
+  }
+}
+
+function jobStepLabel(step) {
+  return {
+    queued: "等待执行",
+    validating: "校验订单",
+    transition_order: "流转待发货",
+    query_warehouses: "查询可用仓",
+    quote_channels: "匹配最低价物流",
+    place_order: "在线下单",
+    check_order: "等待下单结果",
+    print_label: "获取面单",
+    completed: "自动发货完成",
+    failed: "自动发货停止"
+  }[step] || display(step);
+}
+
+function autoStatusLabel(status) {
+  return {
+    queued: "排队中",
+    running: "执行中",
+    waiting_confirmation: "等待承运商",
+    failed: "异常",
+    completed: "已完成"
+  }[status] || display(status);
+}
+
+function autoStatusClass(status) {
+  if (status === "completed") return "good";
+  if (status === "failed") return "error";
+  if (status === "waiting_confirmation") return "info";
+  return "pending";
+}
+
+async function loadJobQueue(queue, button) {
+  await busy(button || null, async function () {
+    try {
+      const payload = await request("auto-fulfillment/jobs?queue=" + encodeURIComponent(queue));
+      const jobs = Array.isArray(payload.data) ? payload.data : [];
+      if (queue === "processing") {
+        state.processingJobs = jobs;
+        renderProcessingJobs();
+      } else if (queue === "exceptions") {
+        state.exceptionJobs = jobs;
+        renderExceptionJobs();
+      } else {
+        state.ledgerJobs = jobs;
+        renderLedgerJobs();
+      }
+    } catch (error) {
+      toast(error.message, true);
+    }
+  });
+}
+
+function jobWarehouseChannel(job) {
+  return '<div class="order-id"><strong>' + escapeHTML(display(job.warehouse_address_code, "尚未选仓")) +
+    '</strong><small>' + escapeHTML(display(job.express_channel_code, "尚未选渠道")) + "</small></div>";
+}
+
+function renderProcessingJobs() {
+  const jobs = state.processingJobs;
+  const rows = byId("processing-rows");
+  rows.closest(".table-shell").classList.toggle("is-empty", jobs.length === 0);
+  rows.innerHTML = jobs.map(function (job) {
+    return '<tr><td><strong>' + escapeHTML(job.order_no) +
+      '</strong></td><td><span class="badge ' + autoStatusClass(job.status) + '">' +
+      escapeHTML(jobStepLabel(job.current_step)) + "</span></td><td>" + jobWarehouseChannel(job) +
+      '</td><td>' + escapeHTML(job.performance_cost ? job.performance_cost + " " + display(job.currency_code, "") : "-") +
+      '</td><td>' + escapeHTML(display(job.attempts, "0")) +
+      '</td><td>' + escapeHTML(formatTaskTime(job.updated_at)) + "</td></tr>";
+  }).join("");
+  byId("metric-processing-total").textContent = String(jobs.length);
+  byId("metric-processing-queued").textContent = String(jobs.filter(function (job) { return job.status === "queued"; }).length);
+  byId("metric-processing-running").textContent = String(jobs.filter(function (job) { return job.status === "running"; }).length);
+  byId("metric-processing-waiting").textContent = String(jobs.filter(function (job) { return job.status === "waiting_confirmation"; }).length);
+  byId("nav-processing-count").textContent = String(jobs.length);
+}
+
+function renderExceptionJobs() {
+  const jobs = state.exceptionJobs;
+  const rows = byId("exception-rows");
+  rows.closest(".table-shell").classList.toggle("is-empty", jobs.length === 0);
+  rows.innerHTML = jobs.map(function (job, index) {
+    return '<tr><td><strong>' + escapeHTML(job.order_no) +
+      '</strong></td><td>' + escapeHTML(jobStepLabel(job.current_step)) +
+      '</td><td><span class="badge error">' + escapeHTML(display(job.error_code, "workflow_error")) +
+      '</span></td><td><div class="error-copy">' + escapeHTML(display(job.error_message, "自动履约失败")) +
+      '</div></td><td>' + escapeHTML(formatTaskTime(job.updated_at)) +
+      '</td><td><button class="table-action primary" data-retry-job="' + index + '">重试</button></td></tr>';
+  }).join("");
+  byId("metric-exception-total").textContent = String(jobs.length);
+  byId("metric-exception-api").textContent = String(jobs.filter(function (job) {
+    return job.error_code && !["workflow_error", "timeout", "queue_full"].includes(job.error_code);
+  }).length);
+  byId("metric-exception-workflow").textContent = String(jobs.filter(function (job) {
+    return ["workflow_error", "queue_full"].includes(job.error_code);
+  }).length);
+  byId("metric-exception-timeout").textContent = String(jobs.filter(function (job) { return job.error_code === "timeout"; }).length);
+  byId("nav-exception-count").textContent = String(jobs.length);
+}
+
+function renderLedgerJobs() {
+  const jobs = state.ledgerJobs;
+  const rows = byId("ledger-rows");
+  rows.closest(".table-shell").classList.toggle("is-empty", jobs.length === 0);
+  rows.innerHTML = jobs.map(function (job) {
+    const identifier = job.delivery_no || job.place_request_id || "-";
+    return '<tr><td><strong>' + escapeHTML(job.order_no) +
+      '</strong></td><td><span class="badge ' + autoStatusClass(job.status) + '">' +
+      escapeHTML(autoStatusLabel(job.status)) + "</span></td><td>" + jobWarehouseChannel(job) +
+      '</td><td>' + escapeHTML(job.performance_cost ? job.performance_cost + " " + display(job.currency_code, "") : "-") +
+      '</td><td>' + escapeHTML(identifier) +
+      '</td><td>' + escapeHTML(formatTaskTime(job.updated_at)) + "</td></tr>";
+  }).join("");
+  const processing = jobs.filter(function (job) {
+    return ["queued", "running", "waiting_confirmation"].includes(job.status);
+  }).length;
+  byId("metric-ledger-total").textContent = String(jobs.length);
+  byId("metric-ledger-processing").textContent = String(processing);
+  byId("metric-ledger-failed").textContent = String(jobs.filter(function (job) { return job.status === "failed"; }).length);
+  byId("metric-ledger-completed").textContent = String(jobs.filter(function (job) { return job.status === "completed"; }).length);
+  byId("nav-ledger-count").textContent = String(jobs.length);
+}
+
+async function loadManualOrders(button) {
+  await busy(button || null, async function () {
+    try {
+      const payload = await request("fulfillment/orders?queue=manual");
+      state.manualOrders = Array.isArray(payload.data) ? payload.data : [];
+      renderManualOrders();
+    } catch (error) {
+      toast(error.message, true);
+    }
+  });
+}
+
+function renderManualOrders() {
+  const query = byId("manual-search").value.trim().toLowerCase();
+  const filtered = state.manualOrders.filter(function (order) {
+    const goods = Array.isArray(order.goods) ? order.goods : [];
+    const text = [order.order_no, order.manual_reasons, goods.map(function (goodsItem) {
+      return [goodsItem.sku_code, goodsItem.seller_sku, goodsItem.title].join(" ");
+    }).join(" ")].join(" ").toLowerCase();
+    return !query || text.includes(query);
+  });
+  const rows = byId("manual-rows");
+  rows.closest(".table-shell").classList.toggle("is-empty", filtered.length === 0);
+  rows.innerHTML = filtered.map(function (order) {
+    const goods = Array.isArray(order.goods) ? order.goods : [];
+    const goodsHTML = goods.map(function (goodsItem) {
+      return '<span class="sku-line"><b>' + escapeHTML(display(goodsItem.sku_code || goodsItem.seller_sku)) +
+        '</b><span>' + escapeHTML(display(goodsItem.title, "商品")) + "</span></span>";
+    }).join("");
+    const reasons = (order.manual_reasons || []).map(function (reason) {
+      return '<span class="reason-line">' + escapeHTML(reason) + "</span>";
+    }).join("");
+    const status = String(order.order_status);
+    const blocked = unprocessableReason(order);
+    let action;
+    if (status === "1") {
+      action = '<button class="table-action primary" data-manual-transition="' + escapeHTML(order.order_no) + '"' +
+        (blocked ? ' disabled title="' + escapeHTML(blocked) + '"' : "") + ">" +
+        (blocked ? "暂不可处理" : "人工发货") + "</button>";
+    } else {
+      const integrated = supportsIntegratedLogistics(order);
+      action = '<button class="table-action primary" data-manual-fulfill="' + escapeHTML(order.order_no) + '"' +
+        (integrated ? "" : ' disabled title="订单仅支持商家自发货"') + ">" +
+        (integrated ? "人工发货" : "仅自发货") + "</button>";
+    }
+    return '<tr><td><button class="order-link" data-manual-detail="' + escapeHTML(order.order_no) + '">' +
+      escapeHTML(order.order_no) + '</button></td><td><div class="sku-stack">' + (goodsHTML || "-") +
+      '</div></td><td><div class="order-id"><strong>' + escapeHTML(relativeDeadline(orderDeadline(order))) +
+      '</strong><small>' + escapeHTML(shortTime(orderDeadline(order))) +
+      '</small></div></td><td><div class="reason-stack">' + reasons +
+      '</div></td><td><span class="badge pending">' + escapeHTML(workflowStatusText(order)) +
+      "</span></td><td>" + action + "</td></tr>";
+  }).join("");
+  byId("manual-total").textContent = "共 " + filtered.length + " 条";
+  byId("metric-manual-total").textContent = String(state.manualOrders.length);
+  byId("metric-manual-multi").textContent = String(state.manualOrders.filter(function (order) {
+    return (order.manual_reasons || []).some(function (reason) { return reason.includes("多件"); });
+  }).length);
+  byId("metric-manual-sku").textContent = String(state.manualOrders.filter(function (order) {
+    return (order.manual_reasons || []).some(function (reason) { return reason.includes("SKU"); });
+  }).length);
+  byId("metric-manual-other").textContent = String(state.manualOrders.filter(function (order) {
+    return !(order.manual_reasons || []).some(function (reason) { return reason.includes("多件") || reason.includes("SKU"); });
+  }).length);
+  byId("nav-manual-count").textContent = String(state.manualOrders.length);
 }
 
 async function transitionToShipping(orderNo, button) {
@@ -752,6 +1033,17 @@ function openFulfillment(orderNo) {
   state.warehouse = null;
   state.channel = null;
   state.preRequestId = "";
+  const queuedOrder = state.orders.concat(state.manualOrders).find(function (order) {
+    return order.order_no === orderNo;
+  });
+  const spec = queuedOrder && queuedOrder.package_spec;
+  if (spec) {
+    byId("package-length").value = display(spec.length_cm, "20");
+    byId("package-width").value = display(spec.width_cm, "15");
+    byId("package-height").value = display(spec.height_cm, "5");
+    const weight = Number(spec.weight_kg);
+    byId("package-weight").value = Number.isFinite(weight) && weight > 0 ? String(weight * 1000) : "300";
+  }
   byId("fulfillment-title").textContent = "订单 " + orderNo + " 发货";
   renderOrderSummary({});
   renderChannels([]);
@@ -923,8 +1215,16 @@ async function loadStatus() {
     byId("service-dot").className = "dot";
     byId("service-text").textContent = "Go 服务正常";
     byId("session-dot").className = "dot";
-    loadTasks();
-    loadOrders(byId("refresh-orders"));
+    await Promise.all([
+      loadOrders(),
+      loadManualOrders(),
+      loadJobQueue("processing"),
+      loadJobQueue("exceptions"),
+      loadJobQueue("all"),
+      loadBulkBatch(),
+      loadTasks()
+    ]);
+    loadOrders(byId("refresh-orders")).then(loadManualOrders);
   } catch (error) {
     byId("service-dot").className = "dot error";
     byId("service-text").textContent = "服务异常";
@@ -943,7 +1243,17 @@ byId("close-result").addEventListener("click", closeResult);
 byId("drawer-backdrop").addEventListener("click", closeResult);
 byId("close-fulfillment").addEventListener("click", function () { byId("fulfillment-dialog").close(); });
 byId("refresh-warehouses").addEventListener("click", loadFulfillmentContext);
-byId("refresh-orders").addEventListener("click", function (event) { loadOrders(event.currentTarget); });
+byId("refresh-orders").addEventListener("click", async function (event) {
+  await loadOrders(event.currentTarget);
+  loadManualOrders();
+});
+byId("run-all-auto").addEventListener("click", function (event) {
+  runAutoOrders(state.orders.map(function (order) { return order.order_no; }), event.currentTarget);
+});
+byId("refresh-processing").addEventListener("click", function (event) { loadJobQueue("processing", event.currentTarget); });
+byId("refresh-exceptions").addEventListener("click", function (event) { loadJobQueue("exceptions", event.currentTarget); });
+byId("refresh-manual").addEventListener("click", function (event) { loadManualOrders(event.currentTarget); });
+byId("refresh-ledger").addEventListener("click", function (event) { loadJobQueue("all", event.currentTarget); });
 byId("refresh-tasks").addEventListener("click", function (event) { loadTasks(event.currentTarget); });
 byId("order-search").addEventListener("input", function () {
   state.orderPage = 1;
@@ -955,6 +1265,7 @@ byId("orders-pager").addEventListener("click", function (event) {
   state.orderPage = Number(button.dataset.orderPage);
   filterOrders();
 });
+byId("manual-search").addEventListener("input", renderManualOrders);
 byId("channel-form").addEventListener("submit", function (event) {
   event.preventDefault();
   loadChannels(event.submitter);
@@ -979,9 +1290,28 @@ byId("order-rows").addEventListener("click", function (event) {
   const detailButton = event.target.closest("[data-detail-order]");
   const transitionButton = event.target.closest("[data-transition-order]");
   const fulfillmentButton = event.target.closest("[data-fulfill-order]");
+  const autoButton = event.target.closest("[data-auto-order]");
   if (detailButton) showOrderDetail(detailButton.dataset.detailOrder);
   if (transitionButton) transitionToShipping(transitionButton.dataset.transitionOrder, transitionButton);
   if (fulfillmentButton) openFulfillment(fulfillmentButton.dataset.fulfillOrder);
+  if (autoButton) runAutoOrders([autoButton.dataset.autoOrder], autoButton);
+});
+byId("manual-rows").addEventListener("click", async function (event) {
+  const detailButton = event.target.closest("[data-manual-detail]");
+  const transitionButton = event.target.closest("[data-manual-transition]");
+  const fulfillmentButton = event.target.closest("[data-manual-fulfill]");
+  if (detailButton) showOrderDetail(detailButton.dataset.manualDetail);
+  if (transitionButton) {
+    await transitionToShipping(transitionButton.dataset.manualTransition, transitionButton);
+    loadManualOrders();
+  }
+  if (fulfillmentButton) openFulfillment(fulfillmentButton.dataset.manualFulfill);
+});
+byId("exception-rows").addEventListener("click", function (event) {
+  const button = event.target.closest("[data-retry-job]");
+  if (!button) return;
+  const job = state.exceptionJobs[Number(button.dataset.retryJob)];
+  if (job) runAutoOrders([job.order_no], button);
 });
 byId("task-rows").addEventListener("click", function (event) {
   const checkButton = event.target.closest("[data-check-task]");
@@ -1011,3 +1341,13 @@ warehouseList.current = [];
 renderChannels.current = [];
 
 loadStatus();
+
+window.setInterval(function () {
+  if (byId("view-processing").classList.contains("active")) {
+    loadJobQueue("processing");
+  }
+  if (byId("view-processing").classList.contains("active") ||
+      byId("view-orders").classList.contains("active")) {
+    loadBulkBatch();
+  }
+}, 12000);

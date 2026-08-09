@@ -21,6 +21,9 @@
     <symbol id="i-print" viewBox="0 0 24 24"><path d="M6 9V3h12v6M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2M6 14h12v7H6z"/></symbol>
     <symbol id="i-eye" viewBox="0 0 24 24"><path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6S2 12 2 12z"/><circle cx="12" cy="12" r="2.5"/></symbol>
     <symbol id="i-chevron" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></symbol>
+    <symbol id="i-warning" viewBox="0 0 24 24"><path d="M12 3 2 21h20L12 3zM12 9v5M12 18h.01"/></symbol>
+    <symbol id="i-user" viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></symbol>
+    <symbol id="i-ledger" viewBox="0 0 24 24"><path d="M5 3h14v18H5zM9 3v18M12 8h4M12 12h4M12 16h3"/></symbol>
   </svg>
 
   <div class="app-shell">
@@ -30,7 +33,11 @@
         <div><strong id="brand-shop">SHEIN Fulfillment</strong><small>Shipping & Label Console</small></div>
       </div>
       <nav class="nav" aria-label="主导航">
-        <button class="nav-button active" data-view="orders"><svg><use href="#i-orders"/></svg><span>待履约订单</span><b id="nav-order-count">0</b></button>
+        <button class="nav-button active" data-view="orders"><svg><use href="#i-orders"/></svg><span>待发货订单</span><b id="nav-order-count">0</b></button>
+        <button class="nav-button" data-view="processing"><svg><use href="#i-truck"/></svg><span>自动处理中</span><b id="nav-processing-count">0</b></button>
+        <button class="nav-button" data-view="exceptions"><svg><use href="#i-warning"/></svg><span>自动发货异常</span><b id="nav-exception-count">0</b></button>
+        <button class="nav-button" data-view="manual"><svg><use href="#i-user"/></svg><span>人工订单</span><b id="nav-manual-count">0</b></button>
+        <button class="nav-button" data-view="ledger"><svg><use href="#i-ledger"/></svg><span>自动发货账本</span><b id="nav-ledger-count">0</b></button>
         <button class="nav-button" data-view="labels"><svg><use href="#i-label"/></svg><span>面单任务</span><b id="nav-label-count">0</b></button>
         <button class="nav-button" data-view="tools"><svg><use href="#i-tools"/></svg><span>物流工具</span></button>
       </nav>
@@ -43,7 +50,7 @@
     <div class="workspace">
       <header class="topbar">
         <button class="icon-button menu-button" id="menu-button" type="button" title="打开导航" aria-label="打开导航"><svg><use href="#i-menu"/></svg></button>
-        <div class="crumb"><span id="crumb-shop">SHEIN</span><b>/</b><strong id="crumb-current">待履约订单</strong></div>
+        <div class="crumb"><span id="crumb-shop">SHEIN</span><b>/</b><strong id="crumb-current">待发货订单</strong></div>
         <label class="shop-switcher"><small>当前店铺</small><select id="shop-select" aria-label="选择店铺"></select></label>
         <div class="session-pill"><span class="dot" id="session-dot"></span><div><small>当前用户</small><strong id="session-user">连接中</strong></div></div>
       </header>
@@ -51,13 +58,17 @@
       <main>
         <section class="view active" id="view-orders">
           <div class="page-head">
-            <div><h1>待履约订单</h1><p>按要求发货时间排序，完成订单流转、物流选择与面单购买</p></div>
-            <button class="secondary-button" id="refresh-orders" type="button"><svg><use href="#i-refresh"/></svg>同步订单</button>
+            <div><h1>待发货订单</h1><p>单件、SKU 已绑定且包裹参数完整的订单进入自动履约队列</p></div>
+            <div class="page-actions">
+              <span class="batch-state" id="batch-state" hidden></span>
+              <button class="primary-button" id="run-all-auto" type="button"><svg><use href="#i-truck"/></svg>一键发货</button>
+              <button class="secondary-button" id="refresh-orders" type="button"><svg><use href="#i-refresh"/></svg>同步订单</button>
+            </div>
           </div>
           <div class="status-band">
-            <div><small>待履约订单</small><strong id="metric-orders">0</strong></div>
-            <div><small>当前页商品件数</small><strong id="metric-units">0</strong></div>
-            <div><small>当前页可操作</small><strong id="metric-actionable">0</strong></div>
+            <div><small>可自动发货</small><strong id="metric-orders">0</strong></div>
+            <div><small>单件订单</small><strong id="metric-units">0</strong></div>
+            <div><small>SKU / 包裹已就绪</small><strong id="metric-actionable">0</strong></div>
             <div><small>最近同步</small><strong class="compact" id="metric-sync">尚未同步</strong></div>
           </div>
           <div class="toolbar">
@@ -66,12 +77,96 @@
           </div>
           <div class="table-shell">
             <table>
-              <thead><tr><th>订单号</th><th>SKU / 数量</th><th>要求发货</th><th>履约类型</th><th>发货状态</th><th></th></tr></thead>
+              <thead><tr><th>订单号</th><th>SHEIN SKU / 仓库 SKU</th><th>要求发货</th><th>包裹参数</th><th>发货状态</th><th>操作</th></tr></thead>
               <tbody id="order-rows"></tbody>
             </table>
             <div class="empty" id="orders-empty"><svg><use href="#i-orders"/></svg><strong>没有待履约订单</strong><span>同步 SHEIN 后，符合条件的订单会显示在这里</span></div>
           </div>
           <div class="pager" id="orders-pager" hidden></div>
+        </section>
+
+        <section class="view" id="view-processing">
+          <div class="page-head">
+            <div><h1>自动处理中</h1><p>正在流转订单、匹配最低价物流、购单或等待承运商确认</p></div>
+            <button class="secondary-button" id="refresh-processing" type="button"><svg><use href="#i-refresh"/></svg>刷新</button>
+          </div>
+          <div class="status-band">
+            <div><small>处理中</small><strong id="metric-processing-total">0</strong></div>
+            <div><small>排队中</small><strong id="metric-processing-queued">0</strong></div>
+            <div><small>执行中</small><strong id="metric-processing-running">0</strong></div>
+            <div><small>等待承运商</small><strong id="metric-processing-waiting">0</strong></div>
+          </div>
+          <div class="table-shell">
+            <table>
+              <thead><tr><th>订单号</th><th>当前步骤</th><th>仓库 / 渠道</th><th>价格</th><th>尝试</th><th>更新时间</th></tr></thead>
+              <tbody id="processing-rows"></tbody>
+            </table>
+            <div class="empty" id="processing-empty"><svg><use href="#i-truck"/></svg><strong>没有自动处理中任务</strong><span>一键发货后，任务进度会显示在这里</span></div>
+          </div>
+        </section>
+
+        <section class="view" id="view-exceptions">
+          <div class="page-head">
+            <div><h1>自动发货异常</h1><p>自动履约停止的订单，处理原因后可从原步骤安全重试</p></div>
+            <button class="secondary-button" id="refresh-exceptions" type="button"><svg><use href="#i-refresh"/></svg>刷新</button>
+          </div>
+          <div class="status-band">
+            <div><small>异常总数</small><strong id="metric-exception-total">0</strong></div>
+            <div><small>平台接口</small><strong id="metric-exception-api">0</strong></div>
+            <div><small>流程校验</small><strong id="metric-exception-workflow">0</strong></div>
+            <div><small>执行超时</small><strong id="metric-exception-timeout">0</strong></div>
+          </div>
+          <div class="table-shell">
+            <table>
+              <thead><tr><th>订单号</th><th>失败步骤</th><th>错误代码</th><th>错误原因</th><th>更新时间</th><th>操作</th></tr></thead>
+              <tbody id="exception-rows"></tbody>
+            </table>
+            <div class="empty" id="exceptions-empty"><svg><use href="#i-warning"/></svg><strong>没有自动发货异常</strong><span>失败任务会保留在这里，不会静默回到待发货</span></div>
+          </div>
+        </section>
+
+        <section class="view" id="view-manual">
+          <div class="page-head">
+            <div><h1>人工订单</h1><p>多件、SKU 未绑定、包裹参数不完整或平台限制的订单</p></div>
+            <button class="secondary-button" id="refresh-manual" type="button"><svg><use href="#i-refresh"/></svg>刷新</button>
+          </div>
+          <div class="status-band">
+            <div><small>人工订单</small><strong id="metric-manual-total">0</strong></div>
+            <div><small>多件订单</small><strong id="metric-manual-multi">0</strong></div>
+            <div><small>SKU 关系异常</small><strong id="metric-manual-sku">0</strong></div>
+            <div><small>包裹 / 平台限制</small><strong id="metric-manual-other">0</strong></div>
+          </div>
+          <div class="toolbar">
+            <label class="search"><svg><use href="#i-search"/></svg><input id="manual-search" type="search" placeholder="搜索订单号或 SKU"></label>
+            <span class="table-note" id="manual-total">共 0 条</span>
+          </div>
+          <div class="table-shell">
+            <table>
+              <thead><tr><th>订单号</th><th>商品 / SKU</th><th>要求发货</th><th>人工原因</th><th>状态</th><th>操作</th></tr></thead>
+              <tbody id="manual-rows"></tbody>
+            </table>
+            <div class="empty" id="manual-empty"><svg><use href="#i-user"/></svg><strong>没有人工订单</strong><span>不符合单件自动规则的订单会显示在这里</span></div>
+          </div>
+        </section>
+
+        <section class="view" id="view-ledger">
+          <div class="page-head">
+            <div><h1>自动发货账本</h1><p>只读记录自动选仓、最低价渠道、购单结果和最终状态</p></div>
+            <button class="secondary-button" id="refresh-ledger" type="button"><svg><use href="#i-refresh"/></svg>刷新</button>
+          </div>
+          <div class="status-band">
+            <div><small>全部任务</small><strong id="metric-ledger-total">0</strong></div>
+            <div><small>处理中</small><strong id="metric-ledger-processing">0</strong></div>
+            <div><small>自动发货异常</small><strong id="metric-ledger-failed">0</strong></div>
+            <div><small>已完成</small><strong id="metric-ledger-completed">0</strong></div>
+          </div>
+          <div class="table-shell">
+            <table>
+              <thead><tr><th>订单号</th><th>状态</th><th>仓库 / 渠道</th><th>最终价格</th><th>履约编号</th><th>更新时间</th></tr></thead>
+              <tbody id="ledger-rows"></tbody>
+            </table>
+            <div class="empty" id="ledger-empty"><svg><use href="#i-ledger"/></svg><strong>暂无自动发货账本</strong><span>自动履约任务创建后会永久保留在这里</span></div>
+          </div>
         </section>
 
         <section class="view" id="view-labels">

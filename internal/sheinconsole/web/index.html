@@ -30,7 +30,7 @@
         <div><strong id="brand-shop">SHEIN Fulfillment</strong><small>Shipping & Label Console</small></div>
       </div>
       <nav class="nav" aria-label="主导航">
-        <button class="nav-button active" data-view="orders"><svg><use href="#i-orders"/></svg><span>订单中心</span><b id="nav-order-count">0</b></button>
+        <button class="nav-button active" data-view="orders"><svg><use href="#i-orders"/></svg><span>待履约订单</span><b id="nav-order-count">0</b></button>
         <button class="nav-button" data-view="labels"><svg><use href="#i-label"/></svg><span>面单任务</span><b id="nav-label-count">0</b></button>
         <button class="nav-button" data-view="tools"><svg><use href="#i-tools"/></svg><span>物流工具</span></button>
       </nav>
@@ -43,7 +43,7 @@
     <div class="workspace">
       <header class="topbar">
         <button class="icon-button menu-button" id="menu-button" type="button" title="打开导航" aria-label="打开导航"><svg><use href="#i-menu"/></svg></button>
-        <div class="crumb"><span id="crumb-shop">SHEIN</span><b>/</b><strong id="crumb-current">订单中心</strong></div>
+        <div class="crumb"><span id="crumb-shop">SHEIN</span><b>/</b><strong id="crumb-current">待履约订单</strong></div>
         <label class="shop-switcher"><small>当前店铺</small><select id="shop-select" aria-label="选择店铺"></select></label>
         <div class="session-pill"><span class="dot" id="session-dot"></span><div><small>当前用户</small><strong id="session-user">连接中</strong></div></div>
       </header>
@@ -51,33 +51,27 @@
       <main>
         <section class="view active" id="view-orders">
           <div class="page-head">
-            <div><h1>订单中心</h1></div>
-            <button class="primary-button" id="refresh-orders" type="button"><svg><use href="#i-refresh"/></svg>刷新订单</button>
+            <div><h1>待履约订单</h1><p>按要求发货时间排序，完成订单流转、物流选择与面单购买</p></div>
+            <button class="secondary-button" id="refresh-orders" type="button"><svg><use href="#i-refresh"/></svg>同步订单</button>
           </div>
           <div class="status-band">
-            <div><small>查询结果</small><strong id="metric-orders">0</strong></div>
-            <div><small>待处理</small><strong id="metric-pending">0</strong></div>
-            <div><small>待发货</small><strong id="metric-shipping">0</strong></div>
-            <div><small>最近查询</small><strong class="compact" id="metric-updated">尚未查询</strong></div>
+            <div><small>待履约订单</small><strong id="metric-orders">0</strong></div>
+            <div><small>当前页商品件数</small><strong id="metric-units">0</strong></div>
+            <div><small>当前页可操作</small><strong id="metric-actionable">0</strong></div>
+            <div><small>最近同步</small><strong class="compact" id="metric-sync">尚未同步</strong></div>
           </div>
-          <form class="filter-bar" id="order-filter">
-            <label><span>开始时间</span><input id="start-time" required></label>
-            <label><span>结束时间</span><input id="end-time" required></label>
-            <label><span>时间维度</span><select id="query-type"><option value="2">更新时间</option><option value="1">下发时间</option></select></label>
-            <label><span>订单状态</span><select id="order-status"><option value="actionable">待履约（待处理 + 待发货）</option><option value="1">待处理</option><option value="2">待发货</option><option value="">全部</option><option value="7">待揽收</option><option value="4">已发货</option><option value="5">已签收</option><option value="6">已退款</option><option value="8">已报损</option><option value="9">已拒收</option></select></label>
-            <button class="secondary-button" type="submit"><svg><use href="#i-search"/></svg>查询</button>
-          </form>
           <div class="toolbar">
-            <label class="search"><svg><use href="#i-search"/></svg><input id="order-search" type="search" placeholder="搜索订单号、站点或状态"></label>
-            <span id="order-total">共 0 条</span>
+            <label class="search"><svg><use href="#i-search"/></svg><input id="order-search" type="search" placeholder="搜索订单号或 SKU"></label>
+            <span class="table-note" id="order-total">共 0 条</span>
           </div>
           <div class="table-shell">
             <table>
-              <thead><tr><th>订单号</th><th>商品 / 数量</th><th>站点</th><th>订单状态</th><th>更新时间</th><th></th></tr></thead>
+              <thead><tr><th>订单号</th><th>SKU / 数量</th><th>要求发货</th><th>履约类型</th><th>发货状态</th><th></th></tr></thead>
               <tbody id="order-rows"></tbody>
             </table>
-            <div class="empty" id="orders-empty"><svg><use href="#i-orders"/></svg><strong>暂无订单</strong><span>当前时间范围没有符合条件的订单</span></div>
+            <div class="empty" id="orders-empty"><svg><use href="#i-orders"/></svg><strong>没有待履约订单</strong><span>同步 SHEIN 后，符合条件的订单会显示在这里</span></div>
           </div>
+          <div class="pager" id="orders-pager" hidden></div>
         </section>
 
         <section class="view" id="view-labels">

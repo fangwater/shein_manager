@@ -8,6 +8,8 @@ const state = {
   shopKey: new URLSearchParams(window.location.search).get("shop") || sessionStorage.getItem(SHOP_STORAGE_KEY) || "",
   shops: [],
   orders: [],
+  orderPage: 1,
+  pageSize: 30,
   detail: null,
   orderNo: "",
   warehouse: null,
@@ -180,6 +182,40 @@ async function loadOrderPages(baseData, status) {
   return orders;
 }
 
+function detailList(payload) {
+  const info = infoOf(payload);
+  if (Array.isArray(info)) return info;
+  return listFromInfo(info, ["list", "data", "records", "rows", "orderList", "order_list", "orders", "orderInfoList"]);
+}
+
+async function loadOrderDetails(orders) {
+  const batches = [];
+  for (let index = 0; index < orders.length; index += 30) {
+    batches.push(orders.slice(index, index + 30));
+  }
+  let failures = 0;
+  const results = await Promise.all(batches.map(async function (batch) {
+    try {
+      const payload = await post("order/detail", { orderNoList: batch.map(orderNumber) });
+      return detailList(payload);
+    } catch (_) {
+      failures += 1;
+      return [];
+    }
+  }));
+  const details = new Map();
+  results.flat().forEach(function (detail) {
+    const number = orderNumber(detail);
+    if (number) details.set(number, detail);
+  });
+  return {
+    failures: failures,
+    orders: orders.map(function (order) {
+      return Object.assign({}, order, details.get(orderNumber(order)) || {});
+    })
+  };
+}
+
 function detailFrom(payload) {
   const info = infoOf(payload);
   if (Array.isArray(info)) return info[0] || null;
@@ -194,6 +230,20 @@ function goodsFrom(order) {
     if (Array.isArray(order[keys[index]])) return order[keys[index]];
   }
   return [];
+}
+
+function goodsLines(order) {
+  const lines = new Map();
+  goodsFrom(order).forEach(function (goods) {
+    const sku = display(
+      goods.sellerSku || goods.skuCode || goods.sku || goods.goodsSn || goods.goodsId,
+      "SKU待返回"
+    );
+    const quantity = Number(goods.quantity || goods.goodsQuantity || goods.qty || 1);
+    const current = lines.get(sku) || 0;
+    lines.set(sku, current + (Number.isFinite(quantity) && quantity > 0 ? quantity : 1));
+  });
+  return Array.from(lines, function (entry) { return { sku: entry[0], quantity: entry[1] }; });
 }
 
 function orderNumber(order) {
@@ -212,6 +262,81 @@ function orderTime(order) {
     "updateTime", "updatedTime", "orderUpdateTime", "order_updated_at",
     "orderMsgUpdateTime", "orderAllocateTime", "createTime", "createdTime", "orderCreateTime"
   ]);
+}
+
+function orderDeadline(order) {
+  return firstValue(order, ["needDeliveryTime", "need_delivery_time"]);
+}
+
+function parseOrderTime(value) {
+  if (!value) return null;
+  const normalized = String(value).replace(/([+-]\d{2})(\d{2})$/, "$1:$2");
+  const parsed = new Date(normalized);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function shortTime(value) {
+  const parsed = parseOrderTime(value);
+  if (!parsed) return "未返回";
+  return new Intl.DateTimeFormat("zh-CN", {
+    timeZone: "Asia/Shanghai", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", hour12: false
+  }).format(parsed);
+}
+
+function relativeDeadline(value) {
+  const parsed = parseOrderTime(value);
+  if (!parsed) return "未返回";
+  const minutes = Math.floor((parsed.getTime() - Date.now()) / 60000);
+  if (minutes <= 0) return "已超时";
+  const hours = Math.floor(minutes / 60);
+  return hours >= 24 ? Math.floor(hours / 24) + " 天 " + hours % 24 + " 小时" : hours + " 小时";
+}
+
+function logisticsOptions(order) {
+  for (const key of ["optionalLogisticsList", "optional_logistics_list"]) {
+    if (Array.isArray(order && order[key])) return order[key].map(Number);
+  }
+  return [];
+}
+
+function supportsIntegratedLogistics(order) {
+  const options = logisticsOptions(order);
+  if (options.length) return options.includes(1);
+  return Number(firstValue(order, ["performanceType", "performance_type"])) === 1;
+}
+
+function fulfillmentTypeLabel(order) {
+  const options = logisticsOptions(order);
+  if (options.includes(1) && options.includes(2)) return "集成 / 自发货可选";
+  if (!supportsIntegratedLogistics(order)) return "商家自发货";
+  const placeType = Number(firstValue(order, ["orderPlaceType", "order_place_type"]));
+  if (placeType === 1) return "集成物流 · 平台指定";
+  if (placeType === 2) return "集成物流 · 自主选择";
+  return "SHEIN 集成物流";
+}
+
+function unprocessableReason(order) {
+  if (String(firstValue(order, ["orderType", "order_type"])) === "5") return "认证仓订单不可在线履约";
+  const printStatus = String(firstValue(order, ["printOrderStatus", "print_order_status"]));
+  if (!printStatus || printStatus === "1") return "";
+  const reasons = order.unProcessReason || order.un_process_reason;
+  const labels = {
+    "1": "平台处理中", "2": "客服验证中", "3": "待同步发票", "4": "包裹尚未生成",
+    "5": "平台处理中", "6": "部分商品缺货", "7": "平台处理中", "8": "平台处理中",
+    "9": "部分商品缺货", "10": "尚未设置卖家仓库", "11": "尚未设置卖家仓库", "12": "需要确认拆包",
+    "13": "CTE 发票开票中"
+  };
+  if (Array.isArray(reasons) && reasons.length) {
+    return reasons.map(function (reason) { return labels[String(reason)] || "问题代码 " + reason; }).join("；");
+  }
+  return "平台标记订单暂不可处理";
+}
+
+function orderIsActionable(order) {
+  const status = String(orderStatus(order));
+  if (status === "1") return !unprocessableReason(order);
+  return status === "2" && supportsIntegratedLogistics(order);
 }
 
 function statusLabel(status) {
@@ -272,7 +397,7 @@ function closeResult() {
 }
 
 function selectView(name) {
-  const titles = { orders: "订单中心", labels: "面单任务", tools: "物流工具" };
+  const titles = { orders: "待履约订单", labels: "面单任务", tools: "物流工具" };
   document.querySelectorAll(".nav-button").forEach(function (button) {
     button.classList.toggle("active", button.dataset.view === name);
   });
@@ -392,25 +517,44 @@ async function fetchLabel(index, button) {
 
 function renderOrders(rows) {
   state.orders = rows;
+  state.orderPage = 1;
   filterOrders();
 }
 
 function orderAction(order, number) {
   const status = String(orderStatus(order));
-  const orderType = String(firstValue(order, ["orderType", "order_type"]));
-  const printStatus = String(firstValue(order, ["printOrderStatus", "print_order_status"]));
   if (status === "1") {
-    const reason = orderType === "5"
-      ? "认证仓订单不能导出地址或在线履约"
-      : display(firstValue(order, ["unProcessReason", "un_process_reason"]), "平台标记订单暂不可处理");
-    const disabled = orderType === "5" || printStatus && printStatus !== "1";
+    const reason = unprocessableReason(order);
     return '<button class="table-action primary" data-transition-order="' + escapeHTML(number) + '"' +
-      (disabled ? ' disabled title="' + escapeHTML(reason) + '"' : "") + ">转待发货</button>";
+      (reason ? ' disabled title="' + escapeHTML(reason) + '"' : "") + ">" +
+      (reason ? "暂不可处理" : "转待发货") + "</button>";
   }
   if (status === "2") {
-    return '<button class="table-action primary" data-fulfill-order="' + escapeHTML(number) + '">发货</button>';
+    const integrated = supportsIntegratedLogistics(order);
+    return '<button class="table-action primary" data-fulfill-order="' + escapeHTML(number) + '"' +
+      (integrated ? "" : ' disabled title="订单仅支持商家自发货"') + ">" +
+      (integrated ? "发货" : "仅自发货") + "</button>";
   }
   return '<button class="table-action" disabled>不可操作</button>';
+}
+
+function workflowStatusText(order) {
+  const status = String(orderStatus(order));
+  if (status === "1") return unprocessableReason(order) ? "平台暂不可处理" : "待流转";
+  if (status === "2") return supportsIntegratedLogistics(order) ? "待选择物流" : "待商家自发货";
+  return statusLabel(status);
+}
+
+function renderOrderPager(total) {
+  const pager = byId("orders-pager");
+  const pageCount = Math.max(1, Math.ceil(total / state.pageSize));
+  state.orderPage = Math.min(Math.max(1, state.orderPage), pageCount);
+  pager.hidden = total <= state.pageSize;
+  pager.innerHTML = '<button type="button" data-order-page="' + (state.orderPage - 1) + '" title="上一页" aria-label="上一页" ' +
+    (state.orderPage <= 1 ? "disabled" : "") + '><svg><use href="#i-chevron"/></svg></button>' +
+    '<span>第 ' + state.orderPage + " / " + pageCount + " 页 · 共 " + total + " 条</span>" +
+    '<button type="button" class="next" data-order-page="' + (state.orderPage + 1) + '" title="下一页" aria-label="下一页" ' +
+    (state.orderPage >= pageCount ? "disabled" : "") + '><svg><use href="#i-chevron"/></svg></button>';
 }
 
 function filterOrders() {
@@ -419,68 +563,75 @@ function filterOrders() {
     if (!query) return true;
     const text = [
       orderNumber(order), firstValue(order, ["salesSite", "site"]), orderStatus(order),
-      goodsFrom(order).map(function (goods) { return goods.skuCode || goods.goodsId || goods.goodsName || ""; }).join(" ")
+      goodsLines(order).map(function (line) { return line.sku; }).join(" ")
     ].join(" ").toLowerCase();
     return text.includes(query);
   });
+  const pageCount = Math.max(1, Math.ceil(filtered.length / state.pageSize));
+  state.orderPage = Math.min(state.orderPage, pageCount);
+  const start = (state.orderPage - 1) * state.pageSize;
+  const items = filtered.slice(start, start + state.pageSize);
   const rows = byId("order-rows");
   const table = rows.closest(".table-shell");
-  table.classList.toggle("is-empty", filtered.length === 0);
-  rows.innerHTML = filtered.map(function (order) {
+  table.classList.toggle("is-empty", items.length === 0);
+  rows.innerHTML = items.map(function (order) {
     const number = orderNumber(order);
-    const goods = goodsFrom(order);
-    const quantity = goods.reduce(function (total, item) {
-      return total + Number(item.quantity || item.goodsQuantity || item.qty || 1);
-    }, 0);
-    const skus = goods.slice(0, 3).map(function (item) {
-      return item.skuCode || item.sku || item.goodsId || item.goodsName || "";
-    }).filter(Boolean);
+    const lines = goodsLines(order);
+    const lineHTML = lines.map(function (line) {
+      return '<span class="sku-line"><b>' + escapeHTML(line.sku) + '</b><span>× ' + line.quantity + "</span></span>";
+    }).join("");
     const status = orderStatus(order);
-    return "<tr><td><button class=\"order-link\" data-detail-order=\"" + escapeHTML(number) + "\">" +
-      escapeHTML(number) + "</button></td><td class=\"product-cell\"><strong>" +
-      escapeHTML(skus.join(" / ") || "商品信息待详情") + "</strong><span>" +
-      escapeHTML(goods.length ? goods.length + " 个明细，共 " + quantity + " 件" : "点击订单查看详情") +
-      "</span></td><td>" + escapeHTML(display(firstValue(order, ["salesSite", "site"]))) +
-      "</td><td><span class=\"badge " + statusClass(status) + "\">" + escapeHTML(statusLabel(status)) +
-      "</span></td><td>" + escapeHTML(display(orderTime(order))) +
-      "</td><td>" + orderAction(order, number) + "</td></tr>";
+    const deadline = orderDeadline(order);
+    const tone = String(status) === "2" ? "info" : "pending";
+    return '<tr><td><div class="order-id"><button class="order-link" data-detail-order="' + escapeHTML(number) + '">' +
+      escapeHTML(number) + "</button><small>更新 " + escapeHTML(shortTime(orderTime(order))) +
+      '</small></div></td><td><div class="sku-stack">' + (lineHTML || "-") +
+      '</div></td><td><div class="order-id"><strong>' + escapeHTML(relativeDeadline(deadline)) +
+      "</strong><small>" + escapeHTML(shortTime(deadline)) +
+      '</small></div></td><td><div class="order-id"><strong>' + escapeHTML(fulfillmentTypeLabel(order)) +
+      "</strong><small>" + escapeHTML(display(firstValue(order, ["salesSite", "site"]), "站点未返回")) +
+      '</small></div></td><td><span class="badge ' + tone + '">' + escapeHTML(workflowStatusText(order)) +
+      "</span></td><td>" + orderAction(order, number) + "</td></tr>";
   }).join("");
   byId("order-total").textContent = "共 " + filtered.length + " 条";
   byId("metric-orders").textContent = String(filtered.length);
-  byId("metric-pending").textContent = String(filtered.filter(function (order) {
-    return String(orderStatus(order)) === "1";
-  }).length);
-  byId("metric-shipping").textContent = String(filtered.filter(function (order) {
-    return String(orderStatus(order)) === "2";
-  }).length);
+  byId("metric-units").textContent = String(items.reduce(function (total, order) {
+    return total + goodsLines(order).reduce(function (sum, line) { return sum + line.quantity; }, 0);
+  }, 0));
+  byId("metric-actionable").textContent = String(items.filter(orderIsActionable).length);
   byId("nav-order-count").textContent = String(filtered.length);
+  renderOrderPager(filtered.length);
 }
 
 async function loadOrders(button) {
   await busy(button, async function () {
+    const endTime = new Date();
+    const startTime = new Date(endTime.getTime() - 47 * 60 * 60 * 1000);
     const data = {
-      queryType: Number(byId("query-type").value),
-      startTime: byId("start-time").value.trim(),
-      endTime: byId("end-time").value.trim(),
+      queryType: 2,
+      startTime: formatChinaTime(startTime),
+      endTime: formatChinaTime(endTime),
       page: 1,
-      pageSize: 30
+      pageSize: state.pageSize
     };
-    const selectedStatus = byId("order-status").value;
     try {
-      if (selectedStatus === "actionable") {
-        const results = await Promise.all([
-          loadOrderPages(data, 1),
-          loadOrderPages(data, 2)
-        ]);
-        renderOrders(results[0].concat(results[1]).sort(function (left, right) {
-          return String(orderTime(right)).localeCompare(String(orderTime(left)));
-        }));
-      } else {
-        if (selectedStatus) data.orderStatus = Number(selectedStatus);
-        const payload = await post("order/list", data);
-        renderOrders(orderList(payload));
-      }
-      byId("metric-updated").textContent = formatChinaTime(new Date());
+      const results = await Promise.all([loadOrderPages(data, 1), loadOrderPages(data, 2)]);
+      const enriched = await loadOrderDetails(results[0].concat(results[1]));
+      enriched.orders.sort(function (left, right) {
+        const leftDeadline = parseOrderTime(orderDeadline(left));
+        const rightDeadline = parseOrderTime(orderDeadline(right));
+        if (leftDeadline && rightDeadline && leftDeadline.getTime() !== rightDeadline.getTime()) {
+          return leftDeadline.getTime() - rightDeadline.getTime();
+        }
+        if (leftDeadline) return -1;
+        if (rightDeadline) return 1;
+        const leftUpdated = parseOrderTime(orderTime(left));
+        const rightUpdated = parseOrderTime(orderTime(right));
+        return (rightUpdated ? rightUpdated.getTime() : 0) - (leftUpdated ? leftUpdated.getTime() : 0);
+      });
+      renderOrders(enriched.orders);
+      byId("metric-sync").textContent = shortTime(new Date());
+      if (enriched.failures) toast(enriched.failures + " 组订单详情暂未加载，请稍后同步", true);
     } catch (error) {
       renderOrders([]);
       toast(error.message, true);
@@ -794,10 +945,15 @@ byId("close-fulfillment").addEventListener("click", function () { byId("fulfillm
 byId("refresh-warehouses").addEventListener("click", loadFulfillmentContext);
 byId("refresh-orders").addEventListener("click", function (event) { loadOrders(event.currentTarget); });
 byId("refresh-tasks").addEventListener("click", function (event) { loadTasks(event.currentTarget); });
-byId("order-search").addEventListener("input", filterOrders);
-byId("order-filter").addEventListener("submit", function (event) {
-  event.preventDefault();
-  loadOrders(event.submitter);
+byId("order-search").addEventListener("input", function () {
+  state.orderPage = 1;
+  filterOrders();
+});
+byId("orders-pager").addEventListener("click", function (event) {
+  const button = event.target.closest("[data-order-page]");
+  if (!button || button.disabled) return;
+  state.orderPage = Number(button.dataset.orderPage);
+  filterOrders();
 });
 byId("channel-form").addEventListener("submit", function (event) {
   event.preventDefault();
@@ -851,10 +1007,6 @@ byId("channel-choices").addEventListener("change", function (event) {
   updatePurchaseSummary();
 });
 
-const endTime = new Date();
-const startTime = new Date(endTime.getTime() - 47 * 60 * 60 * 1000);
-byId("start-time").value = formatChinaTime(startTime);
-byId("end-time").value = formatChinaTime(endTime);
 warehouseList.current = [];
 renderChannels.current = [];
 

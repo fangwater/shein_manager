@@ -16,7 +16,7 @@ func TestClassifyOrderQueueItemUsesSKUCodeMapping(t *testing.T) {
 	item.ItemCount = len(item.Goods)
 	classifyOrderQueueItem(&item, map[string]packageMapping{
 		"SKU-CODE": {
-			SheinSKU: "SKU-CODE", WarehouseSKU: "WH-1", MappingCount: 1,
+			SheinSKU: "SKU-CODE", WarehouseSKU: "WH-1", WarehouseQty: "2", MappingCount: 1,
 			Spec: PackageSpec{LengthCM: "20", WidthCM: "15", HeightCM: "5", WeightKG: "0.3"},
 		},
 	})
@@ -25,6 +25,9 @@ func TestClassifyOrderQueueItemUsesSKUCodeMapping(t *testing.T) {
 	}
 	if item.SheinSKU != "SKU-CODE" || item.WarehouseSKU != "WH-1" {
 		t.Fatalf("classification used wrong SKU mapping: %#v", item)
+	}
+	if item.Goods[0].WarehouseSKU != "WH-1" || item.Goods[0].WarehouseQuantity != "2" {
+		t.Fatalf("goods line did not expose warehouse mapping: %#v", item.Goods[0])
 	}
 }
 

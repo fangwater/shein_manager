@@ -25,11 +25,13 @@ func (spec PackageSpec) Complete() bool {
 }
 
 type QueueGoods struct {
-	GoodsID   string `json:"goods_id"`
-	SKUCode   string `json:"sku_code"`
-	SellerSKU string `json:"seller_sku"`
-	GoodsSN   string `json:"goods_sn"`
-	Title     string `json:"title"`
+	GoodsID           string `json:"goods_id"`
+	SKUCode           string `json:"sku_code"`
+	SellerSKU         string `json:"seller_sku"`
+	GoodsSN           string `json:"goods_sn"`
+	Title             string `json:"title"`
+	WarehouseSKU      string `json:"warehouse_sku,omitempty"`
+	WarehouseQuantity string `json:"warehouse_quantity,omitempty"`
 }
 
 type AutoFulfillmentJob struct {
@@ -80,6 +82,7 @@ type OrderSnapshot struct {
 type packageMapping struct {
 	SheinSKU     string
 	WarehouseSKU string
+	WarehouseQty string
 	MappingCount int
 	Spec         PackageSpec
 }
@@ -281,7 +284,8 @@ func (s *Store) packageMappings(ctx context.Context, shopKey string, skus []stri
 			WHERE shop_key = $1 AND enabled = true AND shein_sku = ANY($2::text[])
 			GROUP BY shein_sku
 		), ranked AS (
-			SELECT m.shein_sku, m.warehouse_sku, counts.mapping_count,
+			SELECT m.shein_sku, m.warehouse_sku, m.warehouse_qty::text,
+				counts.mapping_count,
 				w.length_cm::text, w.width_cm::text, w.height_cm::text, w.weight_kg::text,
 				ROW_NUMBER() OVER (PARTITION BY m.shein_sku ORDER BY m.updated_at DESC, m.id DESC) AS rank
 			FROM shein_sku_mappings m
@@ -290,7 +294,7 @@ func (s *Store) packageMappings(ctx context.Context, shopKey string, skus []stri
 				ON w.shop_key = m.shop_key AND w.warehouse_sku = m.warehouse_sku AND w.enabled = true
 			WHERE m.shop_key = $1 AND m.enabled = true
 		)
-		SELECT shein_sku, warehouse_sku, mapping_count,
+		SELECT shein_sku, warehouse_sku, warehouse_qty, mapping_count,
 			COALESCE(length_cm, ''), COALESCE(width_cm, ''),
 			COALESCE(height_cm, ''), COALESCE(weight_kg, '')
 		FROM ranked WHERE rank = 1
@@ -302,7 +306,7 @@ func (s *Store) packageMappings(ctx context.Context, shopKey string, skus []stri
 	result := make(map[string]packageMapping)
 	for rows.Next() {
 		var mapping packageMapping
-		if err := rows.Scan(&mapping.SheinSKU, &mapping.WarehouseSKU, &mapping.MappingCount,
+		if err := rows.Scan(&mapping.SheinSKU, &mapping.WarehouseSKU, &mapping.WarehouseQty, &mapping.MappingCount,
 			&mapping.Spec.LengthCM, &mapping.Spec.WidthCM, &mapping.Spec.HeightCM, &mapping.Spec.WeightKG); err != nil {
 			return nil, fmt.Errorf("scan SHEIN package mapping: %w", err)
 		}
@@ -333,6 +337,13 @@ func queueGoods(detail map[string]any) []QueueGoods {
 
 func classifyOrderQueueItem(item *OrderQueueItem, mappings map[string]packageMapping) {
 	reasons := make([]string, 0)
+	for index := range item.Goods {
+		mapping, ok := mappings[item.Goods[index].SKUCode]
+		if ok && mapping.MappingCount == 1 {
+			item.Goods[index].WarehouseSKU = mapping.WarehouseSKU
+			item.Goods[index].WarehouseQuantity = mapping.WarehouseQty
+		}
+	}
 	if item.ItemCount == 0 {
 		reasons = append(reasons, "订单详情缺少商品明细")
 	} else if item.ItemCount > 1 {

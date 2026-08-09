@@ -256,6 +256,29 @@ function goodsLines(order) {
   return Array.from(lines, function (entry) { return { sku: entry[0], quantity: entry[1] }; });
 }
 
+function warehouseGoodsLines(order) {
+  const lines = new Map();
+  const goods = Array.isArray(order && order.goods) ? order.goods : [];
+  goods.forEach(function (item) {
+    const warehouseSKU = item.warehouse_sku || "";
+    const sourceSKU = item.sku_code || item.seller_sku || item.goods_sn || item.goods_id || "";
+    const key = warehouseSKU || "__unmapped__:" + sourceSKU;
+    const mappedQuantity = Number(item.warehouse_quantity || 1);
+    const quantity = Number.isFinite(mappedQuantity) && mappedQuantity > 0 ? mappedQuantity : 1;
+    const current = lines.get(key) || { sku: warehouseSKU || "SKU待映射", quantity: 0 };
+    current.quantity += quantity;
+    lines.set(key, current);
+  });
+  return Array.from(lines.values());
+}
+
+function quantityText(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return "0";
+  if (Number.isInteger(number)) return String(number);
+  return number.toFixed(4).replace(/0+$/, "").replace(/\.$/, "");
+}
+
 function orderNumber(order) {
   if (order && order.order_no) return String(order.order_no);
   order = orderDetail(order);
@@ -595,9 +618,11 @@ function filterOrders() {
   const query = byId("order-search").value.trim().toLowerCase();
   const filtered = state.orders.filter(function (order) {
     if (!query) return true;
+    const goods = Array.isArray(order.goods) ? order.goods : [];
     const text = [
       orderNumber(order), firstValue(order, ["salesSite", "site"]), orderStatus(order),
-      goodsLines(order).map(function (line) { return line.sku; }).join(" ")
+      warehouseGoodsLines(order).map(function (line) { return line.sku; }).join(" "),
+      goods.map(function (item) { return [item.sku_code, item.seller_sku, item.goods_sn].join(" "); }).join(" ")
     ].join(" ").toLowerCase();
     return text.includes(query);
   });
@@ -610,34 +635,29 @@ function filterOrders() {
   table.classList.toggle("is-empty", items.length === 0);
   rows.innerHTML = items.map(function (order) {
     const number = orderNumber(order);
-    const goods = Array.isArray(order.goods) ? order.goods : [];
-    const sheinSku = order.shein_sku || (goods[0] && goods[0].sku_code) || "SKU待返回";
-    const lineHTML = '<span class="sku-line"><b>' + escapeHTML(sheinSku) + '</b><span>SHEIN</span></span>' +
-      '<span class="sku-line"><b>' + escapeHTML(display(order.warehouse_sku, "未绑定")) + '</b><span>仓库 SKU</span></span>';
+    const lineHTML = warehouseGoodsLines(order).map(function (line) {
+      return '<span class="sku-line"><b>' + escapeHTML(line.sku) +
+        '</b><span>× ' + escapeHTML(quantityText(line.quantity)) + "</span></span>";
+    }).join("");
     const status = orderStatus(order);
     const deadline = orderDeadline(order);
     const tone = String(status) === "2" ? "info" : "pending";
-    const spec = order.package_spec || {};
-    const packageText = [spec.length_cm, spec.width_cm, spec.height_cm].every(Boolean)
-      ? spec.length_cm + " × " + spec.width_cm + " × " + spec.height_cm + " cm"
-      : "尺寸待维护";
-    const weightText = spec.weight_kg ? spec.weight_kg + " kg" : "重量待维护";
     return '<tr><td><div class="order-id"><button class="order-link" data-detail-order="' + escapeHTML(number) + '">' +
       escapeHTML(number) + "</button><small>更新 " + escapeHTML(shortTime(orderTime(order))) +
       '</small></div></td><td><div class="sku-stack">' + (lineHTML || "-") +
       '</div></td><td><div class="order-id"><strong>' + escapeHTML(relativeDeadline(deadline)) +
       "</strong><small>" + escapeHTML(shortTime(deadline)) +
-      '</small></div></td><td><div class="order-id"><strong>' + escapeHTML(packageText) +
-      "</strong><small>" + escapeHTML(weightText) +
-      '</small></div></td><td><span class="badge ' + tone + '">' + escapeHTML(workflowStatusText(order)) +
+      '</small></div></td><td>' + escapeHTML(supportsIntegratedLogistics(order) ? "SHEIN集成物流" : "商家自发货") +
+      '</td><td><span class="badge ' + tone + '">' + escapeHTML(workflowStatusText(order)) +
       "</span></td><td>" + orderAction(order, number) + "</td></tr>";
   }).join("");
   byId("order-total").textContent = "共 " + filtered.length + " 条";
   byId("metric-orders").textContent = String(filtered.length);
-  byId("metric-units").textContent = String(filtered.filter(function (order) { return order.item_count === 1; }).length);
-  byId("metric-actionable").textContent = String(filtered.filter(function (order) {
-    return order.auto_eligible && order.warehouse_sku && order.package_spec;
-  }).length);
+  const units = filtered.reduce(function (total, order) {
+    return total + warehouseGoodsLines(order).reduce(function (sum, line) { return sum + line.quantity; }, 0);
+  }, 0);
+  byId("metric-units").textContent = quantityText(units);
+  byId("metric-actionable").textContent = String(filtered.length);
   byId("nav-order-count").textContent = String(filtered.length);
   renderBulkBatch();
   renderOrderPager(filtered.length);

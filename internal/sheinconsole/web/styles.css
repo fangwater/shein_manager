@@ -138,6 +138,12 @@ tbody tr:hover { background: #fff8f8; }
 .order-summary > div { min-height: 66px; display: flex; flex-direction: column; justify-content: center; padding: 10px 16px; background: #fff; }
 .order-summary small { color: var(--muted); font-size: 10px; }
 .order-summary strong { margin-top: 4px; overflow-wrap: anywhere; font-size: 12px; }
+.transition-notice { min-height: 74px; display: flex; align-items: center; justify-content: space-between; gap: 18px; margin-top: 14px; padding: 16px 18px; border-left: 3px solid var(--amber); background: #fff7e9; }
+.transition-notice[hidden] { display: none; }
+.transition-notice strong, .transition-notice span { display: block; }
+.transition-notice strong { color: #66420f; font-size: 13px; }
+.transition-notice span { margin-top: 4px; color: #8a6632; font-size: 10px; line-height: 1.45; }
+.transition-notice .primary-button { flex: 0 0 auto; }
 .workflow-section { margin-top: 14px; padding: 18px; border-top: 1px solid var(--line); background: #fff; }
 .section-title { display: flex; align-items: center; gap: 10px; margin-bottom: 15px; }
 .section-title > span { width: 26px; height: 26px; display: grid; place-items: center; flex: 0 0 auto; border-radius: 50%; background: #26313a; color: #fff; font-size: 11px; font-weight: 800; }
@@ -193,6 +199,8 @@ tbody tr:hover { background: #fff8f8; }
   .page-head h1 { font-size: 21px; }
   .page-head { align-items: stretch; flex-direction: column; }
   .page-actions { justify-content: flex-start; flex-wrap: wrap; }
+  .transition-notice { align-items: stretch; flex-direction: column; }
+  .transition-notice .primary-button { width: 100%; }
   .status-band { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .status-band > div:nth-child(2) { border-right: 0; }
   .status-band > div:nth-child(-n+2) { border-bottom: 1px solid var(--line); }

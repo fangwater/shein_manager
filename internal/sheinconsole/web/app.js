@@ -582,7 +582,7 @@ function orderAction(order, number) {
   const automatic = '<button class="table-action primary" data-auto-order="' + escapeHTML(number) + '">自动发货</button>';
   if (status === "1") {
     const reason = unprocessableReason(order);
-    return '<div class="action-row">' + automatic + '<button class="table-action" data-transition-order="' + escapeHTML(number) + '"' +
+    return '<div class="action-row">' + automatic + '<button class="table-action" data-fulfill-order="' + escapeHTML(number) + '"' +
       (reason ? ' disabled title="' + escapeHTML(reason) + '"' : "") + ">" +
       (reason ? "暂不可处理" : "人工发货") + "</button></div>";
   }
@@ -909,7 +909,7 @@ function renderManualOrders() {
     const blocked = unprocessableReason(order);
     let action;
     if (status === "1") {
-      action = '<button class="table-action primary" data-manual-transition="' + escapeHTML(order.order_no) + '"' +
+      action = '<button class="table-action primary" data-manual-fulfill="' + escapeHTML(order.order_no) + '"' +
         (blocked ? ' disabled title="' + escapeHTML(blocked) + '"' : "") + ">" +
         (blocked ? "暂不可处理" : "人工发货") + "</button>";
     } else {
@@ -940,17 +940,17 @@ function renderManualOrders() {
   byId("nav-manual-count").textContent = String(state.manualOrders.length);
 }
 
-async function transitionToShipping(orderNo, button) {
-  if (!window.confirm("确认导出订单地址并将订单 " + orderNo + " 流转到待发货？")) return;
+async function transitionFulfillmentOrder(button) {
+  const orderNo = state.orderNo;
+  if (!window.confirm("确认将订单 " + orderNo + " 流转到待发货？完成后将在当前弹窗继续选择仓库和物流。")) return;
   await busy(button, async function () {
     try {
       const detailPayload = await post("order/detail", { orderNoList: [orderNo] });
       const detail = detailFrom(detailPayload) || {};
       const status = String(orderStatus(detail));
       if (status === "2") {
-        await loadOrders();
         toast("订单已经处于待发货状态");
-        openFulfillment(orderNo);
+        await loadFulfillmentContext();
         return;
       }
       if (status !== "1") throw new Error("订单当前不是待处理状态，请刷新后重试");
@@ -970,9 +970,22 @@ async function transitionToShipping(orderNo, button) {
         "export-address-transition",
         orderNo
       );
-      await loadOrders();
-      toast("订单已流转到待发货");
-      openFulfillment(orderNo);
+      loadOrders();
+      loadManualOrders();
+      if (state.orderNo !== orderNo) return;
+      let ready = false;
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        await new Promise(function (resolve) {
+          window.setTimeout(resolve, attempt === 0 ? 800 : 1200);
+        });
+        if (state.orderNo !== orderNo) return;
+        const currentStatus = await loadFulfillmentContext();
+        if (currentStatus === "2") {
+          ready = true;
+          break;
+        }
+      }
+      toast(ready ? "订单已流转到待发货" : "流转已提交，平台状态同步中，可在弹窗内刷新");
     } catch (error) {
       toast(error.message, true);
     }
@@ -1030,20 +1043,38 @@ function renderWarehouses(warehouses) {
   updatePurchaseSummary();
 }
 
+function setFulfillmentTransitionRequired(required) {
+  byId("fulfillment-transition").hidden = !required;
+  ["warehouse-section", "package-section", "purchase-section"].forEach(function (id) {
+    byId(id).hidden = required;
+  });
+}
+
 async function loadFulfillmentContext() {
+  setFulfillmentTransitionRequired(false);
   byId("warehouse-choices").innerHTML = '<div class="loading-line">正在查询订单与可用仓库</div>';
   try {
-    const results = await Promise.all([
-      post("order/detail", { orderNoList: [state.orderNo] }),
-      post("shipping/warehouses", { orderNo: state.orderNo })
-    ]);
-    state.detail = detailFrom(results[0]);
+    const detailPayload = await post("order/detail", { orderNoList: [state.orderNo] });
+    state.detail = detailFrom(detailPayload);
     renderOrderSummary(state.detail || {});
-    renderWarehouses(warehouseList(results[1]));
+    const status = String(orderStatus(state.detail || {}));
+    if (status === "1") {
+      setFulfillmentTransitionRequired(true);
+      renderChannels([]);
+      updatePurchaseSummary();
+      return status;
+    }
+    if (status !== "2") {
+      throw new Error("订单当前不在可人工履约状态，请刷新订单后重试");
+    }
+    const warehousePayload = await post("shipping/warehouses", { orderNo: state.orderNo });
+    renderWarehouses(warehouseList(warehousePayload));
     await loadTasks();
+    return status;
   } catch (error) {
     byId("warehouse-choices").innerHTML = '<div class="empty-inline">查询失败，请刷新重试</div>';
     toast(error.message, true);
+    return "";
   }
 }
 
@@ -1056,6 +1087,10 @@ function openFulfillment(orderNo) {
   const queuedOrder = state.orders.concat(state.manualOrders).find(function (order) {
     return order.order_no === orderNo;
   });
+  byId("package-length").value = "20";
+  byId("package-width").value = "15";
+  byId("package-height").value = "5";
+  byId("package-weight").value = "300";
   const spec = queuedOrder && queuedOrder.package_spec;
   if (spec) {
     byId("package-length").value = display(spec.length_cm, "20");
@@ -1065,6 +1100,7 @@ function openFulfillment(orderNo) {
     byId("package-weight").value = Number.isFinite(weight) && weight > 0 ? String(weight * 1000) : "300";
   }
   byId("fulfillment-title").textContent = "订单 " + orderNo + " 发货";
+  setFulfillmentTransitionRequired(false);
   renderOrderSummary({});
   renderChannels([]);
   updatePurchaseSummary();
@@ -1263,6 +1299,9 @@ byId("close-result").addEventListener("click", closeResult);
 byId("drawer-backdrop").addEventListener("click", closeResult);
 byId("close-fulfillment").addEventListener("click", function () { byId("fulfillment-dialog").close(); });
 byId("refresh-warehouses").addEventListener("click", loadFulfillmentContext);
+byId("transition-fulfillment-order").addEventListener("click", function (event) {
+  transitionFulfillmentOrder(event.currentTarget);
+});
 byId("refresh-orders").addEventListener("click", async function (event) {
   await loadOrders(event.currentTarget);
   loadManualOrders();
@@ -1308,23 +1347,16 @@ byId("shop-select").addEventListener("change", function (event) {
 });
 byId("order-rows").addEventListener("click", function (event) {
   const detailButton = event.target.closest("[data-detail-order]");
-  const transitionButton = event.target.closest("[data-transition-order]");
   const fulfillmentButton = event.target.closest("[data-fulfill-order]");
   const autoButton = event.target.closest("[data-auto-order]");
   if (detailButton) showOrderDetail(detailButton.dataset.detailOrder);
-  if (transitionButton) transitionToShipping(transitionButton.dataset.transitionOrder, transitionButton);
   if (fulfillmentButton) openFulfillment(fulfillmentButton.dataset.fulfillOrder);
   if (autoButton) runAutoOrders([autoButton.dataset.autoOrder], autoButton);
 });
-byId("manual-rows").addEventListener("click", async function (event) {
+byId("manual-rows").addEventListener("click", function (event) {
   const detailButton = event.target.closest("[data-manual-detail]");
-  const transitionButton = event.target.closest("[data-manual-transition]");
   const fulfillmentButton = event.target.closest("[data-manual-fulfill]");
   if (detailButton) showOrderDetail(detailButton.dataset.manualDetail);
-  if (transitionButton) {
-    await transitionToShipping(transitionButton.dataset.manualTransition, transitionButton);
-    loadManualOrders();
-  }
   if (fulfillmentButton) openFulfillment(fulfillmentButton.dataset.manualFulfill);
 });
 byId("exception-rows").addEventListener("click", function (event) {

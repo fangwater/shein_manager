@@ -223,11 +223,15 @@
     </div>
     <div class="dialog-body">
       <div class="order-summary" id="order-summary"></div>
-      <section class="workflow-section">
+      <div class="transition-notice" id="fulfillment-transition" hidden>
+        <div><strong>订单尚未进入待发货</strong><span>流转完成后将在当前弹窗继续选择仓库和物流</span></div>
+        <button class="primary-button" id="transition-fulfillment-order" type="button"><svg><use href="#i-truck"/></svg>流转到待发货</button>
+      </div>
+      <section class="workflow-section" id="warehouse-section">
         <div class="section-title"><span>1</span><div><small>发货仓</small><h3>选择可用仓库</h3></div><button class="icon-button" id="refresh-warehouses" type="button" title="刷新仓库" aria-label="刷新仓库"><svg><use href="#i-refresh"/></svg></button></div>
         <div class="choice-grid" id="warehouse-choices"><div class="loading-line">正在查询可用仓库</div></div>
       </section>
-      <section class="workflow-section">
+      <section class="workflow-section" id="package-section">
         <div class="section-title"><span>2</span><div><small>包裹信息</small><h3>尺寸、重量与物流渠道</h3></div></div>
         <form class="package-form" id="channel-form">
           <label><span>长 (cm)</span><input id="package-length" inputmode="decimal" value="20" required></label>
@@ -238,7 +242,7 @@
         </form>
         <div class="choice-grid channels" id="channel-choices"><div class="empty-inline">选择发货仓后查询渠道</div></div>
       </section>
-      <section class="workflow-section purchase-section">
+      <section class="workflow-section purchase-section" id="purchase-section">
         <div class="section-title"><span>3</span><div><small>在线下单</small><h3>确认物流与购买面单</h3></div></div>
         <div class="selection-summary" id="selection-summary">尚未完成物流选择</div>
         <button class="danger-button" id="purchase-label" type="button" disabled><svg><use href="#i-label"/></svg>确认在线下单</button>

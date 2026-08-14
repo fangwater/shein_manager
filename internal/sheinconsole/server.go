@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"shein-api-manager/internal/shein"
+	"shein-api-manager/internal/xlwms"
 )
 
 //go:embed web/*
@@ -25,10 +26,10 @@ const shopHeader = "X-Shein-Shop"
 
 type Server struct {
 	store          *shein.Store
-	verifier       *shein.SessionVerifier
 	defaultShopKey string
 	requestTimeout time.Duration
 	logger         *slog.Logger
+	xlwms          *xlwms.Client
 	autoQueue      chan autoQueueRef
 }
 
@@ -46,35 +47,40 @@ type proxyRequest struct {
 	Data    map[string]any `json:"data"`
 }
 
-type userContextKey struct{}
-
-func New(store *shein.Store, verifier *shein.SessionVerifier, defaultShopKey string, requestTimeout time.Duration, logger *slog.Logger) http.Handler {
+func New(store *shein.Store, defaultShopKey string, requestTimeout time.Duration, logger *slog.Logger, xlwmsClient *xlwms.Client) http.Handler {
 	server := &Server{
-		store: store, verifier: verifier, defaultShopKey: defaultShopKey,
-		requestTimeout: requestTimeout, logger: logger, autoQueue: make(chan autoQueueRef, 500),
+		store: store, defaultShopKey: defaultShopKey,
+		requestTimeout: requestTimeout, logger: logger, xlwms: xlwmsClient, autoQueue: make(chan autoQueueRef, 500),
 	}
 	server.startAutoWorkers()
+	return server.routes()
+}
+
+func (server *Server) routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", server.health)
-	mux.Handle("GET /", server.requireAuth(http.HandlerFunc(server.index)))
-	mux.Handle("GET /assets/{name}", server.requireAuth(http.HandlerFunc(server.asset)))
-	mux.Handle("GET /api/status", server.requireAuth(http.HandlerFunc(server.status)))
-	mux.Handle("GET /api/system/shops", server.requireAuth(http.HandlerFunc(server.status)))
-	mux.Handle("POST /api/order/list", server.requireAuth(server.operationHandler("order-list")))
-	mux.Handle("POST /api/order/detail", server.requireAuth(server.operationHandler("order-detail")))
-	mux.Handle("POST /api/order/export-address", server.requireAuth(server.operationHandler("export-address")))
-	mux.Handle("GET /api/fulfillment/orders", server.requireAuth(http.HandlerFunc(server.fulfillmentOrders)))
-	mux.Handle("POST /api/fulfillment/orders/sync", server.requireAuth(http.HandlerFunc(server.syncFulfillmentOrders)))
-	mux.Handle("GET /api/auto-fulfillment/jobs", server.requireAuth(http.HandlerFunc(server.autoFulfillmentJobs)))
-	mux.Handle("POST /api/auto-fulfillment/run", server.requireAuth(http.HandlerFunc(server.runAutoFulfillment)))
-	mux.Handle("GET /api/auto-fulfillment/batches/latest", server.requireAuth(http.HandlerFunc(server.latestAutoFulfillmentBatch)))
-	mux.Handle("GET /api/shipping/tasks", server.requireAuth(http.HandlerFunc(server.fulfillmentTasks)))
-	mux.Handle("POST /api/shipping/warehouses", server.requireAuth(server.operationHandler("available-shipping-warehouse")))
-	mux.Handle("POST /api/shipping/channels", server.requireAuth(server.operationHandler("order-mapping-channels")))
-	mux.Handle("POST /api/shipping/place", server.requireAuth(server.operationHandler("place-express-order")))
-	mux.Handle("POST /api/shipping/check", server.requireAuth(server.operationHandler("check-express-order")))
-	mux.Handle("POST /api/shipping/label", server.requireAuth(server.operationHandler("print-express-info")))
-	mux.Handle("GET /api/shipping/track", server.requireAuth(http.HandlerFunc(server.logisticsTrack)))
+	mux.Handle("GET /", http.HandlerFunc(server.index))
+	mux.Handle("GET /assets/{name}", http.HandlerFunc(server.asset))
+	mux.Handle("GET /api/status", http.HandlerFunc(server.status))
+	mux.Handle("GET /api/system/shops", http.HandlerFunc(server.status))
+	mux.Handle("GET /api/oms-platform-orders/accounts", http.HandlerFunc(server.xlwmsAccounts))
+	mux.Handle("GET /api/oms-platform-orders/{orderNo}", http.HandlerFunc(server.xlwmsPlatformOrder))
+	mux.Handle("POST /api/order/list", server.operationHandler("order-list"))
+	mux.Handle("POST /api/order/detail", server.operationHandler("order-detail"))
+	mux.Handle("POST /api/order/export-address", server.operationHandler("export-address"))
+	mux.Handle("GET /api/fulfillment/orders", http.HandlerFunc(server.fulfillmentOrders))
+	mux.Handle("POST /api/fulfillment/orders/sync", http.HandlerFunc(server.syncFulfillmentOrders))
+	mux.Handle("POST /api/orders/{orderNo}/warehouse-preview", http.HandlerFunc(server.xlwmsWarehousePreview))
+	mux.Handle("GET /api/auto-fulfillment/jobs", http.HandlerFunc(server.autoFulfillmentJobs))
+	mux.Handle("POST /api/auto-fulfillment/run", http.HandlerFunc(server.runAutoFulfillment))
+	mux.Handle("GET /api/auto-fulfillment/batches/latest", http.HandlerFunc(server.latestAutoFulfillmentBatch))
+	mux.Handle("GET /api/shipping/tasks", http.HandlerFunc(server.fulfillmentTasks))
+	mux.Handle("POST /api/shipping/warehouses", server.operationHandler("available-shipping-warehouse"))
+	mux.Handle("POST /api/shipping/channels", server.operationHandler("order-mapping-channels"))
+	mux.Handle("POST /api/shipping/place", server.operationHandler("place-express-order"))
+	mux.Handle("POST /api/shipping/check", server.operationHandler("check-express-order"))
+	mux.Handle("POST /api/shipping/label", server.operationHandler("print-express-info"))
+	mux.Handle("GET /api/shipping/track", http.HandlerFunc(server.logisticsTrack))
 	return securityHeaders(mux)
 }
 
@@ -97,9 +103,9 @@ func (s *Server) asset(writer http.ResponseWriter, request *http.Request) {
 	name := request.PathValue("name")
 	contentType := ""
 	switch name {
-	case "app.js":
+	case "app.js", "xlwms.js":
 		contentType = "text/javascript; charset=utf-8"
-	case "styles.css":
+	case "styles.css", "platform.css":
 		contentType = "text/css; charset=utf-8"
 	default:
 		http.NotFound(writer, request)
@@ -129,7 +135,7 @@ func (s *Server) status(writer http.ResponseWriter, request *http.Request) {
 		return
 	}
 	writeJSON(writer, http.StatusOK, response{Success: true, Data: map[string]any{
-		"service": "shein-go-manager", "user": authenticatedUser(request.Context()),
+		"service":          "shein-go-manager",
 		"default_shop_key": s.defaultShopKey, "current_shop_key": shopKey, "shops": shops, "endpoints": len(shein.Endpoints),
 	}})
 }
@@ -227,7 +233,7 @@ func (s *Server) operationHandler(operation string) http.Handler {
 				_ = s.store.FailOperation(context.WithoutCancel(ctx), shopKey, operation, idempotencyKey, operationErrorSummary(err))
 			}
 			s.writeAPIError(writer, err)
-			s.logger.Warn("SHEIN operation failed", "operation", operation, "shop", shopKey, "user", authenticatedUser(request.Context()), "duration_ms", time.Since(started).Milliseconds(), "error", sanitizedError(err))
+			s.logger.Warn("SHEIN operation failed", "operation", operation, "shop", shopKey, "duration_ms", time.Since(started).Milliseconds(), "error", sanitizedError(err))
 			return
 		}
 		if operation == "order-mapping-channels" {
@@ -244,7 +250,7 @@ func (s *Server) operationHandler(operation string) http.Handler {
 			}
 		}
 		s.persistFulfillmentState(shopKey, operation, payload.Data, result)
-		s.logger.Info("SHEIN operation completed", "operation", operation, "shop", shopKey, "user", authenticatedUser(request.Context()), "duration_ms", time.Since(started).Milliseconds())
+		s.logger.Info("SHEIN operation completed", "operation", operation, "shop", shopKey, "duration_ms", time.Since(started).Milliseconds())
 		writeJSON(writer, http.StatusOK, response{Success: true, Data: result})
 	})
 }
@@ -313,38 +319,6 @@ func hashRequest(data map[string]any) string {
 	encoded, _ := json.Marshal(data)
 	sum := sha256.Sum256(encoded)
 	return hex.EncodeToString(sum[:])
-}
-
-func (s *Server) requireAuth(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		cookie, err := request.Cookie(shein.SessionCookieName)
-		if err != nil {
-			s.unauthorized(writer, request)
-			return
-		}
-		username, ok := s.verifier.Verify(cookie.Value)
-		if !ok {
-			s.unauthorized(writer, request)
-			return
-		}
-		next.ServeHTTP(writer, request.WithContext(context.WithValue(request.Context(), userContextKey{}, username)))
-	})
-}
-
-func (s *Server) unauthorized(writer http.ResponseWriter, request *http.Request) {
-	if strings.HasPrefix(request.URL.Path, "/api/") {
-		writeJSON(writer, http.StatusUnauthorized, response{Success: false, Error: "SHEIN login is required"})
-		return
-	}
-	writer.Header().Set("Content-Type", "text/html; charset=utf-8")
-	writer.Header().Set("Cache-Control", "no-store")
-	writer.WriteHeader(http.StatusUnauthorized)
-	_, _ = io.WriteString(writer, `<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>需要登录</title><style>body{margin:0;font-family:system-ui;background:#f4f6f8;color:#17202a;display:grid;place-items:center;min-height:100vh}main{width:min(420px,calc(100% - 40px));border:1px solid #d8dee5;background:#fff;padding:28px;border-radius:6px}h1{font-size:22px;margin:0 0 10px}p{color:#5d6875;line-height:1.6}a{display:inline-block;margin-top:10px;background:#111820;color:#fff;padding:10px 16px;text-decoration:none;border-radius:4px}</style><main><h1>SHEIN 登录已失效</h1><p>请先回到现有 SHEIN 管理台完成登录，再打开此页面。</p><a href="/">前往登录</a></main></html>`)
-}
-
-func authenticatedUser(ctx context.Context) string {
-	value, _ := ctx.Value(userContextKey{}).(string)
-	return value
 }
 
 func decodeJSON(writer http.ResponseWriter, request *http.Request, target any) bool {

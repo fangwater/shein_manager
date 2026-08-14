@@ -53,6 +53,27 @@ func TestRequestedShopKeyRejectsMismatch(t *testing.T) {
 	}
 }
 
+func TestConsoleRoutesDoNotRequireLogin(t *testing.T) {
+	handler := (&Server{}).routes()
+	tests := []struct {
+		method string
+		path   string
+		body   string
+		want   int
+	}{
+		{method: http.MethodGet, path: "/", want: http.StatusOK},
+		{method: http.MethodPost, path: "/api/order/list", body: "{", want: http.StatusBadRequest},
+	}
+	for _, test := range tests {
+		request := httptest.NewRequest(test.method, test.path, strings.NewReader(test.body))
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, request)
+		if recorder.Code != test.want {
+			t.Errorf("%s %s status = %d, want %d", test.method, test.path, recorder.Code, test.want)
+		}
+	}
+}
+
 func TestEmbeddedConsoleAssets(t *testing.T) {
 	server := &Server{}
 	tests := []struct {

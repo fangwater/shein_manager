@@ -38,8 +38,8 @@ The production prefix is `/shein`, so `/api/order/list` is publicly routed as
 
 ## Shop Fulfillment Console
 
-The authenticated page at `/shein/` follows the same shop-level operating model
-as the Temu console. Operators select a shop, query orders, select a SHEIN
+The page at `/shein/` follows the same shop-level operating model as the Temu
+console and does not require a web login. Operators select a shop, query orders, select a SHEIN
 shipping warehouse and channel, submit the online shipment, check its result,
 and retrieve the label from the resulting task.
 
@@ -48,6 +48,27 @@ browser stores only normalized task references per shop: order number, channel
 code, `placeRequestId`, `deliveryNo`, status, and update time. Customer
 addresses and raw OpenAPI responses are not persisted in browser storage.
 
+## Shared Console and XLWMS
+
+The SHEIN console loads the canonical Temu fulfillment shell from
+`/temu/dashboard.css` and keeps only SHEIN-specific controls in
+`platform.css`. The navigation order, table density, status components,
+responsive shell, XLWMS inventory matrix, and package-spec presentation are
+therefore shared across storefronts.
+
+The Go service connects to the warehouse manager through `XLWMS_BASE_URL`,
+defaulting to `https://pangutech.online/warehouse-console/api`. It exposes
+these public, no-store fulfillment queries:
+
+| Local endpoint | Purpose |
+| --- | --- |
+| `GET /api/oms-platform-orders/accounts` | List enabled XLWMS accounts |
+| `GET /api/oms-platform-orders/{orderNo}?account=all` | Query the order across enabled accounts |
+| `POST /api/orders/{orderNo}/warehouse-preview` | Query live inventory and package specs for the order warehouse SKUs |
+
+The order query returns only fulfillment verification fields. Raw XLWMS order
+objects and customer details are not passed through.
+
 ## Safety
 
 `place-express-order`, `print-express-info`, and `export-address` with
@@ -55,9 +76,9 @@ addresses and raw OpenAPI responses are not persisted in browser storage.
 `Idempotency-Key`. Reusing the same key and request returns the stored result;
 reusing it for different data is rejected.
 
-All routes except `/healthz` require a valid existing `shein_pnl_session` cookie.
+The fulfillment page and its APIs do not require a `shein_pnl_session` cookie.
 Address responses and all API responses use `Cache-Control: no-store`. Logs include
-only the operation, shop, authenticated username, duration, error code, and trace ID.
+only the operation, shop, duration, error code, and trace ID.
 They do not include request bodies, credentials, addresses, or order numbers.
 
 ## Runtime
@@ -68,6 +89,5 @@ go build -o bin/shein-server ./cmd/server
 pm2 startOrReload deploy/ecosystem.config.cjs --only shein-go-manager
 ```
 
-The launcher reads `/home/ubuntu/shein-api-manager/.env`, maps its `DATABASE_URL`
-to `SHEIN_DATABASE_URL`, and uses the existing `.web_session_secret`. No credential
-values are copied into this repository.
+The launcher reads `/home/ubuntu/shein-api-manager/.env` and maps its `DATABASE_URL`
+to `SHEIN_DATABASE_URL`. No credential values are copied into this repository.

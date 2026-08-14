@@ -5,7 +5,8 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="description" content="SHEIN 店铺发货与面单管理">
   <title>SHEIN Fulfillment</title>
-  <link rel="stylesheet" href="./assets/styles.css">
+  <link rel="stylesheet" href="/temu/dashboard.css?v=20260814-shared">
+  <link rel="stylesheet" href="./assets/platform.css?v=20260814-3">
 </head>
 <body>
   <svg class="svg-sprite" aria-hidden="true">
@@ -37,13 +38,12 @@
         <button class="nav-button" data-view="processing"><svg><use href="#i-truck"/></svg><span>自动处理中</span><b id="nav-processing-count">0</b></button>
         <button class="nav-button" data-view="exceptions"><svg><use href="#i-warning"/></svg><span>自动发货异常</span><b id="nav-exception-count">0</b></button>
         <button class="nav-button" data-view="manual"><svg><use href="#i-user"/></svg><span>人工订单</span><b id="nav-manual-count">0</b></button>
+        <button class="nav-button" data-view="oms-statuses"><svg><use href="#i-orders"/></svg><span>领星订单状态</span><b id="nav-oms-status-count">0</b></button>
         <button class="nav-button" data-view="ledger"><svg><use href="#i-ledger"/></svg><span>自动发货账本</span><b id="nav-ledger-count">0</b></button>
         <button class="nav-button" data-view="labels"><svg><use href="#i-label"/></svg><span>面单任务</span><b id="nav-label-count">0</b></button>
         <button class="nav-button" data-view="tools"><svg><use href="#i-tools"/></svg><span>物流工具</span></button>
       </nav>
-      <div class="sidebar-foot">
-        <div class="service-state"><span class="dot pending" id="service-dot"></span><span id="service-text">检查服务</span></div>
-      </div>
+      <div class="sidebar-foot"><a class="app-switch-link" href="/warehouse-console/"><svg><use href="#i-tools"/></svg><span>仓库运营中台</span></a><div class="sidebar-service"><span class="dot warning" id="service-dot"></span><span id="service-text">检查服务</span></div></div>
     </aside>
     <button class="backdrop" id="backdrop" aria-label="关闭导航"></button>
 
@@ -52,7 +52,7 @@
         <button class="icon-button menu-button" id="menu-button" type="button" title="打开导航" aria-label="打开导航"><svg><use href="#i-menu"/></svg></button>
         <div class="crumb"><span id="crumb-shop">SHEIN</span><b>/</b><strong id="crumb-current">待发货订单</strong></div>
         <label class="shop-switcher"><small>当前店铺</small><select id="shop-select" aria-label="选择店铺"></select></label>
-        <div class="session-pill"><span class="dot" id="session-dot"></span><div><small>当前用户</small><strong id="session-user">连接中</strong></div></div>
+        <div class="token-pill warning" id="xlwms-pill"><span class="dot warning" id="session-dot"></span><div><small>XLWMS 领星</small><strong id="session-user">检查中</strong></div></div>
       </header>
 
       <main>
@@ -189,6 +189,25 @@
           </div>
         </section>
 
+        <section class="view" id="view-oms-statuses">
+          <div class="page-head"><div><h1>领星订单状态</h1><p>按 SHEIN 平台订单号实时查询全部领星账户，只展示履约核验字段</p></div><button class="secondary-button" id="refresh-oms-statuses" type="button"><svg><use href="#i-refresh"/></svg>刷新账户</button></div>
+          <form class="oms-query-bar" id="oms-order-form">
+            <label><span>SHEIN 平台订单号</span><input id="oms-order-number" type="search" autocomplete="off" placeholder="输入订单号" required></label>
+            <label><span>领星账户</span><select id="oms-account"><option value="all">全部账户</option></select></label>
+            <button class="primary-button" id="query-oms-order" type="submit"><svg><use href="#i-search"/></svg>查询订单</button>
+          </form>
+          <div class="status-band">
+            <div><small>查询订单</small><strong class="compact" id="metric-oms-order">尚未查询</strong></div>
+            <div><small>命中记录</small><strong id="metric-oms-matches">0</strong></div>
+            <div><small>已查询账户</small><strong id="metric-oms-accounts">0</strong></div>
+            <div><small>查询时间</small><strong class="compact" id="metric-oms-time">尚未查询</strong></div>
+          </div>
+          <div class="table-shell oms-lookup-table is-empty">
+            <table><thead><tr><th>平台订单</th><th>领星订单</th><th>账户</th><th>平台</th><th>领星状态</th><th>发货仓</th><th>跟踪号</th><th>审核时间</th></tr></thead><tbody id="oms-status-rows"></tbody></table>
+            <div class="empty" id="oms-status-empty"><svg><use href="#i-orders"/></svg><strong>等待查询领星订单</strong><span>输入 SHEIN 平台订单号后查询 DPS、ARP 等已启用账户</span></div>
+          </div>
+        </section>
+
         <section class="view" id="view-tools">
           <div class="page-head"><div><h1>物流工具</h1></div></div>
           <div class="tool-grid">
@@ -223,6 +242,18 @@
     </div>
     <div class="dialog-body">
       <div class="order-summary" id="order-summary"></div>
+      <section class="warehouse-check" id="warehouse-check">
+        <div class="warehouse-check-head"><div><small>领星实时库存</small><h3 id="warehouse-check-title">正在连接领星 Go 服务</h3></div><button class="icon-button" id="refresh-warehouse-preview" type="button" title="重新查询库存" aria-label="重新查询库存"><svg><use href="#i-refresh"/></svg></button></div>
+        <div class="warehouse-check-message pending" id="warehouse-check-message"><span class="dot warning"></span><div><strong>正在查询库存仓</strong><small>DPS002、ARP美东、DPS004；ARP美西暂不启用</small></div></div>
+        <div id="inventory-matrix" hidden>
+          <div class="inventory-meta"><span id="inventory-rule">安全线</span><span id="inventory-time">查询时间</span></div>
+          <div class="inventory-table"><table><thead><tr><th>SKU / 需发</th><th>DPS002</th><th>ARP美东</th><th>DPS004</th><th>ARP美西（空置）</th><th>规则结论</th></tr></thead><tbody id="inventory-preview-rows"></tbody></table></div>
+        </div>
+      </section>
+      <section class="package-spec-panel" id="package-spec-panel" hidden>
+        <div class="package-spec-head"><div><small>仓库 SKU 刚性匹配</small><h3 id="package-spec-title">正在解析包裹规格</h3></div><span class="status-badge neutral" id="package-spec-badge">待校验</span></div>
+        <div class="package-spec-items" id="package-spec-items"></div>
+      </section>
       <div class="transition-notice" id="fulfillment-transition" hidden>
         <div><strong>订单尚未进入待发货</strong><span>流转完成后将在当前弹窗继续选择仓库和物流</span></div>
         <button class="primary-button" id="transition-fulfillment-order" type="button"><svg><use href="#i-truck"/></svg>流转到待发货</button>
@@ -257,6 +288,7 @@
   </aside>
   <button class="drawer-backdrop" id="drawer-backdrop" aria-label="关闭结果"></button>
   <div class="toast" id="toast" hidden></div>
-  <script src="./assets/app.js" defer></script>
+  <script src="./assets/app.js?v=20260814-3" defer></script>
+  <script src="./assets/xlwms.js?v=20260814-1" defer></script>
 </body>
 </html>

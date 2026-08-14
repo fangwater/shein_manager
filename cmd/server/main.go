@@ -15,22 +15,20 @@ import (
 
 	"shein-api-manager/internal/shein"
 	"shein-api-manager/internal/sheinconsole"
+	"shein-api-manager/internal/xlwms"
 )
 
 const (
-	defaultListen            = "127.0.0.1:18084"
-	defaultSessionSecretFile = "/home/ubuntu/shein-api-manager/.web_session_secret"
-	defaultAllowedUsers      = "pyy,operations,order-follow-up"
+	defaultListen       = "127.0.0.1:18084"
+	defaultXLWMSBaseURL = "https://pangutech.online/warehouse-console/api"
 )
 
 type config struct {
-	Listen            string
-	DatabaseURL       string
-	DefaultShopKey    string
-	SessionSecret     string
-	SessionSecretFile string
-	AllowedUsers      string
-	RequestTimeout    time.Duration
+	Listen         string
+	DatabaseURL    string
+	DefaultShopKey string
+	XLWMSBaseURL   string
+	RequestTimeout time.Duration
 }
 
 func main() {
@@ -59,7 +57,7 @@ func run(ctx context.Context, logger *slog.Logger) error {
 	if err := store.Migrate(ctx); err != nil {
 		return err
 	}
-	verifier, err := shein.NewSessionVerifier(cfg.SessionSecretFile, cfg.SessionSecret, cfg.AllowedUsers)
+	xlwmsClient, err := xlwms.NewClient(cfg.XLWMSBaseURL, cfg.RequestTimeout)
 	if err != nil {
 		return err
 	}
@@ -68,7 +66,7 @@ func run(ctx context.Context, logger *slog.Logger) error {
 		return fmt.Errorf("listen on %s: %w", cfg.Listen, err)
 	}
 	server := &http.Server{
-		Handler:           sheinconsole.New(store, verifier, cfg.DefaultShopKey, cfg.RequestTimeout, logger),
+		Handler:           sheinconsole.New(store, cfg.DefaultShopKey, cfg.RequestTimeout, logger, xlwmsClient),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      cfg.RequestTimeout + 10*time.Second,
@@ -103,13 +101,11 @@ func loadConfig() (config, error) {
 		requestTimeout = parsed
 	}
 	cfg := config{
-		Listen:            envOrDefault("SHEIN_GO_LISTEN", defaultListen),
-		DatabaseURL:       strings.TrimSpace(os.Getenv("SHEIN_DATABASE_URL")),
-		DefaultShopKey:    envOrDefault("SHEIN_SHOP_KEY", "default"),
-		SessionSecret:     strings.TrimSpace(os.Getenv("SHEIN_WEB_SESSION_SECRET")),
-		SessionSecretFile: envOrDefault("SHEIN_WEB_SESSION_SECRET_FILE", defaultSessionSecretFile),
-		AllowedUsers:      envOrDefault("SHEIN_GO_ALLOWED_USERS", defaultAllowedUsers),
-		RequestTimeout:    requestTimeout,
+		Listen:         envOrDefault("SHEIN_GO_LISTEN", defaultListen),
+		DatabaseURL:    strings.TrimSpace(os.Getenv("SHEIN_DATABASE_URL")),
+		DefaultShopKey: envOrDefault("SHEIN_SHOP_KEY", "default"),
+		XLWMSBaseURL:   envOrDefault("XLWMS_BASE_URL", defaultXLWMSBaseURL),
+		RequestTimeout: requestTimeout,
 	}
 	if cfg.DatabaseURL == "" {
 		return config{}, errors.New("SHEIN_DATABASE_URL is required")

@@ -445,6 +445,7 @@ function selectView(name) {
     processing: "自动处理中",
     exceptions: "自动发货异常",
     manual: "人工订单",
+    "oms-statuses": "领星订单状态",
     ledger: "自动发货账本",
     labels: "面单任务",
     tools: "物流工具"
@@ -457,6 +458,7 @@ function selectView(name) {
   });
   byId("crumb-current").textContent = titles[name] || "";
   byId("sidebar").classList.remove("open");
+  byId("backdrop").classList.remove("visible");
   if (name === "processing") loadJobQueue("processing");
   if (name === "exceptions") loadJobQueue("exceptions");
   if (name === "manual") loadManualOrders();
@@ -580,19 +582,20 @@ function renderOrders(rows) {
 function orderAction(order, number) {
   const status = String(orderStatus(order));
   const automatic = '<button class="table-action primary" data-auto-order="' + escapeHTML(number) + '">自动发货</button>';
+  const oms = '<button class="table-action" data-oms-order="' + escapeHTML(number) + '">查领星</button>';
   if (status === "1") {
     const reason = unprocessableReason(order);
     return '<div class="action-row">' + automatic + '<button class="table-action" data-fulfill-order="' + escapeHTML(number) + '"' +
       (reason ? ' disabled title="' + escapeHTML(reason) + '"' : "") + ">" +
-      (reason ? "暂不可处理" : "人工发货") + "</button></div>";
+      (reason ? "暂不可处理" : "人工发货") + "</button>" + oms + "</div>";
   }
   if (status === "2") {
     const integrated = supportsIntegratedLogistics(order);
     return '<div class="action-row">' + automatic + '<button class="table-action" data-fulfill-order="' + escapeHTML(number) + '"' +
       (integrated ? "" : ' disabled title="订单仅支持商家自发货"') + ">" +
-      (integrated ? "人工发货" : "仅自发货") + "</button></div>";
+      (integrated ? "人工发货" : "仅自发货") + "</button>" + oms + "</div>";
   }
-  return '<button class="table-action" disabled>不可操作</button>';
+  return oms;
 }
 
 function workflowStatusText(order) {
@@ -918,6 +921,7 @@ function renderManualOrders() {
         (integrated ? "" : ' disabled title="订单仅支持商家自发货"') + ">" +
         (integrated ? "人工发货" : "仅自发货") + "</button>";
     }
+    action = '<div class="action-row">' + action + '<button class="table-action" data-oms-order="' + escapeHTML(order.order_no) + '">查领星</button></div>';
     return '<tr><td><button class="order-link" data-manual-detail="' + escapeHTML(order.order_no) + '">' +
       escapeHTML(order.order_no) + '</button></td><td><div class="sku-stack">' + (goodsHTML || "-") +
       '</div></td><td><div class="order-id"><strong>' + escapeHTML(relativeDeadline(orderDeadline(order))) +
@@ -1107,6 +1111,7 @@ function openFulfillment(orderNo) {
   const dialog = byId("fulfillment-dialog");
   if (!dialog.open) dialog.showModal();
   loadFulfillmentContext();
+  loadXLWMSWarehousePreview(orderNo);
 }
 
 function channelList(payload) {
@@ -1267,10 +1272,8 @@ async function loadStatus() {
     }).join("") || '<option value="' + escapeHTML(state.shopKey) + '">' + escapeHTML(state.shopKey) + '</option>';
     byId("brand-shop").textContent = state.shopKey;
     byId("crumb-shop").textContent = state.shopKey;
-    byId("session-user").textContent = data.user || "已登录";
     byId("service-dot").className = "dot";
     byId("service-text").textContent = "Go 服务正常";
-    byId("session-dot").className = "dot";
     await Promise.all([
       loadOrders(),
       loadManualOrders(),
@@ -1284,8 +1287,6 @@ async function loadStatus() {
   } catch (error) {
     byId("service-dot").className = "dot error";
     byId("service-text").textContent = "服务异常";
-    byId("session-dot").className = "dot error";
-    byId("session-user").textContent = "连接失败";
     toast(error.message, true);
   }
 }
@@ -1293,8 +1294,14 @@ async function loadStatus() {
 document.querySelectorAll(".nav-button").forEach(function (button) {
   button.addEventListener("click", function () { selectView(button.dataset.view); });
 });
-byId("menu-button").addEventListener("click", function () { byId("sidebar").classList.add("open"); });
-byId("backdrop").addEventListener("click", function () { byId("sidebar").classList.remove("open"); });
+byId("menu-button").addEventListener("click", function () {
+  byId("sidebar").classList.add("open");
+  byId("backdrop").classList.add("visible");
+});
+byId("backdrop").addEventListener("click", function () {
+  byId("sidebar").classList.remove("open");
+  byId("backdrop").classList.remove("visible");
+});
 byId("close-result").addEventListener("click", closeResult);
 byId("drawer-backdrop").addEventListener("click", closeResult);
 byId("close-fulfillment").addEventListener("click", function () { byId("fulfillment-dialog").close(); });

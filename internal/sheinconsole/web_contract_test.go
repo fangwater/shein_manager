@@ -1,0 +1,52 @@
+package sheinconsole
+
+import (
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+)
+
+func TestConsoleUsesSharedTemuShell(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	(&Server{}).index(recorder, httptest.NewRequest(http.MethodGet, "/", nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("index status = %d", recorder.Code)
+	}
+	body := recorder.Body.String()
+	for _, required := range []string{
+		`href="/temu/dashboard.css`,
+		`id="view-oms-statuses"`,
+		`id="warehouse-check"`,
+		`src="./assets/xlwms.js`,
+	} {
+		if !strings.Contains(body, required) {
+			t.Fatalf("console index does not contain %q", required)
+		}
+	}
+	if strings.Contains(body, "当前用户") {
+		t.Fatal("public fulfillment console still presents a logged-in user")
+	}
+}
+
+func TestXLWMSConsoleAssetsAreEmbedded(t *testing.T) {
+	server := &Server{}
+	for _, asset := range []struct {
+		name        string
+		contentType string
+	}{
+		{name: "xlwms.js", contentType: "text/javascript"},
+		{name: "platform.css", contentType: "text/css"},
+	} {
+		request := httptest.NewRequest(http.MethodGet, "/assets/"+asset.name, nil)
+		request.SetPathValue("name", asset.name)
+		recorder := httptest.NewRecorder()
+		server.asset(recorder, request)
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("asset %s status = %d", asset.name, recorder.Code)
+		}
+		if !strings.HasPrefix(recorder.Header().Get("Content-Type"), asset.contentType) {
+			t.Fatalf("asset %s Content-Type = %q", asset.name, recorder.Header().Get("Content-Type"))
+		}
+	}
+}

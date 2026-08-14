@@ -2,6 +2,8 @@
 
 const sheinXLWMS = {
   accounts: [],
+  accountFailures: 0,
+  accountRetryTimer: null,
   lastOrderNo: "",
   warehouseController: null,
   warehouseOrderNo: ""
@@ -16,10 +18,15 @@ function setXLWMSPill(tone, text) {
 }
 
 async function loadXLWMSAccounts(button) {
+  if (sheinXLWMS.accountRetryTimer) {
+    window.clearTimeout(sheinXLWMS.accountRetryTimer);
+    sheinXLWMS.accountRetryTimer = null;
+  }
   await busy(button || null, async function () {
     setXLWMSPill("warning", "检查中");
     try {
       const payload = await request("oms-platform-orders/accounts");
+      sheinXLWMS.accountFailures = 0;
       sheinXLWMS.accounts = Array.isArray(payload.data) ? payload.data : [];
       byId("oms-account").innerHTML = '<option value="all">全部账户</option>' + sheinXLWMS.accounts.map(function (account) {
         const key = display(account.key);
@@ -33,8 +40,13 @@ async function loadXLWMSAccounts(button) {
       setXLWMSPill("ready", "实时查询可用 · " + sheinXLWMS.accounts.length + " 个账户");
     } catch (error) {
       sheinXLWMS.accounts = [];
+      sheinXLWMS.accountFailures += 1;
       setXLWMSPill("error", "查询服务异常");
       if (button) toast(error.message, true);
+      const retryDelay = Math.min(30000, 2000 * Math.pow(2, sheinXLWMS.accountFailures - 1));
+      sheinXLWMS.accountRetryTimer = window.setTimeout(function () {
+        loadXLWMSAccounts();
+      }, retryDelay);
     }
   });
 }
@@ -308,4 +320,6 @@ if (omsNavigation) {
   });
 }
 
-loadXLWMSAccounts();
+Promise.resolve(window.sheinShopReady).then(function () {
+  loadXLWMSAccounts();
+});

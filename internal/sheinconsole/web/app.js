@@ -1401,7 +1401,7 @@ byId("channel-choices").addEventListener("change", function (event) {
 warehouseList.current = [];
 renderChannels.current = [];
 
-loadStatus();
+window.sheinShopReady = loadStatus();
 
 window.setInterval(function () {
   if (byId("view-processing").classList.contains("active")) {

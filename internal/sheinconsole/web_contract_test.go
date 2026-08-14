@@ -67,3 +67,22 @@ func TestShopSelectorUsesSharedStoreContract(t *testing.T) {
 		}
 	}
 }
+
+func TestXLWMSAccountLookupWaitsForShopInitialization(t *testing.T) {
+	appScript, err := webFiles.ReadFile("web/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	xlwmsScript, err := webFiles.ReadFile("web/xlwms.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(appScript), "window.sheinShopReady = loadStatus()") {
+		t.Fatal("shop initialization promise is not exposed")
+	}
+	for _, required := range []string{"Promise.resolve(window.sheinShopReady)", "accountRetryTimer", "retryDelay"} {
+		if !strings.Contains(string(xlwmsScript), required) {
+			t.Fatalf("XLWMS startup recovery does not contain %q", required)
+		}
+	}
+}

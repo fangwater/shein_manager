@@ -10,7 +10,7 @@ import pandas as pd
 import psycopg
 
 from shein_api_manager.config import load_settings
-from shein_api_manager.db import ensure_sku_mapping_schema
+from shein_api_manager.db import ensure_sku_mapping_schema, shop_database_url
 
 
 BASE_DIR = Path(__file__).resolve().parents[1]
@@ -38,8 +38,9 @@ def fetch_warehouse_costs() -> dict[str, dict[str, Any]]:
     settings = load_settings()
     if not settings.database_url:
         raise RuntimeError("DATABASE_URL is required")
-    ensure_sku_mapping_schema(settings.database_url)
-    with psycopg.connect(settings.database_url) as conn:
+    database_url = shop_database_url(settings.database_url, settings.shop_key)
+    ensure_sku_mapping_schema(database_url)
+    with psycopg.connect(database_url) as conn:
         rows = conn.execute(
             """
             SELECT m.shein_sku, m.warehouse_sku, m.warehouse_qty,
@@ -148,7 +149,8 @@ def fetch_orders() -> list[
     settings = load_settings()
     if not settings.database_url:
         raise RuntimeError("DATABASE_URL is required")
-    with psycopg.connect(settings.database_url) as conn:
+    database_url = shop_database_url(settings.database_url, settings.shop_key)
+    with psycopg.connect(database_url) as conn:
         rows = conn.execute(
             """
             SELECT

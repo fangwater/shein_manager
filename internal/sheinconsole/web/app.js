@@ -1261,17 +1261,19 @@ async function loadStatus() {
     const payload = await request("system/shops");
     const data = payload.data || {};
     state.shops = Array.isArray(data.shops) ? data.shops : [];
-    const keys = state.shops.map(function (shop) { return shop.shop_key; });
+    const keys = state.shops.map(function (shop) { return shop.code; });
     if (!state.shopKey || !keys.includes(state.shopKey)) {
-      state.shopKey = data.default_shop_key || keys[0] || data.current_shop_key || "default";
+      state.shopKey = data.default_shop || keys[0] || "beauty-hangers-home";
     }
     sessionStorage.setItem(SHOP_STORAGE_KEY, state.shopKey);
     byId("shop-select").innerHTML = state.shops.map(function (shop) {
-      return '<option value="' + escapeHTML(shop.shop_key) + '" ' + (shop.shop_key === state.shopKey ? "selected" : "") +
-        '>' + escapeHTML(shop.shop_key + (shop.credentials_ready ? "" : "（凭证未就绪）")) + '</option>';
+      return '<option value="' + escapeHTML(shop.code) + '" ' + (shop.code === state.shopKey ? "selected" : "") +
+        '>' + escapeHTML(display(shop.name, shop.code)) + '</option>';
     }).join("") || '<option value="' + escapeHTML(state.shopKey) + '">' + escapeHTML(state.shopKey) + '</option>';
-    byId("brand-shop").textContent = state.shopKey;
-    byId("crumb-shop").textContent = state.shopKey;
+    const selectedShop = state.shops.find(function (shop) { return shop.code === state.shopKey; });
+    const selectedShopName = selectedShop ? display(selectedShop.name, state.shopKey) : state.shopKey;
+    byId("brand-shop").textContent = selectedShopName;
+    byId("crumb-shop").textContent = selectedShopName;
     byId("service-dot").className = "dot";
     byId("service-text").textContent = "Go 服务正常";
     await Promise.all([

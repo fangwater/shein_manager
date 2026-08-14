@@ -39,7 +39,7 @@ def load_settings() -> Settings:
         app_secret_key=os.getenv("SHEIN_APP_SECRET_KEY") or None,
         open_key_id=os.getenv("SHEIN_OPEN_KEY_ID") or None,
         secret_key=os.getenv("SHEIN_SECRET_KEY") or None,
-        shop_key=os.getenv("SHEIN_SHOP_KEY", "default"),
+        shop_key=os.getenv("SHEIN_SHOP_KEY", "beauty-hangers-home"),
         order_list_method=os.getenv("SHEIN_ORDER_LIST_METHOD", "POST").upper(),
         order_detail_method=os.getenv("SHEIN_ORDER_DETAIL_METHOD", "POST").upper(),
         order_detail_field=os.getenv("SHEIN_ORDER_DETAIL_FIELD", "orderNoList"),

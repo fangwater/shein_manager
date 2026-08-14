@@ -7,49 +7,51 @@ import (
 	"testing"
 )
 
-func TestRequestedShopKeyPrecedence(t *testing.T) {
-	server := &Server{defaultShopKey: "default-shop"}
+func TestRequestedShopKeyUsesRoutedShop(t *testing.T) {
+	server := &Server{shopKey: "beauty-hangers-home"}
 
 	tests := []struct {
-		name        string
-		header      string
-		payload     string
-		defaultShop string
-		want        string
+		name    string
+		header  string
+		payload string
 	}{
-		{name: "header", header: "header-shop", payload: "header-shop", want: "header-shop"},
-		{name: "payload", payload: "payload-shop", want: "payload-shop"},
-		{name: "configured default", want: "default-shop"},
-		{name: "fallback default", defaultShop: " ", want: "default"},
+		{name: "header", header: "beauty-hangers-home", payload: "beauty-hangers-home"},
+		{name: "payload", payload: "beauty-hangers-home"},
+		{name: "configured shop"},
 	}
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			current := *server
-			if test.defaultShop != "" {
-				current.defaultShopKey = test.defaultShop
-			}
 			request := httptest.NewRequest(http.MethodPost, "/api/order/list", nil)
 			request.Header.Set(shopHeader, test.header)
-			got, err := current.requestedShopKey(request, test.payload)
+			got, err := server.requestedShopKey(request, test.payload)
 			if err != nil {
 				t.Fatalf("requestedShopKey returned an error: %v", err)
 			}
-			if got != test.want {
-				t.Fatalf("requestedShopKey = %q, want %q", got, test.want)
+			if got != "beauty-hangers-home" {
+				t.Fatalf("requestedShopKey = %q, want beauty-hangers-home", got)
 			}
 		})
 	}
 }
 
 func TestRequestedShopKeyRejectsMismatch(t *testing.T) {
-	server := &Server{defaultShopKey: "default-shop"}
+	server := &Server{shopKey: "beauty-hangers-home"}
 	request := httptest.NewRequest(http.MethodPost, "/api/order/list", nil)
-	request.Header.Set(shopHeader, "header-shop")
+	request.Header.Set(shopHeader, "other-shop")
 
-	_, err := server.requestedShopKey(request, "payload-shop")
+	_, err := server.requestedShopKey(request, "")
 	if err == nil || !strings.Contains(err.Error(), shopHeader) {
 		t.Fatalf("requestedShopKey error = %v, want header mismatch", err)
+	}
+}
+
+func TestRequestedShopKeyRejectsPayloadForAnotherRoute(t *testing.T) {
+	server := &Server{shopKey: "beauty-hangers-home"}
+	request := httptest.NewRequest(http.MethodPost, "/api/order/list", nil)
+	_, err := server.requestedShopKey(request, "other-shop")
+	if err == nil || !strings.Contains(err.Error(), "shop_key") {
+		t.Fatalf("requestedShopKey error = %v, want payload mismatch", err)
 	}
 }
 

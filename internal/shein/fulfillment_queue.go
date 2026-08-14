@@ -525,13 +525,13 @@ func (s *Store) ListAutoJobs(ctx context.Context, shopKey, queue string, limit i
 	return jobs, rows.Err()
 }
 
-func (s *Store) ListResumableAutoJobs(ctx context.Context) ([][2]string, error) {
+func (s *Store) ListResumableAutoJobs(ctx context.Context, shopKey string) ([][2]string, error) {
 	rows, err := s.pool.Query(ctx, `
 		UPDATE shein_go_auto_fulfillment_jobs
 		SET status = 'queued', current_step = 'queued', updated_at = now()
-		WHERE status IN ('queued', 'running', 'waiting_confirmation')
+		WHERE shop_key = $1 AND status IN ('queued', 'running', 'waiting_confirmation')
 		RETURNING shop_key, order_no
-	`)
+	`, shopKey)
 	if err != nil {
 		return nil, fmt.Errorf("resume SHEIN automatic fulfillment jobs: %w", err)
 	}

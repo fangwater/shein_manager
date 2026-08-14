@@ -556,7 +556,7 @@ def load_pnl_relation_maps() -> tuple[dict[str, dict[str, Any]], dict[str, dict[
     if not settings.database_url:
         return {}, {}
     try:
-        with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
+        with psycopg.connect(database_url(), row_factory=dict_row) as conn:
             catalog = build_product_sku_catalog(conn, settings.shop_key)
             mapping_rows = conn.execute(
                 """
@@ -1095,7 +1095,12 @@ def database_url() -> str:
     settings = load_settings()
     if not settings.database_url:
         raise HTTPException(status_code=500, detail="DATABASE_URL is required")
-    return settings.database_url
+    from .db import shop_database_url
+
+    try:
+        return shop_database_url(settings.database_url, settings.shop_key)
+    except (KeyError, ValueError, psycopg.Error) as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
 def parse_datetime(value: str | None, default: pd.Timestamp) -> pd.Timestamp:

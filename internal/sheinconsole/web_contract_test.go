@@ -50,3 +50,20 @@ func TestXLWMSConsoleAssetsAreEmbedded(t *testing.T) {
 		}
 	}
 }
+
+func TestShopSelectorUsesSharedStoreContract(t *testing.T) {
+	script, err := webFiles.ReadFile("web/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, required := range []string{"data.default_shop", "shop.code", "shop.name"} {
+		if !strings.Contains(string(script), required) {
+			t.Fatalf("shop selector does not contain %q", required)
+		}
+	}
+	for _, legacy := range []string{"default_shop_key", "shop.shop_key", "credentials_ready"} {
+		if strings.Contains(string(script), legacy) {
+			t.Fatalf("shop selector still contains legacy field %q", legacy)
+		}
+	}
+}

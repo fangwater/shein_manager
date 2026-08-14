@@ -45,7 +45,8 @@ def main(argv: list[str] | None = None) -> int:
     shop_key = args.shop_key or settings.shop_key
     api_base_url = (args.api_base_url or settings.api_base_url).rstrip("/")
     credentials = resolve_credentials(settings, shop_key=shop_key, api_base_url=api_base_url)
-    db.init_db(settings.database_url)
+    db.init_db(settings.database_url, shop_key=shop_key)
+    database_url = db.shop_database_url(settings.database_url, shop_key)
 
     selected = set(args.data or ["orders", "returns", "products"])
     end_dt = parse_optional_shein_time(args.end_time) or local_now()
@@ -56,11 +57,11 @@ def main(argv: list[str] | None = None) -> int:
     }
 
     if "orders" in selected:
-        result["orders"] = run_orders(settings.database_url, credentials, args, end_dt)
+        result["orders"] = run_orders(database_url, credentials, args, end_dt)
     if "returns" in selected:
-        result["returns"] = run_returns(settings.database_url, credentials, settings, args, end_dt)
+        result["returns"] = run_returns(database_url, credentials, settings, args, end_dt)
     if "products" in selected:
-        result["products"] = run_products(settings.database_url, credentials, args, end_dt)
+        result["products"] = run_products(database_url, credentials, args, end_dt)
 
     print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
     return 0
@@ -76,7 +77,7 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("orders", "returns", "products"),
         help="Data type to sync. Repeat to sync multiple types. Defaults to all.",
     )
-    parser.add_argument("--shop-key", help="Defaults to SHEIN_SHOP_KEY or default.")
+    parser.add_argument("--shop-key", help="Defaults to SHEIN_SHOP_KEY or beauty-hangers-home.")
     parser.add_argument("--api-base-url", help="Defaults to SHEIN_API_BASE_URL.")
     parser.add_argument("--end-time", help="UTC+8, format YYYY-MM-DD HH:MM:SS. Defaults to now.")
     parser.add_argument(

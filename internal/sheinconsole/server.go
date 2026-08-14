@@ -26,7 +26,8 @@ const shopHeader = "X-Shein-Shop"
 
 type Server struct {
 	store          *shein.Store
-	defaultShopKey string
+	shopKey        string
+	shopName       string
 	requestTimeout time.Duration
 	logger         *slog.Logger
 	xlwms          *xlwms.Client
@@ -47,9 +48,9 @@ type proxyRequest struct {
 	Data    map[string]any `json:"data"`
 }
 
-func New(store *shein.Store, defaultShopKey string, requestTimeout time.Duration, logger *slog.Logger, xlwmsClient *xlwms.Client) http.Handler {
+func New(store *shein.Store, shopKey, shopName string, requestTimeout time.Duration, logger *slog.Logger, xlwmsClient *xlwms.Client) http.Handler {
 	server := &Server{
-		store: store, defaultShopKey: defaultShopKey,
+		store: store, shopKey: strings.TrimSpace(shopKey), shopName: strings.TrimSpace(shopName),
 		requestTimeout: requestTimeout, logger: logger, xlwms: xlwmsClient, autoQueue: make(chan autoQueueRef, 500),
 	}
 	server.startAutoWorkers()
@@ -62,7 +63,6 @@ func (server *Server) routes() http.Handler {
 	mux.Handle("GET /", http.HandlerFunc(server.index))
 	mux.Handle("GET /assets/{name}", http.HandlerFunc(server.asset))
 	mux.Handle("GET /api/status", http.HandlerFunc(server.status))
-	mux.Handle("GET /api/system/shops", http.HandlerFunc(server.status))
 	mux.Handle("GET /api/oms-platform-orders/accounts", http.HandlerFunc(server.xlwmsAccounts))
 	mux.Handle("GET /api/oms-platform-orders/{orderNo}", http.HandlerFunc(server.xlwmsPlatformOrder))
 	mux.Handle("POST /api/order/list", server.operationHandler("order-list"))
@@ -85,7 +85,9 @@ func (server *Server) routes() http.Handler {
 }
 
 func (s *Server) health(writer http.ResponseWriter, _ *http.Request) {
-	writeJSON(writer, http.StatusOK, response{Success: true, Data: map[string]string{"status": "ok", "service": "shein-go-manager"}})
+	writeJSON(writer, http.StatusOK, response{Success: true, Data: map[string]string{
+		"status": "ok", "service": "shein-go-manager", "shop_code": s.shopKey, "shop_name": s.shopName,
+	}})
 }
 
 func (s *Server) index(writer http.ResponseWriter, _ *http.Request) {
@@ -122,21 +124,13 @@ func (s *Server) asset(writer http.ResponseWriter, request *http.Request) {
 }
 
 func (s *Server) status(writer http.ResponseWriter, request *http.Request) {
-	ctx, cancel := context.WithTimeout(request.Context(), s.requestTimeout)
-	defer cancel()
-	shops, err := s.store.ListShops(ctx)
-	if err != nil {
-		s.internalError(writer, "list shops", err)
-		return
-	}
 	shopKey, err := s.requestedShopKey(request, "")
 	if err != nil {
 		writeJSON(writer, http.StatusBadRequest, response{Success: false, Error: err.Error()})
 		return
 	}
 	writeJSON(writer, http.StatusOK, response{Success: true, Data: map[string]any{
-		"service":          "shein-go-manager",
-		"default_shop_key": s.defaultShopKey, "current_shop_key": shopKey, "shops": shops, "endpoints": len(shein.Endpoints),
+		"service": "shein-go-manager", "shop_code": shopKey, "shop_name": s.shopName, "endpoints": len(shein.Endpoints),
 	}})
 }
 
@@ -283,21 +277,19 @@ func (s *Server) logisticsTrack(writer http.ResponseWriter, request *http.Reques
 }
 
 func (s *Server) requestedShopKey(request *http.Request, payloadShopKey string) (string, error) {
+	configuredShopKey := strings.TrimSpace(s.shopKey)
+	if configuredShopKey == "" {
+		configuredShopKey = "default"
+	}
 	headerShopKey := strings.TrimSpace(request.Header.Get(shopHeader))
 	payloadShopKey = strings.TrimSpace(payloadShopKey)
-	if headerShopKey != "" && payloadShopKey != "" && headerShopKey != payloadShopKey {
-		return "", errors.New("X-Shein-Shop does not match shop_key")
+	if headerShopKey != "" && headerShopKey != configuredShopKey {
+		return "", errors.New("X-Shein-Shop does not match the routed shop")
 	}
-	if headerShopKey != "" {
-		return headerShopKey, nil
+	if payloadShopKey != "" && payloadShopKey != configuredShopKey {
+		return "", errors.New("shop_key does not match the routed shop")
 	}
-	if payloadShopKey != "" {
-		return payloadShopKey, nil
-	}
-	if shopKey := strings.TrimSpace(s.defaultShopKey); shopKey != "" {
-		return shopKey, nil
-	}
-	return "default", nil
+	return configuredShopKey, nil
 }
 
 func requiredConfirmation(operation string, data map[string]any) (string, bool, error) {

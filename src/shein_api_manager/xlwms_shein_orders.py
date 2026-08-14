@@ -25,6 +25,10 @@ def query_shein_cost_order_page(
     if not 1 <= page_size <= 200:
         raise ValueError("pageSize must be between 1 and 200")
 
+    from .db import shop_database_url
+
+    shein_database_url = shop_database_url(shein_database_url, shop_key)
+
     where = "WHERE shop_key = %s"
     params: list[Any] = [shop_key]
     if search:

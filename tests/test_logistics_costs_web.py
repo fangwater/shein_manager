@@ -42,9 +42,10 @@ class LogisticsCostsWebTests(unittest.TestCase):
             self.client.get("/api/logistics-costs/orders").status_code, 403
         )
 
+    @patch("shein_api_manager.pnl_web.database_url", return_value="postgresql://example.invalid/shein")
     @patch("shein_api_manager.pnl_web.query_shein_cost_order_page")
     def test_order_page_api_passes_query_without_aggregation(
-        self, query_page
+        self, query_page, _database_url
     ) -> None:
         query_page.return_value = {
             "rows": [

@@ -1,19 +1,22 @@
 # SHEIN Go Manager
 
 The service runs as a standalone Go process on `127.0.0.1:18084` and is exposed
-through `https://pangutech.online/shein/`. It reads store credentials from the
-existing `shein_shops` PostgreSQL table and never returns credential values.
+through `https://pangutech.online/shein/`. It reads enabled shops from the
+shared `public.shein_shops` registry and creates one handler, database pool, and
+automatic-fulfillment worker set per shop. Each pool uses the shop's private
+PostgreSQL schema followed by `public` in its `search_path`.
 
 ## Local API
 
-Use `X-Shein-Shop` to select the shop for every local API request. The
-`shop_key` field remains available for API compatibility; when both are sent
-they must match. `GET /api/system/shops` returns the configured shops and the
-current/default selection. All POST endpoints accept this envelope:
+Use `X-Shein-Shop` to select the shop for every local API request. Missing
+headers use `beauty-hangers-home`. A legacy `shop_key` field may be sent in a
+POST envelope only when it matches the routed header. `GET /api/system/shops`
+uses the same `{code,name,default}` contract as Temu. All POST endpoints accept
+this envelope:
 
 ```json
 {
-  "shop_key": "default",
+  "shop_key": "beauty-hangers-home",
   "data": {}
 }
 ```
@@ -44,6 +47,8 @@ shipping warehouse and channel, submit the online shipment, check its result,
 and retrieve the label from the resulting task.
 
 The selected shop is sent in `X-Shein-Shop` and kept in session storage. The
+shop selector displays `Beauty Hangers home` while requests use the stable
+`beauty-hangers-home` code. The
 browser stores only normalized task references per shop: order number, channel
 code, `placeRequestId`, `deliveryNo`, status, and update time. Customer
 addresses and raw OpenAPI responses are not persisted in browser storage.
@@ -91,3 +96,5 @@ pm2 startOrReload deploy/ecosystem.config.cjs --only shein-go-manager
 
 The launcher reads `/home/ubuntu/shein-api-manager/.env` and maps its `DATABASE_URL`
 to `SHEIN_DATABASE_URL`. No credential values are copied into this repository.
+The multi-shop database topology and registration procedure are documented in
+`docs/multi-store.md`.

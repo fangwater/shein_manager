@@ -48,7 +48,7 @@ func (s *Server) startAutoWorkers() {
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
-		jobs, err := s.store.ListResumableAutoJobs(ctx)
+		jobs, err := s.store.ListResumableAutoJobs(ctx, s.shopKey)
 		if err != nil {
 			s.logger.Error("recover SHEIN automatic fulfillment jobs failed", "error", sanitizedError(err))
 			return
@@ -56,15 +56,8 @@ func (s *Server) startAutoWorkers() {
 		for _, job := range jobs {
 			s.enqueueAutoJob(autoQueueRef{ShopKey: job[0], OrderNo: job[1]})
 		}
-		shops, err := s.store.ListShops(ctx)
-		if err != nil {
-			s.logger.Error("recover SHEIN automatic batches failed", "error", sanitizedError(err))
-			return
-		}
-		for _, shop := range shops {
-			if _, err := s.enqueueNextBulkItem(ctx, shop.ShopKey); err != nil {
-				s.logger.Error("recover SHEIN automatic batch item failed", "shop", shop.ShopKey, "error", sanitizedError(err))
-			}
+		if _, err := s.enqueueNextBulkItem(ctx, s.shopKey); err != nil {
+			s.logger.Error("recover SHEIN automatic batch item failed", "shop", s.shopKey, "error", sanitizedError(err))
 		}
 	}()
 }

@@ -124,6 +124,8 @@ def download_orders(
     detail_method: str,
     detail_body_field: str,
 ) -> DownloadResult:
+    db.init_db(database_url, shop_key=credentials.shop_key)
+    database_url = db.shop_database_url(database_url, credentials.shop_key)
     service = OrderService(client_from_credentials(credentials))
     run_id = db.create_sync_run(database_url, shop_key=credentials.shop_key, query_params=query_params)
     pages = 0
@@ -248,7 +250,8 @@ def sync_orders_full(
         base_params=base_params,
     )
 
-    db.init_db(database_url)
+    db.init_db(database_url, shop_key=credentials.shop_key)
+    database_url = db.shop_database_url(database_url, credentials.shop_key)
     job_id = db.ensure_order_full_sync_job(
         database_url,
         shop_key=credentials.shop_key,

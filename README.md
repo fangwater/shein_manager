@@ -2,6 +2,11 @@
 
 Local service code for SHEIN authorization, analytics, PostgreSQL synchronization, and production fulfillment.
 
+Production uses the same database topology as Temu: `public.shein_shops` is a
+shared registry and every enabled shop owns a private PostgreSQL schema. The
+current shop is `beauty-hangers-home` (`Beauty Hangers home`) in
+`shein_beauty_hangers_home`; see `docs/multi-store.md`.
+
 The production fulfillment runtime is Go under `cmd/server`. It directly owns the nine consumer-order and integrated-logistics OpenAPI operations: order list/detail, address export, available warehouses and channels, online shipment creation and status checks, label printing, and tracking. Python remains responsible for authorization, historical/bulk synchronization, reporting, and the existing FastAPI management pages.
 
 ## Label Purchase Price Analysis
@@ -171,7 +176,7 @@ Generate an authorization URL for the merchant to open with the store main accou
 ```bash
 python -m shein_api_manager auth-url \
   --redirect-url "https://your-domain.example/shein/callback" \
-  --state "default"
+  --state "beauty-hangers-home"
 ```
 
 After authorization, SHEIN redirects to your `redirectUrl` with `tempToken` and `state`.
@@ -180,7 +185,9 @@ Exchange that token for store credentials:
 ```bash
 python -m shein_api_manager exchange-token \
   --temp-token "TEMP_TOKEN_FROM_CALLBACK" \
-  --save-shop default
+  --save-shop beauty-hangers-home \
+  --shop-name "Beauty Hangers home" \
+  --schema-name shein_beauty_hangers_home
 ```
 
 This stores the store-level `openKeyId` and decrypted `secretKey` in PostgreSQL.
@@ -191,10 +198,14 @@ Treat the database as sensitive.
 If you already have store credentials:
 
 ```bash
-python -m shein_api_manager save-shop \
-  --shop-key default \
+read -rs SHEIN_NEW_SECRET
+printf '%s' "$SHEIN_NEW_SECRET" | python -m shein_api_manager save-shop \
+  --shop-key beauty-hangers-home \
+  --shop-name "Beauty Hangers home" \
+  --schema-name shein_beauty_hangers_home \
   --open-key-id "..." \
-  --secret-key "..."
+  --secret-key-stdin
+unset SHEIN_NEW_SECRET
 ```
 
 ## API Wrappers
@@ -203,7 +214,7 @@ Call order list:
 
 ```bash
 python -m shein_api_manager order-list \
-  --shop-key default \
+  --shop-key beauty-hangers-home \
   --params-json '{"queryType":1,"startTime":"2026-06-26 00:00:00","endTime":"2026-06-27 23:59:59","page":1,"pageSize":30}'
 ```
 
@@ -211,7 +222,7 @@ Call order detail:
 
 ```bash
 python -m shein_api_manager order-detail \
-  --shop-key default \
+  --shop-key beauty-hangers-home \
   --order-no "ORDER_NO_1" \
   --order-no "ORDER_NO_2"
 ```
@@ -223,7 +234,7 @@ SHEIN currently requires `queryType`, `startTime`, `endTime`, `page`, and
 
 ```bash
 python -m shein_api_manager download-orders \
-  --shop-key default \
+  --shop-key beauty-hangers-home \
   --params-json '{"queryType":1,"startTime":"2026-06-26 00:00:00","endTime":"2026-06-27 23:59:59"}' \
   --page-param page \
   --page-size-param pageSize \
@@ -240,7 +251,7 @@ Use the lightweight published-product endpoint to collect SPU/SKC/SKU platform c
 
 ```bash
 python -m shein_api_manager sync-products \
-  --shop-key default \
+  --shop-key beauty-hangers-home \
   --params-json '{"insertTimeStart":"2026-01-01 00:00:00","insertTimeEnd":"2026-02-01 00:00:00"}' \
   --page-size 500
 ```
@@ -251,7 +262,7 @@ SHEIN limits this API to `pageSize <= 10`:
 
 ```bash
 python -m shein_api_manager sync-product-details \
-  --shop-key default \
+  --shop-key beauty-hangers-home \
   --params-json '{"createTimeStart":"2026-01-01 00:00:00","createTimeEnd":"2026-02-01 00:00:00","languageList":["zh-cn","en"]}' \
   --page-size 10
 ```
@@ -281,7 +292,7 @@ list and detail calls:
 
 ```bash
 python -m shein_api_manager sync-order-returns \
-  --shop-key default \
+  --shop-key beauty-hangers-home \
   --params-json '{"startTime":"2026-06-26 00:00:00","endTime":"2026-06-27 23:59:59","queryType":1}'
 ```
 
@@ -289,7 +300,7 @@ To clean legacy inferred return flags and backfill official order status/type
 labels from stored order payloads:
 
 ```bash
-python -m shein_api_manager backfill-order-returns --shop-key default
+python -m shein_api_manager backfill-order-returns --shop-key beauty-hangers-home
 ```
 
 The command name is kept for compatibility; it no longer infers returns from
@@ -306,7 +317,7 @@ PostgreSQL after each list page and detail batch, so rerunning the same
 
 ```bash
 python -m shein_api_manager sync-orders-full \
-  --shop-key default \
+  --shop-key beauty-hangers-home \
   --sync-key default-202606-orders \
   --start-time "2026-06-01 00:00:00" \
   --end-time "2026-06-28 23:59:59" \

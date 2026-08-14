@@ -87,7 +87,8 @@ def sync_order_returns(
     fetch_details: bool = True,
 ) -> ReturnSyncResult:
     validate_sync_options(query_params=query_params, page_size=page_size, max_pages=max_pages)
-    db.init_db(database_url)
+    db.init_db(database_url, shop_key=credentials.shop_key)
+    database_url = db.shop_database_url(database_url, credentials.shop_key)
     service = ReturnService(
         client_from_credentials(credentials),
         order_list_path=order_list_path,

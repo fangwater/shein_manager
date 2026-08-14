@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
@@ -13,15 +14,17 @@ import (
 )
 
 type Store struct {
-	pool *pgxpool.Pool
+	pool       *pgxpool.Pool
+	shopKey    string
+	schemaName string
 }
 
 type ShopSummary struct {
-	ShopKey     string    `json:"shop_key"`
-	APIBaseURL  string    `json:"api_base_url"`
-	OpenKeyHint string    `json:"open_key_hint"`
-	Credentials bool      `json:"credentials_ready"`
-	UpdatedAt   time.Time `json:"updated_at"`
+	ShopKey    string    `json:"shop_key"`
+	ShopName   string    `json:"shop_name"`
+	SchemaName string    `json:"-"`
+	Enabled    bool      `json:"enabled"`
+	UpdatedAt  time.Time `json:"updated_at"`
 }
 
 type OperationRecord struct {
@@ -47,11 +50,25 @@ type FulfillmentTask struct {
 	UpdatedAt            time.Time `json:"updated_at"`
 }
 
+var postgresSchemaPattern = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
+
 func NewStore(ctx context.Context, databaseURL string) (*Store, error) {
+	return NewStoreForShop(ctx, databaseURL, "public", "")
+}
+
+func NewStoreForShop(ctx context.Context, databaseURL, schemaName, shopKey string) (*Store, error) {
 	if strings.TrimSpace(databaseURL) == "" {
 		return nil, errors.New("SHEIN_DATABASE_URL is required")
 	}
-	pool, err := pgxpool.New(ctx, databaseURL)
+	if !postgresSchemaPattern.MatchString(schemaName) {
+		return nil, errors.New("invalid PostgreSQL shop schema")
+	}
+	poolConfig, err := pgxpool.ParseConfig(databaseURL)
+	if err != nil {
+		return nil, fmt.Errorf("parse SHEIN database configuration: %w", err)
+	}
+	poolConfig.ConnConfig.RuntimeParams["search_path"] = schemaName + ",public"
+	pool, err := pgxpool.NewWithConfig(ctx, poolConfig)
 	if err != nil {
 		return nil, fmt.Errorf("open SHEIN database: %w", err)
 	}
@@ -59,7 +76,7 @@ func NewStore(ctx context.Context, databaseURL string) (*Store, error) {
 		pool.Close()
 		return nil, fmt.Errorf("ping SHEIN database: %w", err)
 	}
-	return &Store{pool: pool}, nil
+	return &Store{pool: pool, shopKey: strings.TrimSpace(shopKey), schemaName: schemaName}, nil
 }
 
 func (s *Store) Close() {
@@ -204,7 +221,7 @@ func (s *Store) Migrate(ctx context.Context) error {
 			estimate_max_day integer,
 			PRIMARY KEY (shop_key, pre_request_id, express_channel_code),
 			FOREIGN KEY (shop_key, pre_request_id)
-				REFERENCES shein_go_shipping_quotes (shop_key, pre_request_id) ON DELETE CASCADE,
+				REFERENCES shein_go_shipping_quotes (shop_key, pre_request_id) ON UPDATE CASCADE ON DELETE CASCADE,
 			CHECK (performance_cost IS NULL OR performance_cost >= 0)
 		);
 
@@ -230,7 +247,7 @@ func (s *Store) Migrate(ctx context.Context) error {
 			purchased_at timestamptz NOT NULL DEFAULT now(),
 			PRIMARY KEY (shop_key, pre_request_id),
 			FOREIGN KEY (shop_key, pre_request_id)
-				REFERENCES shein_go_shipping_quotes (shop_key, pre_request_id),
+				REFERENCES shein_go_shipping_quotes (shop_key, pre_request_id) ON UPDATE CASCADE,
 			CHECK (selection_source IN ('automatic', 'manual')),
 			CHECK (selected_price_rank IS NULL OR selected_price_rank BETWEEN 1 AND 3),
 			CHECK (selected_performance_cost >= 0)
@@ -256,7 +273,7 @@ func (s *Store) Migrate(ctx context.Context) error {
 			is_selected boolean NOT NULL DEFAULT false,
 			PRIMARY KEY (shop_key, pre_request_id, price_rank),
 			FOREIGN KEY (shop_key, pre_request_id)
-				REFERENCES shein_label_purchase_choices (shop_key, pre_request_id) ON DELETE CASCADE,
+				REFERENCES shein_label_purchase_choices (shop_key, pre_request_id) ON UPDATE CASCADE ON DELETE CASCADE,
 			CHECK (price_rank BETWEEN 1 AND 3),
 			CHECK (performance_cost >= 0)
 		);
@@ -277,7 +294,7 @@ func (s *Store) Credentials(ctx context.Context, shopKey string) (Credentials, e
 	var credentials Credentials
 	err := s.pool.QueryRow(ctx, `
 		SELECT shop_key, open_key_id, secret_key, base_url
-		FROM shein_shops
+		FROM public.shein_shops
 		WHERE shop_key = $1
 	`, shopKey).Scan(&credentials.ShopKey, &credentials.OpenKeyID, &credentials.SecretKey, &credentials.BaseURL)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -294,8 +311,8 @@ func (s *Store) Credentials(ctx context.Context, shopKey string) (Credentials, e
 
 func (s *Store) ListShops(ctx context.Context) ([]ShopSummary, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT shop_key, base_url, open_key_id, updated_at
-		FROM shein_shops
+		SELECT shop_key, shop_name, schema_name, enabled, updated_at
+		FROM public.shein_shops
 		ORDER BY shop_key
 	`)
 	if err != nil {
@@ -305,22 +322,12 @@ func (s *Store) ListShops(ctx context.Context) ([]ShopSummary, error) {
 	shops := make([]ShopSummary, 0)
 	for rows.Next() {
 		var shop ShopSummary
-		var openKeyID string
-		if err := rows.Scan(&shop.ShopKey, &shop.APIBaseURL, &openKeyID, &shop.UpdatedAt); err != nil {
+		if err := rows.Scan(&shop.ShopKey, &shop.ShopName, &shop.SchemaName, &shop.Enabled, &shop.UpdatedAt); err != nil {
 			return nil, fmt.Errorf("scan SHEIN shop: %w", err)
 		}
-		shop.Credentials = openKeyID != ""
-		shop.OpenKeyHint = credentialHint(openKeyID)
 		shops = append(shops, shop)
 	}
 	return shops, rows.Err()
-}
-
-func credentialHint(value string) string {
-	if len(value) <= 8 {
-		return strings.Repeat("*", len(value))
-	}
-	return value[:4] + "..." + value[len(value)-4:]
 }
 
 func (s *Store) ReserveOperation(ctx context.Context, shopKey, operation, idempotencyKey, requestHash string) (OperationRecord, bool, error) {

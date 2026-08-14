@@ -509,6 +509,12 @@ button:disabled {
     margin-left: 0;
   }
 
+  .shop-switcher select {
+    min-width: 170px;
+    max-width: 170px;
+    font-size: 10px;
+  }
+
   .page-actions,
   .action-row {
     flex-wrap: wrap;
@@ -539,6 +545,12 @@ button:disabled {
 
   .workflow-section {
     padding: 15px 0;
+  }
+}
+
+@media (max-width: 360px) {
+  .shop-switcher + .token-pill div {
+    display: none;
   }
 }
 

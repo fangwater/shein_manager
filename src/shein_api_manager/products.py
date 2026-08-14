@@ -91,7 +91,8 @@ def sync_products(
         max_page_size=MAX_PRODUCT_QUERY_PAGE_SIZE,
         reserved_name="product sync",
     )
-    db.init_db(database_url)
+    db.init_db(database_url, shop_key=credentials.shop_key)
+    database_url = db.shop_database_url(database_url, credentials.shop_key)
     service = ProductService(client_from_credentials(credentials))
     limiter = RateLimiter(rps)
     pages = 0
@@ -156,7 +157,8 @@ def sync_product_details(
         max_page_size=MAX_PRODUCT_SEARCH_PAGE_SIZE,
         reserved_name="product detail sync",
     )
-    db.init_db(database_url)
+    db.init_db(database_url, shop_key=credentials.shop_key)
+    database_url = db.shop_database_url(database_url, credentials.shop_key)
     service = ProductService(client_from_credentials(credentials))
     limiter = RateLimiter(rps)
     pages = 0

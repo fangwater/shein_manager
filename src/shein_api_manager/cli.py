@@ -39,6 +39,8 @@ def build_parser(settings: Settings) -> argparse.ArgumentParser:
     exchange = sub.add_parser("exchange-token", help="Exchange tempToken for store credentials")
     exchange.add_argument("--temp-token", required=True)
     exchange.add_argument("--save-shop")
+    exchange.add_argument("--shop-name")
+    exchange.add_argument("--schema-name")
     exchange.add_argument("--state")
     exchange.add_argument("--api-base-url", default=settings.api_base_url)
     exchange.add_argument("--print-secret", action="store_true")
@@ -46,8 +48,12 @@ def build_parser(settings: Settings) -> argparse.ArgumentParser:
 
     save = sub.add_parser("save-shop", help="Save store credentials manually")
     save.add_argument("--shop-key", required=True)
+    save.add_argument("--shop-name", required=True)
+    save.add_argument("--schema-name")
     save.add_argument("--open-key-id", required=True)
-    save.add_argument("--secret-key", required=True)
+    secret_source = save.add_mutually_exclusive_group(required=True)
+    secret_source.add_argument("--secret-key")
+    secret_source.add_argument("--secret-key-stdin", action="store_true")
     save.add_argument("--api-base-url", default=settings.api_base_url)
     save.set_defaults(func=cmd_save_shop)
 
@@ -228,6 +234,8 @@ def cmd_exchange_token(args: argparse.Namespace, settings: Settings) -> int:
         save_shop(
             database_url,
             shop_key=args.save_shop,
+            shop_name=args.shop_name or args.save_shop,
+            schema_name=args.schema_name,
             app_id=settings.app_id,
             open_key_id=open_key_id,
             secret_key=secret_key,
@@ -248,11 +256,16 @@ def cmd_save_shop(args: argparse.Namespace, settings: Settings) -> int:
     from .db import save_shop
 
     database_url = require_database_url(settings)
+    secret_key = sys.stdin.read().strip() if args.secret_key_stdin else args.secret_key
+    if not secret_key:
+        raise ValueError("secret key is required")
     save_shop(
         database_url,
         shop_key=args.shop_key,
+        shop_name=args.shop_name,
+        schema_name=args.schema_name,
         open_key_id=args.open_key_id,
-        secret_key=args.secret_key,
+        secret_key=secret_key,
         base_url=args.api_base_url,
         app_id=settings.app_id,
     )
@@ -501,14 +514,22 @@ def cmd_sync_orders_full(args: argparse.Namespace, settings: Settings) -> int:
 
 
 def cmd_backfill_order_returns(args: argparse.Namespace, settings: Settings) -> int:
-    from .db import backfill_order_returns, init_db
+    from .db import backfill_order_returns, init_db, list_registered_shops, shop_database_url
 
     database_url = require_database_url(settings)
     init_db(database_url)
-    result = backfill_order_returns(
-        database_url,
-        shop_key=None if args.all_shops else args.shop_key,
+    shop_keys = (
+        [str(shop["shop_key"]) for shop in list_registered_shops(database_url, enabled_only=True)]
+        if args.all_shops else [args.shop_key]
     )
+    result = {"orders": 0, "updated": 0}
+    for shop_key in shop_keys:
+        shop_result = backfill_order_returns(
+            shop_database_url(database_url, shop_key),
+            shop_key=shop_key,
+        )
+        for key, value in shop_result.items():
+            result[key] = result.get(key, 0) + value
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0
 

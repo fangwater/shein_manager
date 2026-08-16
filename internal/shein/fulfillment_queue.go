@@ -421,6 +421,10 @@ func CanPurchasePlatformLabel(detail map[string]any) bool {
 	return supportsIntegrated(detail)
 }
 
+func IsCODOrder(detail map[string]any) bool {
+	return textValue(detail["isCod"]) == "1" || textValue(detail["is_cod"]) == "1"
+}
+
 func RequiresAddressTransition(detail map[string]any, orderStatus string) bool {
 	if strings.TrimSpace(orderStatus) != "1" {
 		return false
@@ -638,6 +642,14 @@ func textValue(value any) string {
 		return typed.String()
 	case float64:
 		return strconv.FormatFloat(typed, 'f', -1, 64)
+	case float32:
+		return strconv.FormatFloat(float64(typed), 'f', -1, 32)
+	case int:
+		return strconv.Itoa(typed)
+	case int32:
+		return strconv.FormatInt(int64(typed), 10)
+	case int64:
+		return strconv.FormatInt(typed, 10)
 	default:
 		return ""
 	}

@@ -72,6 +72,16 @@ func TestOrderDetailAndShippingValidation(t *testing.T) {
 	if got := outboundRequestData("order-mapping-channels", named); got["warehouseName"] != nil || got["warehouseAddressCode"] != "WH-UNKNOWN" {
 		t.Fatalf("warehouseName must stay local: %#v", got)
 	}
+	withGoods := clone(channels)
+	withGoods["prePackageInfo"] = map[string]any{"goodsIds": []any{"19575668618"}}
+	if got := outboundRequestData("order-mapping-channels", withGoods); got["prePackageInfo"] != nil {
+		t.Fatalf("non-COD channel request must drop goods details: %#v", got)
+	}
+	cod := clone(withGoods)
+	cod["isCod"] = 1
+	if got := outboundRequestData("order-mapping-channels", cod); got["prePackageInfo"] == nil || got["isCod"] != nil {
+		t.Fatalf("COD channel request must keep goods details locally only: %#v", got)
+	}
 	blocked := clone(channels)
 	blocked["warehouseAddressCode"] = "WH2602103441974274"
 	if err := Validate("order-mapping-channels", blocked); err == nil {

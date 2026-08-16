@@ -97,12 +97,19 @@ func outboundRequestData(operation string, data map[string]any) map[string]any {
 	if operation != "order-mapping-channels" || data == nil {
 		return data
 	}
-	if _, ok := data["warehouseName"]; !ok {
+	_, hasName := data["warehouseName"]
+	_, hasCODFlag := data["isCod"]
+	_, hasGoods := data["prePackageInfo"]
+	dropGoods := hasGoods && !IsCODOrder(data)
+	if !hasName && !hasCODFlag && !dropGoods {
 		return data
 	}
 	outbound := make(map[string]any, len(data))
 	for key, value := range data {
-		if key == "warehouseName" {
+		if key == "warehouseName" || key == "isCod" {
+			continue
+		}
+		if key == "prePackageInfo" && dropGoods {
 			continue
 		}
 		outbound[key] = value

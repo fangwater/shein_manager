@@ -95,8 +95,10 @@ func TestFulfillmentConsoleKeepsPGWarehousesUnselectable(t *testing.T) {
 	for _, required := range []string{
 		"function isAllowedShippingWarehouse",
 		"function isPGWarehouse",
+		"function isCODOrder",
 		"PG仓不在实际发货范围内，不能选择",
 		"非实际发货仓，不能用于平台面单",
+		"if (isCODOrder(state.detail) && ids.length) data.prePackageInfo",
 	} {
 		if !strings.Contains(source, required) {
 			t.Fatalf("fulfillment console does not contain %q", required)

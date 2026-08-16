@@ -21,7 +21,7 @@ func TestCollectOrderObjectsFindsNestedListsAndDetails(t *testing.T) {
 func TestChannelRequestUsesWarehouseSpecAndConvertsWeight(t *testing.T) {
 	request, err := channelRequest("ORDER-1", "WH2604283535967233", "DPSNY002（美东）", shein.PackageSpec{
 		LengthCM: "20", WidthCM: "15", HeightCM: "5", WeightKG: "0.3",
-	}, []shein.QueueGoods{{GoodsID: "GOODS-1"}})
+	}, []shein.QueueGoods{{GoodsID: "GOODS-1"}}, false)
 	if err != nil {
 		t.Fatalf("channelRequest returned error: %v", err)
 	}
@@ -29,12 +29,21 @@ func TestChannelRequestUsesWarehouseSpecAndConvertsWeight(t *testing.T) {
 	if weight["packageWeight"] != "300" {
 		t.Fatalf("package weight = %v, want 300g", weight["packageWeight"])
 	}
-	prePackage := request["prePackageInfo"].(map[string]any)
-	if len(prePackage["goodsIds"].([]any)) != 1 {
-		t.Fatalf("goods IDs missing from channel request: %#v", request)
+	if _, ok := request["prePackageInfo"]; ok {
+		t.Fatalf("non-COD channel request must omit goods details: %#v", request)
 	}
 	if request["warehouseAddressCode"] != "WH2604283535967233" || request["warehouseName"] != "DPSNY002（美东）" {
 		t.Fatalf("channel request warehouse identity = %#v", request)
+	}
+	codRequest, err := channelRequest("ORDER-1", "WH2604283535967233", "DPSNY002（美东）", shein.PackageSpec{
+		LengthCM: "20", WidthCM: "15", HeightCM: "5", WeightKG: "0.3",
+	}, []shein.QueueGoods{{GoodsID: "GOODS-1"}}, true)
+	if err != nil {
+		t.Fatalf("COD channelRequest returned error: %v", err)
+	}
+	prePackage := codRequest["prePackageInfo"].(map[string]any)
+	if len(prePackage["goodsIds"].([]any)) != 1 {
+		t.Fatalf("COD goods IDs missing from channel request: %#v", codRequest)
 	}
 }
 

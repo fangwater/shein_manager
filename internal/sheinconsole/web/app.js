@@ -356,6 +356,10 @@ function canPurchasePlatformLabel(order) {
   return supportsIntegratedLogistics(order);
 }
 
+function isCODOrder(order) {
+  return String(firstValue(orderDetail(order), ["isCod", "is_cod"])) === "1";
+}
+
 function requiresAddressTransition(order) {
   order = orderDetail(order);
   if (String(orderStatus(order)) !== "1") return false;
@@ -1371,6 +1375,7 @@ async function loadChannels(button) {
       orderNo: state.orderNo,
       warehouseAddressCode: state.warehouse.warehouseAddressCode || state.warehouse.warehouseCode,
       warehouseName: state.warehouse.warehouseName || state.warehouse.warehouseAddressName || state.warehouse.warehouseDesc || "",
+      isCod: isCODOrder(state.detail) ? 1 : 2,
       packageSizeInfo: {
         packageLength: byId("package-length").value.trim(),
         packageWidth: byId("package-width").value.trim(),
@@ -1380,7 +1385,7 @@ async function loadChannels(button) {
       packageWeightInfo: { packageWeight: byId("package-weight").value.trim(), unit: "g" }
     };
     const ids = goodsIDs();
-    if (ids.length) data.prePackageInfo = { goodsIds: ids };
+    if (isCODOrder(state.detail) && ids.length) data.prePackageInfo = { goodsIds: ids };
     try {
       const payload = await post("shipping/channels", data);
       state.preRequestId = firstValue(infoOf(payload), ["preRequestId"]);

@@ -70,6 +70,9 @@ func TestOptionalLogisticsListControlsPlatformLabelPurchase(t *testing.T) {
 	if RequiresAddressTransition(selfShipOnly, "2") {
 		t.Fatal("already pending-shipment orders do not transition again")
 	}
+	if IsCODOrder(map[string]any{"isCod": 2}) || !IsCODOrder(map[string]any{"isCod": 1}) {
+		t.Fatal("COD detection must treat isCod=1 as cash on delivery")
+	}
 }
 
 func TestPackageSpecRequiresEveryPositiveValue(t *testing.T) {

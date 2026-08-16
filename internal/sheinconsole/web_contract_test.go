@@ -30,6 +30,16 @@ func TestConsoleUsesSharedTemuShell(t *testing.T) {
 	}
 }
 
+func TestTransitionNoticeStaysHiddenUntilRequired(t *testing.T) {
+	css, err := webFiles.ReadFile("web/platform.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(css), ".transition-notice[hidden]") {
+		t.Fatal("platform CSS still lets the self-ship notice override the hidden attribute")
+	}
+}
+
 func TestXLWMSConsoleAssetsAreEmbedded(t *testing.T) {
 	server := &Server{}
 	for _, asset := range []struct {

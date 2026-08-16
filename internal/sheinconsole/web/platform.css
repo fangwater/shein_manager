@@ -255,6 +255,10 @@ button:disabled {
   background: #fffaf0;
 }
 
+.transition-notice[hidden] {
+  display: none;
+}
+
 .transition-notice strong,
 .transition-notice span {
   display: block;

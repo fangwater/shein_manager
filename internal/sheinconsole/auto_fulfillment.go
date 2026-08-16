@@ -537,7 +537,8 @@ func (s *Server) executeAutoFulfillment(ctx context.Context, ref autoQueueRef) e
 	quotes := make([]quotedChannel, 0)
 	for _, warehouse := range warehouses {
 		warehouseCode := scalarString(warehouse, "warehouseAddressCode", "warehouseCode")
-		data, err := channelRequest(ref.OrderNo, warehouseCode, *order.PackageSpec, order.Goods)
+		warehouseName := scalarString(warehouse, "warehouseName", "warehouseAddressName", "warehouseDesc")
+		data, err := channelRequest(ref.OrderNo, warehouseCode, warehouseName, *order.PackageSpec, order.Goods)
 		if err != nil {
 			return err
 		}
@@ -794,7 +795,7 @@ func objectsWithField(value any, field string) []map[string]any {
 	return objects
 }
 
-func channelRequest(orderNo, warehouseCode string, spec shein.PackageSpec, goods []shein.QueueGoods) (map[string]any, error) {
+func channelRequest(orderNo, warehouseCode, warehouseName string, spec shein.PackageSpec, goods []shein.QueueGoods) (map[string]any, error) {
 	weightKG, err := strconv.ParseFloat(spec.WeightKG, 64)
 	if err != nil || weightKG <= 0 {
 		return nil, errors.New("仓库商品重量无效")
@@ -808,6 +809,9 @@ func channelRequest(orderNo, warehouseCode string, spec shein.PackageSpec, goods
 		"packageWeightInfo": map[string]any{
 			"packageWeight": strconv.FormatFloat(weightKG*1000, 'f', -1, 64), "unit": "g",
 		},
+	}
+	if strings.TrimSpace(warehouseName) != "" {
+		data["warehouseName"] = warehouseName
 	}
 	ids := goodsIDsFromQueue(goods)
 	if len(ids) > 0 {

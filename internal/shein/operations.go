@@ -56,7 +56,7 @@ func (c *Client) Call(ctx context.Context, operation string, data map[string]any
 	if err := Validate(operation, data); err != nil {
 		return nil, err
 	}
-	result, err := c.Request(ctx, endpoint.Method, endpoint.Path, data, nil)
+	result, err := c.Request(ctx, endpoint.Method, endpoint.Path, outboundRequestData(operation, data), nil)
 	if err != nil {
 		return nil, err
 	}
@@ -91,6 +91,23 @@ func (c *Client) LogisticsTrack(ctx context.Context, orderNo, packageNo, waybill
 		query.Set("returnOrderNo", returnOrderNo)
 	}
 	return c.Request(ctx, http.MethodGet, LogisticsTrackPath, nil, query)
+}
+
+func outboundRequestData(operation string, data map[string]any) map[string]any {
+	if operation != "order-mapping-channels" || data == nil {
+		return data
+	}
+	if _, ok := data["warehouseName"]; !ok {
+		return data
+	}
+	outbound := make(map[string]any, len(data))
+	for key, value := range data {
+		if key == "warehouseName" {
+			continue
+		}
+		outbound[key] = value
+	}
+	return outbound
 }
 
 func Validate(operation string, data map[string]any) error {
@@ -177,8 +194,9 @@ func validateMappingChannels(data map[string]any) error {
 		}
 	}
 	code, _ := stringValue(data["warehouseAddressCode"])
-	if !IsAllowedShippingWarehouse(code, "") {
-		if IsPGWarehouse(code, "") {
+	name, _ := stringValue(data["warehouseName"])
+	if !IsAllowedShippingWarehouse(code, name) {
+		if IsPGWarehouse(code, name) {
 			return errors.New(pgWarehouseUnavailableReason)
 		}
 		return errors.New(unoperatedWarehouseUnavailableReason)

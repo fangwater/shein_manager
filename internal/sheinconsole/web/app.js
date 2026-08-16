@@ -1370,6 +1370,7 @@ async function loadChannels(button) {
     const data = {
       orderNo: state.orderNo,
       warehouseAddressCode: state.warehouse.warehouseAddressCode || state.warehouse.warehouseCode,
+      warehouseName: state.warehouse.warehouseName || state.warehouse.warehouseAddressName || state.warehouse.warehouseDesc || "",
       packageSizeInfo: {
         packageLength: byId("package-length").value.trim(),
         packageWidth: byId("package-width").value.trim(),

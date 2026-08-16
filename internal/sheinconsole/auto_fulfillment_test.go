@@ -19,7 +19,7 @@ func TestCollectOrderObjectsFindsNestedListsAndDetails(t *testing.T) {
 }
 
 func TestChannelRequestUsesWarehouseSpecAndConvertsWeight(t *testing.T) {
-	request, err := channelRequest("ORDER-1", "WAREHOUSE-1", shein.PackageSpec{
+	request, err := channelRequest("ORDER-1", "WH2604283535967233", "DPSNY002（美东）", shein.PackageSpec{
 		LengthCM: "20", WidthCM: "15", HeightCM: "5", WeightKG: "0.3",
 	}, []shein.QueueGoods{{GoodsID: "GOODS-1"}})
 	if err != nil {
@@ -32,6 +32,9 @@ func TestChannelRequestUsesWarehouseSpecAndConvertsWeight(t *testing.T) {
 	prePackage := request["prePackageInfo"].(map[string]any)
 	if len(prePackage["goodsIds"].([]any)) != 1 {
 		t.Fatalf("goods IDs missing from channel request: %#v", request)
+	}
+	if request["warehouseAddressCode"] != "WH2604283535967233" || request["warehouseName"] != "DPSNY002（美东）" {
+		t.Fatalf("channel request warehouse identity = %#v", request)
 	}
 }
 
@@ -75,12 +78,12 @@ func TestPlatformLabelPurchaseSkipsAddressTransition(t *testing.T) {
 
 func TestAvailableWarehousesKeepsOnlyOperatedWarehouses(t *testing.T) {
 	warehouses := availableWarehouses(map[string]any{"info": map[string]any{"availableWarehouses": []any{
-		map[string]any{"warehouseAddressCode": "PG1955", "warehouseName": "PG仓", "availableStatus": "1"},
-		map[string]any{"warehouseAddressCode": "DPSNY002", "warehouseName": "DPS达派思-纽约", "availableStatus": "1"},
-		map[string]any{"warehouseAddressCode": "OTHER", "warehouseName": "第三方仓", "availableStatus": "1"},
-		map[string]any{"warehouseAddressCode": "ARPCA01", "warehouseName": "ARP8号仓-美西LA", "availableStatus": "0"},
+		map[string]any{"warehouseAddressCode": "WH2602103441974274", "warehouseName": "PG仓", "availableStatus": "1"},
+		map[string]any{"warehouseAddressCode": "WH2604283535967233", "warehouseName": "DPSNY002（美东）", "availableStatus": "1"},
+		map[string]any{"warehouseAddressCode": "WH2602103360052227", "warehouseName": "美东", "availableStatus": "1"},
+		map[string]any{"warehouseAddressCode": "WH2608123417047040", "warehouseName": "ARP-美西仓", "availableStatus": "0"},
 	}}})
-	if len(warehouses) != 1 || scalarString(warehouses[0], "warehouseAddressCode") != "DPSNY002" {
+	if len(warehouses) != 1 || scalarString(warehouses[0], "warehouseAddressCode") != "WH2604283535967233" {
 		t.Fatalf("automatic quoting must ignore PG and unavailable warehouses: %#v", warehouses)
 	}
 }

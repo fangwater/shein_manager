@@ -8,6 +8,12 @@ func TestIsAllowedShippingWarehouseAcceptsOperatedWarehouses(t *testing.T) {
 		{"HYTX30", "ARP1号仓-美东PA"},
 		{"DPSCA004", "DPS达派思-加州"},
 		{"ARPCA01", "ARP8号仓-美西LA"},
+		{"WH2604283535967233", ""},
+		{"WH2603303477748739", ""},
+		{"WH2607084039788546", ""},
+		{"WH2608123417047040", ""},
+		{"WH2604283535967233", "DPSNY002（美东）"},
+		{"WH2607084039788546", "ARP仓-美东"},
 	}
 	for _, item := range cases {
 		if !IsAllowedShippingWarehouse(item[0], item[1]) {
@@ -21,6 +27,9 @@ func TestIsAllowedShippingWarehouseRejectsPGAndUnknownWarehouses(t *testing.T) {
 		{"PG1955", "PG仓"},
 		{"USPG001", "SHEIN PG仓"},
 		{"", "PG1955 美西"},
+		{"WH2602103441974274", ""},
+		{"WH2602103441974274", "PG仓"},
+		{"WH2602103360052227", "美东"},
 		{"WH-1", "未知仓"},
 		{"", ""},
 	}
@@ -32,13 +41,16 @@ func TestIsAllowedShippingWarehouseRejectsPGAndUnknownWarehouses(t *testing.T) {
 	if !IsPGWarehouse("PG1955", "平台仓") {
 		t.Fatal("PG1955 must be recognized as a PG warehouse")
 	}
+	if !IsPGWarehouse("WH2602103441974274", "") {
+		t.Fatal("live PG warehouse address code must be recognized without a name")
+	}
 }
 
 func TestRestrictShippingWarehouseAvailabilityDisablesPGWarehouses(t *testing.T) {
 	result := map[string]any{"info": map[string]any{"availableWarehouses": []any{
-		map[string]any{"warehouseAddressCode": "DPSNY002", "warehouseName": "DPS达派思-纽约", "availableStatus": "1"},
-		map[string]any{"warehouseAddressCode": "PG1955", "warehouseName": "PG仓", "availableStatus": "1"},
-		map[string]any{"warehouseAddressCode": "OTHER", "warehouseName": "第三方仓", "availableStatus": "1"},
+		map[string]any{"warehouseAddressCode": "WH2604283535967233", "warehouseName": "DPSNY002（美东）", "availableStatus": "1"},
+		map[string]any{"warehouseAddressCode": "WH2602103441974274", "warehouseName": "PG仓", "availableStatus": "1"},
+		map[string]any{"warehouseAddressCode": "WH2602103360052227", "warehouseName": "美东", "availableStatus": "1"},
 	}}}
 	RestrictShippingWarehouseAvailability(result)
 	warehouses := warehouseObjects(result["info"])

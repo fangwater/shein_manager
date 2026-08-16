@@ -56,17 +56,31 @@ func TestOrderDetailAndShippingValidation(t *testing.T) {
 		t.Fatal("more than 30 order numbers must fail")
 	}
 	channels := map[string]any{
-		"orderNo": "ORDER-1", "warehouseAddressCode": "DPSNY002",
+		"orderNo": "ORDER-1", "warehouseAddressCode": "WH2604283535967233",
 		"packageSizeInfo":   map[string]any{"packageLength": "10", "packageWidth": "8", "packageHeight": "2", "unit": "cm"},
 		"packageWeightInfo": map[string]any{"packageWeight": "200.5", "unit": "g"},
 	}
 	if err := Validate("order-mapping-channels", channels); err != nil {
 		t.Fatal(err)
 	}
+	named := clone(channels)
+	named["warehouseAddressCode"] = "WH-UNKNOWN"
+	named["warehouseName"] = "ARP仓-美东"
+	if err := Validate("order-mapping-channels", named); err != nil {
+		t.Fatal(err)
+	}
+	if got := outboundRequestData("order-mapping-channels", named); got["warehouseName"] != nil || got["warehouseAddressCode"] != "WH-UNKNOWN" {
+		t.Fatalf("warehouseName must stay local: %#v", got)
+	}
 	blocked := clone(channels)
-	blocked["warehouseAddressCode"] = "PG1955"
+	blocked["warehouseAddressCode"] = "WH2602103441974274"
 	if err := Validate("order-mapping-channels", blocked); err == nil {
 		t.Fatal("PG warehouses must not be quoted")
+	}
+	unknown := clone(channels)
+	unknown["warehouseAddressCode"] = "WH2602103360052227"
+	if err := Validate("order-mapping-channels", unknown); err == nil {
+		t.Fatal("unoperated warehouse address codes must not be quoted")
 	}
 	place := map[string]any{
 		"expressChannelCode": "CHANNEL-1", "preRequestId": "PRE-1",

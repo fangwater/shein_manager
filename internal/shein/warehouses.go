@@ -13,6 +13,25 @@ const (
 
 var pgWarehousePattern = regexp.MustCompile(`(?:^|[^A-Z0-9])PG\d+`)
 
+// SHEIN quotes by opaque warehouseAddressCode values. DPS/ARP tokens usually
+// appear only in warehouseName, so channel queries must also recognize the
+// operated address IDs themselves.
+var operatedWarehouseAddressCodes = map[string]struct{}{
+	"WH2604283535967233": {},
+	"WH2603303477748739": {},
+	"WH2607084039788546": {},
+	"WH2608123417047040": {},
+	"DPSNY002":           {},
+	"DPSCA004":           {},
+	"HYTX30":             {},
+	"ARPCA01":            {},
+}
+
+var pgWarehouseAddressCodes = map[string]struct{}{
+	"WH2602103441974274": {},
+	"PG1955":             {},
+}
+
 func warehouseIdentity(values ...string) string {
 	parts := make([]string, 0, len(values))
 	for _, value := range values {
@@ -43,7 +62,14 @@ func warehouseField(object map[string]any, keys ...string) string {
 	return ""
 }
 
+func normalizedWarehouseCode(code string) string {
+	return strings.ToUpper(strings.TrimSpace(code))
+}
+
 func IsPGWarehouse(code, name string) bool {
+	if _, ok := pgWarehouseAddressCodes[normalizedWarehouseCode(code)]; ok {
+		return true
+	}
 	identity := warehouseIdentity(code, name)
 	if identity == "" {
 		return false
@@ -55,6 +81,9 @@ func IsPGWarehouse(code, name string) bool {
 }
 
 func IsOperatedShippingWarehouse(code, name string) bool {
+	if _, ok := operatedWarehouseAddressCodes[normalizedWarehouseCode(code)]; ok {
+		return true
+	}
 	identity := warehouseIdentity(code, name)
 	if identity == "" {
 		return false

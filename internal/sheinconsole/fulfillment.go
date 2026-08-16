@@ -86,6 +86,9 @@ func fulfillmentTasksFromOrderDetail(result map[string]any) []shein.FulfillmentT
 				PrintStatus:        integerPointer(parcel["printOrderStatus"]),
 				Status:             "discovered",
 			}
+			if firstString(parcel, "waybillNo") != "" {
+				task.Status = "ready"
+			}
 			if nonEmptyValue(parcel["packageLabel"]) || task.PrintStatus != nil && *task.PrintStatus == 2 {
 				task.Status = "label_ready"
 			}
@@ -110,6 +113,7 @@ func fulfillmentTaskFromPlace(requestData, result map[string]any) (shein.Fulfill
 		WarehouseAddressCode: firstString(info, "warehouseAddressCode"),
 		PlaceRequestID:       firstString(info, "placeRequestId"),
 		DeliveryNo:           firstString(info, "deliveryNo"),
+		PackageNo:            firstNonEmpty(firstString(info, "packageNo"), firstString(info, "deliveryNo")),
 		OrderPlaceType:       &orderPlaceType,
 		Status:               "placed",
 	}

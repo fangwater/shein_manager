@@ -21,6 +21,7 @@ const state = {
   channel: null,
   preRequestId: "",
   tasks: [],
+  taskSearch: "",
   placedOrderNos: {},
   inventoryThresholds: [],
   inventoryThresholdMeta: {},
@@ -697,11 +698,22 @@ function taskStatusClass(status) {
   return "pending";
 }
 
+function taskSearchText(task) {
+  return [
+    task.order_no, task.express_channel_code, task.warehouse_address_code,
+    task.place_request_id, task.delivery_no, task.package_no, task.waybill_no,
+    taskStatusLabel(task.status)
+  ].join(" ").toLowerCase();
+}
+
 function renderTasks() {
   const rows = byId("task-rows");
   const table = rows.closest(".table-shell");
+  const query = (state.taskSearch || "").trim().toLowerCase();
   const visible = state.tasks.filter(function (task) {
-    return task.status !== "failed" && task.status !== "label_ready";
+    if (!query && (task.status === "failed" || task.status === "label_ready")) return false;
+    if (query && !taskSearchText(task).includes(query)) return false;
+    return true;
   });
   table.classList.toggle("is-empty", visible.length === 0);
   rows.innerHTML = visible.map(function (task) {
@@ -737,6 +749,9 @@ function renderTasks() {
   byId("metric-task-placed").textContent = String(placed);
   byId("metric-task-checked").textContent = String(checking);
   byId("metric-task-label").textContent = String(ready);
+  byId("task-total").textContent = query
+    ? "匹配 " + visible.length + " / " + state.tasks.length + " 条"
+    : "共 " + visible.length + " 条";
 }
 
 function taskStatusLabel(status) {
@@ -1587,6 +1602,10 @@ byId("refresh-exceptions").addEventListener("click", function (event) { loadJobQ
 byId("refresh-manual").addEventListener("click", function (event) { loadManualOrders(event.currentTarget); });
 byId("refresh-ledger").addEventListener("click", function (event) { loadJobQueue("all", event.currentTarget); });
 byId("refresh-tasks").addEventListener("click", function (event) { loadTasks(event.currentTarget); });
+byId("task-search").addEventListener("input", function (event) {
+  state.taskSearch = event.target.value;
+  renderTasks();
+});
 byId("refresh-inventory-thresholds").addEventListener("click", function (event) {
   loadInventoryThresholds(event.currentTarget);
 });

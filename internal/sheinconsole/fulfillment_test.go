@@ -34,6 +34,24 @@ func TestFulfillmentTasksFromOrderDetail(t *testing.T) {
 	}
 }
 
+func TestFulfillmentTasksFromOrderDetailKeepShippedParcelsSearchable(t *testing.T) {
+	result := map[string]any{"info": []any{map[string]any{
+		"orderNo":        "GSU1R643R00MP5M",
+		"orderPlaceType": json.Number("2"),
+		"packageWaybillList": []any{map[string]any{
+			"packageNo":        "GU2608134518147081",
+			"deliveryNo":       "GU2608134518147081",
+			"waybillNo":        "GFUS01067727511041",
+			"carrierCode":      "GOFO-D2D250718-Na",
+			"printOrderStatus": json.Number("1"),
+		}},
+	}}}
+	tasks := fulfillmentTasksFromOrderDetail(result)
+	if len(tasks) != 1 || tasks[0].Status != "ready" {
+		t.Fatalf("shipped parcel must stay visible as ready, got %#v", tasks)
+	}
+}
+
 func TestFulfillmentTaskFromPlace(t *testing.T) {
 	request := map[string]any{
 		"expressChannelCode": "CHANNEL-1",

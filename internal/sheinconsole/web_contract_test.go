@@ -65,6 +65,29 @@ func TestPurchaseSuccessUsesTemuProcessingFlow(t *testing.T) {
 	}
 }
 
+func TestProcessingViewCanSearchPlacedOrders(t *testing.T) {
+	index, err := webFiles.ReadFile("web/index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(index), `id="task-search"`) {
+		t.Fatal("processing view has no search box")
+	}
+	script, err := webFiles.ReadFile("web/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := string(script)
+	for _, required := range []string{
+		"function taskSearchText",
+		"if (query && !taskSearchText(task).includes(query)) return false;",
+	} {
+		if !strings.Contains(source, required) {
+			t.Fatalf("processing search does not contain %q", required)
+		}
+	}
+}
+
 func TestTransitionNoticeStaysHiddenUntilRequired(t *testing.T) {
 	css, err := webFiles.ReadFile("web/platform.css")
 	if err != nil {

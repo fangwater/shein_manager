@@ -405,7 +405,10 @@ func (s *Store) UpsertFulfillmentTask(ctx context.Context, shopKey string, task 
 				order_place_type = COALESCE($9, order_place_type),
 				handle_result = COALESCE($10, handle_result),
 				print_status = COALESCE($11, print_status),
-				status = COALESCE(NULLIF($12, ''), status),
+				status = CASE
+					WHEN $12 = 'discovered' AND status IN ('placed', 'checking', 'confirming', 'ready', 'label_ready', 'failed') THEN status
+					ELSE COALESCE(NULLIF($12, ''), status)
+				END,
 				failure_reason = $13,
 				updated_at = now()
 			WHERE shop_key = $1 AND (

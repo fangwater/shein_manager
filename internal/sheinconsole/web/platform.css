@@ -116,6 +116,45 @@ button:disabled {
   display: none;
 }
 
+#task-status-filters .status-filter {
+  min-height: 76px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  width: 100%;
+  padding: 12px 20px;
+  border: 0;
+  border-right: 1px solid #e3e6e8;
+  border-radius: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+#task-status-filters .status-filter:last-child {
+  border-right: 0;
+}
+
+#task-status-filters .status-filter:hover {
+  background: #f7f8f9;
+}
+
+#task-status-filters .status-filter.is-selected {
+  background: #eef6f3;
+  box-shadow: inset 0 -3px 0 #315f50;
+}
+
+#task-status-filters .status-filter small {
+  color: #858c91;
+  font-size: 11px;
+}
+
+#task-status-filters .status-filter strong {
+  margin-top: 5px;
+  font-size: 21px;
+}
+
 #task-rows tr[data-task-key] {
   cursor: pointer;
 }

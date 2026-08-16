@@ -6,7 +6,7 @@
   <meta name="description" content="SHEIN 店铺发货与面单管理">
   <title>SHEIN Fulfillment</title>
   <link rel="stylesheet" href="/temu/dashboard.css?v=20260814-shared">
-  <link rel="stylesheet" href="./assets/platform.css?v=20260816-2">
+  <link rel="stylesheet" href="./assets/platform.css?v=20260816-3">
 </head>
 <body>
   <svg class="svg-sprite" aria-hidden="true">
@@ -175,11 +175,19 @@
             <div><h1>自动处理中</h1><p>购买面单后，后台确认物流并等待面单就绪；订单不再显示在待发货队列</p></div>
             <button class="secondary-button" id="refresh-tasks" type="button"><svg><use href="#i-refresh"/></svg>刷新</button>
           </div>
-          <div class="status-band">
-            <div><small>下单已提交</small><strong id="metric-task-placed">0</strong></div>
-            <div><small>处理中 / 可打印</small><strong id="metric-task-checked">0</strong></div>
-            <div><small>面单已就绪</small><strong id="metric-task-label">0</strong></div>
-            <div><small>处理中总数</small><strong id="metric-task-total">0</strong></div>
+          <div class="status-band" id="task-status-filters" role="tablist" aria-label="处理中状态筛选">
+            <button class="status-filter" type="button" role="tab" data-task-filter="placed" aria-selected="false">
+              <small>下单已提交</small><strong id="metric-task-placed">0</strong>
+            </button>
+            <button class="status-filter" type="button" role="tab" data-task-filter="checking" aria-selected="false">
+              <small>处理中 / 可打印</small><strong id="metric-task-checked">0</strong>
+            </button>
+            <button class="status-filter" type="button" role="tab" data-task-filter="label_ready" aria-selected="false">
+              <small>面单已就绪</small><strong id="metric-task-label">0</strong>
+            </button>
+            <button class="status-filter is-selected" type="button" role="tab" data-task-filter="processing" aria-selected="true">
+              <small>处理中总数</small><strong id="metric-task-total">0</strong>
+            </button>
           </div>
           <div class="toolbar">
             <label class="search"><svg><use href="#i-search"/></svg><input id="task-search" type="search" placeholder="搜索订单号、渠道或履约编号"></label>
@@ -319,7 +327,7 @@
   </aside>
   <button class="drawer-backdrop" id="drawer-backdrop" aria-label="关闭结果"></button>
   <div class="toast" id="toast" hidden></div>
-  <script src="./assets/app.js?v=20260816-7" defer></script>
+  <script src="./assets/app.js?v=20260816-8" defer></script>
   <script src="./assets/xlwms.js?v=20260814-2" defer></script>
 </body>
 </html>

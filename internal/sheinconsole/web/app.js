@@ -22,6 +22,7 @@ const state = {
   preRequestId: "",
   tasks: [],
   taskSearch: "",
+  taskFilter: "processing",
   selectedTaskKey: "",
   placedOrderNos: {},
   inventoryThresholds: [],
@@ -705,6 +706,21 @@ function taskKey(task) {
   ].filter(Boolean).join(":");
 }
 
+function taskMatchesFilter(task, filter) {
+  const status = task && task.status;
+  if (filter === "placed") return status === "placed";
+  if (filter === "checking") return ["checking", "confirming", "ready"].includes(status);
+  if (filter === "label_ready") return status === "label_ready";
+  if (filter === "failed") return status === "failed";
+  return status !== "failed" && status !== "label_ready";
+}
+
+function setTaskFilter(filter) {
+  const next = filter || "processing";
+  state.taskFilter = next === state.taskFilter && next !== "processing" ? "processing" : next;
+  renderTasks();
+}
+
 function selectProcessingTask(task) {
   state.selectedTaskKey = taskKey(task);
   document.querySelectorAll("#task-rows tr[data-task-key]").forEach(function (row) {
@@ -727,7 +743,7 @@ function renderTasks() {
   const table = rows.closest(".table-shell");
   const query = (state.taskSearch || "").trim().toLowerCase();
   const visible = state.tasks.filter(function (task) {
-    if (!query && (task.status === "failed" || task.status === "label_ready")) return false;
+    if (!taskMatchesFilter(task, state.taskFilter || "processing")) return false;
     if (query && !taskSearchText(task).includes(query)) return false;
     return true;
   });
@@ -764,15 +780,32 @@ function renderTasks() {
     return ["checking", "confirming", "ready"].includes(task.status);
   }).length;
   const ready = state.tasks.filter(function (task) { return task.status === "label_ready"; }).length;
-  byId("nav-processing-count").textContent = String(visible.length);
-  byId("nav-label-count").textContent = String(visible.length);
-  byId("metric-task-total").textContent = String(visible.length);
+  const processing = state.tasks.filter(function (task) { return taskMatchesFilter(task, "processing"); }).length;
+  byId("nav-processing-count").textContent = String(processing);
+  byId("nav-label-count").textContent = String(processing);
+  byId("metric-task-total").textContent = String(processing);
   byId("metric-task-placed").textContent = String(placed);
   byId("metric-task-checked").textContent = String(checking);
   byId("metric-task-label").textContent = String(ready);
+  document.querySelectorAll("#task-status-filters [data-task-filter]").forEach(function (button) {
+    const selected = button.dataset.taskFilter === (state.taskFilter || "processing");
+    button.classList.toggle("is-selected", selected);
+    button.setAttribute("aria-selected", selected ? "true" : "false");
+  });
   byId("task-total").textContent = query
     ? "匹配 " + visible.length + " / " + state.tasks.length + " 条"
     : "共 " + visible.length + " 条";
+  const empty = byId("tasks-empty");
+  if (empty) {
+    const emptyCopy = {
+      placed: ["没有下单已提交的订单", "购单成功后会显示在这里"],
+      checking: ["没有处理中 / 可打印的订单", "后台确认物流后会显示在这里"],
+      label_ready: ["没有面单已就绪的订单", "面单生成后会显示在这里"],
+      processing: ["没有正在处理的面单", "订单提交购单后会进入这里，不再显示在待发货队列"]
+    }[state.taskFilter || "processing"] || ["没有正在处理的面单", "订单提交购单后会进入这里，不再显示在待发货队列"];
+    empty.querySelector("strong").textContent = query ? "没有匹配的处理中订单" : emptyCopy[0];
+    empty.querySelector("span").textContent = query ? "换一个订单号或状态筛选再试" : emptyCopy[1];
+  }
   if (state.selectedTaskKey && !visible.some(function (task) { return taskKey(task) === state.selectedTaskKey; })) {
     state.selectedTaskKey = "";
   }
@@ -1629,6 +1662,10 @@ byId("refresh-tasks").addEventListener("click", function (event) { loadTasks(eve
 byId("task-search").addEventListener("input", function (event) {
   state.taskSearch = event.target.value;
   renderTasks();
+});
+byId("task-status-filters").addEventListener("click", function (event) {
+  const button = event.target.closest("[data-task-filter]");
+  if (button) setTaskFilter(button.dataset.taskFilter);
 });
 byId("refresh-inventory-thresholds").addEventListener("click", function (event) {
   loadInventoryThresholds(event.currentTarget);

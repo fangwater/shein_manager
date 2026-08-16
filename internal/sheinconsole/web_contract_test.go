@@ -65,6 +65,39 @@ func TestPurchaseSuccessUsesTemuProcessingFlow(t *testing.T) {
 	}
 }
 
+func TestProcessingStatusCardsAreSelectable(t *testing.T) {
+	index, err := webFiles.ReadFile("web/index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	html := string(index)
+	for _, required := range []string{
+		`data-task-filter="placed"`,
+		`data-task-filter="checking"`,
+		`data-task-filter="label_ready"`,
+		`data-task-filter="processing"`,
+	} {
+		if !strings.Contains(html, required) {
+			t.Fatalf("processing status cards do not contain %q", required)
+		}
+	}
+	script, err := webFiles.ReadFile("web/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := string(script)
+	for _, required := range []string{
+		"function taskMatchesFilter",
+		"function setTaskFilter",
+		`if (filter === "placed") return status === "placed";`,
+		`byId("task-status-filters").addEventListener("click"`,
+	} {
+		if !strings.Contains(source, required) {
+			t.Fatalf("processing status filter does not contain %q", required)
+		}
+	}
+}
+
 func TestProcessingViewLetsOperatorsSelectATask(t *testing.T) {
 	script, err := webFiles.ReadFile("web/app.js")
 	if err != nil {

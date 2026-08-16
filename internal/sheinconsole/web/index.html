@@ -35,12 +35,12 @@
       </div>
       <nav class="nav" aria-label="主导航">
         <button class="nav-button active" data-view="orders"><svg><use href="#i-orders"/></svg><span>待发货订单</span><b id="nav-order-count">0</b></button>
-        <button class="nav-button" data-view="processing"><svg><use href="#i-truck"/></svg><span>自动处理中</span><b id="nav-processing-count">0</b></button>
+        <button class="nav-button" data-view="labels"><svg><use href="#i-truck"/></svg><span>自动处理中</span><b id="nav-processing-count">0</b></button>
         <button class="nav-button" data-view="exceptions"><svg><use href="#i-warning"/></svg><span>自动发货异常</span><b id="nav-exception-count">0</b></button>
         <button class="nav-button" data-view="manual"><svg><use href="#i-user"/></svg><span>人工订单</span><b id="nav-manual-count">0</b></button>
         <button class="nav-button" data-view="oms-statuses"><svg><use href="#i-orders"/></svg><span>领星订单状态</span><b id="nav-oms-status-count">0</b></button>
         <button class="nav-button" data-view="ledger"><svg><use href="#i-ledger"/></svg><span>自动发货账本</span><b id="nav-ledger-count">0</b></button>
-        <button class="nav-button" data-view="labels"><svg><use href="#i-label"/></svg><span>面单任务</span><b id="nav-label-count">0</b></button>
+        <span id="nav-label-count" hidden>0</span>
         <button class="nav-button" data-view="inventory-thresholds"><svg><use href="#i-warning"/></svg><span>库存安全线</span></button>
         <button class="nav-button" data-view="tools"><svg><use href="#i-tools"/></svg><span>物流工具</span></button>
       </nav>
@@ -86,9 +86,9 @@
           <div class="pager" id="orders-pager" hidden></div>
         </section>
 
-        <section class="view" id="view-processing">
+        <section class="view" id="view-processing" hidden>
           <div class="page-head">
-            <div><h1>自动处理中</h1><p>正在流转订单、匹配最低价物流、购单或等待承运商确认</p></div>
+            <div><h1>自动发货任务</h1><p>一键发货后台任务进度</p></div>
             <button class="secondary-button" id="refresh-processing" type="button"><svg><use href="#i-refresh"/></svg>刷新</button>
           </div>
           <div class="status-band">
@@ -172,21 +172,21 @@
 
         <section class="view" id="view-labels">
           <div class="page-head">
-            <div><h1>面单任务</h1></div>
+            <div><h1>自动处理中</h1><p>购买面单后，后台确认物流并等待面单就绪；订单不再显示在待发货队列</p></div>
             <button class="secondary-button" id="refresh-tasks" type="button"><svg><use href="#i-refresh"/></svg>刷新</button>
           </div>
           <div class="status-band">
-            <div><small>全部任务</small><strong id="metric-task-total">0</strong></div>
             <div><small>下单已提交</small><strong id="metric-task-placed">0</strong></div>
             <div><small>处理中 / 可打印</small><strong id="metric-task-checked">0</strong></div>
-            <div><small>面单已获取</small><strong id="metric-task-label">0</strong></div>
+            <div><small>面单已就绪</small><strong id="metric-task-label">0</strong></div>
+            <div><small>处理中总数</small><strong id="metric-task-total">0</strong></div>
           </div>
           <div class="table-shell">
             <table>
-              <thead><tr><th>订单</th><th>物流渠道</th><th>履约标识</th><th>Delivery No.</th><th>状态</th><th>更新时间</th><th>操作</th></tr></thead>
+              <thead><tr><th>订单</th><th>物流渠道</th><th>包裹 / 履约编号</th><th>状态</th><th>更新时间</th><th>操作</th></tr></thead>
               <tbody id="task-rows"></tbody>
             </table>
-            <div class="empty" id="tasks-empty"><svg><use href="#i-label"/></svg><strong>暂无面单任务</strong><span>查看订单详情或在线下单后会进入这里</span></div>
+            <div class="empty" id="tasks-empty"><svg><use href="#i-truck"/></svg><strong>没有正在处理的面单</strong><span>订单提交购单后会进入这里，不再显示在待发货队列</span></div>
           </div>
         </section>
 
@@ -303,7 +303,7 @@
       <section class="workflow-section purchase-section" id="purchase-section">
         <div class="section-title"><span>3</span><div><small>在线下单</small><h3>确认物流与购买面单</h3></div></div>
         <div class="selection-summary" id="selection-summary">尚未完成物流选择</div>
-        <button class="danger-button" id="purchase-label" type="button" disabled><svg><use href="#i-label"/></svg>确认在线下单</button>
+        <button class="danger-button" id="purchase-label" type="button" disabled><svg><use href="#i-label"/></svg>确认并购买面单</button>
       </section>
     </div>
   </dialog>
@@ -315,7 +315,7 @@
   </aside>
   <button class="drawer-backdrop" id="drawer-backdrop" aria-label="关闭结果"></button>
   <div class="toast" id="toast" hidden></div>
-  <script src="./assets/app.js?v=20260816-4" defer></script>
+  <script src="./assets/app.js?v=20260816-5" defer></script>
   <script src="./assets/xlwms.js?v=20260814-2" defer></script>
 </body>
 </html>

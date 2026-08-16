@@ -30,6 +30,41 @@ func TestConsoleUsesSharedTemuShell(t *testing.T) {
 	}
 }
 
+func TestPurchaseSuccessUsesTemuProcessingFlow(t *testing.T) {
+	index, err := webFiles.ReadFile("web/index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	html := string(index)
+	for _, required := range []string{
+		`data-view="labels"><svg><use href="#i-truck"/></svg><span>自动处理中</span>`,
+		"<h1>自动处理中</h1>",
+		"确认并购买面单",
+	} {
+		if !strings.Contains(html, required) {
+			t.Fatalf("console index does not contain %q", required)
+		}
+	}
+	script, err := webFiles.ReadFile("web/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := string(script)
+	for _, required := range []string{
+		"function rememberPlacedOrder",
+		"if (isRecentlyPlacedOrder(order.order_no)) return false;",
+		`toast(payload.cached ? "该订单已有发货记录，未重复提交" : "面单购买请求已提交，后台将确认物流并等待面单");`,
+		`selectView("labels");`,
+	} {
+		if !strings.Contains(source, required) {
+			t.Fatalf("purchase success flow does not contain %q", required)
+		}
+	}
+	if strings.Contains(source, `showResult("订单 " + state.orderNo + " 在线下单", payload)`) {
+		t.Fatal("successful purchase still opens the raw JSON drawer")
+	}
+}
+
 func TestTransitionNoticeStaysHiddenUntilRequired(t *testing.T) {
 	css, err := webFiles.ReadFile("web/platform.css")
 	if err != nil {

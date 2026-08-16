@@ -21,6 +21,7 @@ const state = {
   channel: null,
   preRequestId: "",
   tasks: [],
+  placedOrderNos: {},
   inventoryThresholds: [],
   inventoryThresholdMeta: {},
   shopInventoryThresholds: {},
@@ -424,9 +425,7 @@ function formatChinaTime(date) {
   return result.year + "-" + result.month + "-" + result.day + " " + result.hour + ":" + result.minute + ":" + result.second;
 }
 
-function showResult(title, payload) {
-  byId("result-title").textContent = title;
-  byId("result-json").textContent = JSON.stringify(payload, null, 2);
+function collectResultLinks(payload) {
   const links = [];
   function walk(value, path) {
     if (Array.isArray(value)) {
@@ -445,6 +444,13 @@ function showResult(title, payload) {
     });
   }
   walk(payload, "");
+  return links;
+}
+
+function showResult(title, payload) {
+  byId("result-title").textContent = title;
+  byId("result-json").textContent = JSON.stringify(payload, null, 2);
+  const links = collectResultLinks(payload);
   byId("result-links").innerHTML = links.map(function (link) {
     return '<a class="result-link" href="' + escapeHTML(link.url) + '" target="_blank" rel="noreferrer"><span>' +
       escapeHTML(link.label) + '</span><strong>打开</strong></a>';
@@ -458,6 +464,31 @@ function closeResult() {
   byId("result-drawer").setAttribute("aria-hidden", "true");
 }
 
+function placedOrderStorageKey() {
+  return "shein_placed_orders:" + (state.shopKey || "default");
+}
+
+function loadPlacedOrderNos() {
+  try {
+    const stored = JSON.parse(sessionStorage.getItem(placedOrderStorageKey()) || "{}");
+    state.placedOrderNos = stored && typeof stored === "object" ? stored : {};
+  } catch (error) {
+    state.placedOrderNos = {};
+  }
+}
+
+function rememberPlacedOrder(orderNo) {
+  if (!orderNo) return;
+  loadPlacedOrderNos();
+  state.placedOrderNos[orderNo] = Date.now();
+  sessionStorage.setItem(placedOrderStorageKey(), JSON.stringify(state.placedOrderNos));
+}
+
+function isRecentlyPlacedOrder(orderNo) {
+  const stamped = Number(state.placedOrderNos && state.placedOrderNos[orderNo]);
+  return Number.isFinite(stamped) && Date.now() - stamped < 6 * 60 * 60 * 1000;
+}
+
 function selectView(name) {
   const titles = {
     orders: "待发货订单",
@@ -466,7 +497,7 @@ function selectView(name) {
     manual: "人工订单",
     "oms-statuses": "领星订单状态",
     ledger: "自动发货账本",
-    labels: "面单任务",
+    labels: "自动处理中",
     "inventory-thresholds": "库存安全线",
     tools: "物流工具"
   };
@@ -669,30 +700,43 @@ function taskStatusClass(status) {
 function renderTasks() {
   const rows = byId("task-rows");
   const table = rows.closest(".table-shell");
-  table.classList.toggle("is-empty", state.tasks.length === 0);
-  rows.innerHTML = state.tasks.map(function (task, index) {
-    const identifier = task.place_request_id || task.package_no || task.waybill_no;
+  const visible = state.tasks.filter(function (task) {
+    return task.status !== "failed" && task.status !== "label_ready";
+  });
+  table.classList.toggle("is-empty", visible.length === 0);
+  rows.innerHTML = visible.map(function (task) {
+    const index = state.tasks.indexOf(task);
+    const packageNo = task.package_no || task.place_request_id || "等待包裹号";
+    const deliveryNo = task.delivery_no || "等待履约编号";
     const canCheck = Boolean(task.place_request_id || task.delivery_no);
     const platformLabel = Number(task.order_place_type) === 1 && task.order_no && task.package_no;
     const canPrint = Boolean(platformLabel || (task.status === "ready" || task.status === "label_ready") &&
       (task.delivery_no || task.order_no && task.package_no));
     const failureTitle = task.failure_reason ? ' title="' + escapeHTML(task.failure_reason) + '"' : "";
-    return "<tr><td><strong>" + escapeHTML(task.order_no) + "</strong></td><td>" +
-      escapeHTML(display(task.express_channel_code)) + "</td><td>" + escapeHTML(display(identifier)) +
-      "</td><td>" + escapeHTML(display(task.delivery_no)) + "</td><td><span class=\"badge " +
-      taskStatusClass(task.status) + "\"" + failureTitle + ">" + escapeHTML(taskStatusLabel(task.status)) +
-      "</span></td><td>" + escapeHTML(formatTaskTime(task.updated_at)) +
+    return "<tr><td><div class=\"order-id\"><strong>" + escapeHTML(task.order_no) +
+      "</strong><small>" + escapeHTML(display(task.warehouse_address_code, "发货仓待返回")) +
+      "</small></div></td><td><div class=\"order-id\"><strong>" +
+      escapeHTML(display(task.express_channel_code)) + "</strong><small>" +
+      escapeHTML(display(task.warehouse_address_code)) + "</small></div></td><td><div class=\"order-id\"><strong>" +
+      escapeHTML(display(packageNo)) + "</strong><small>" + escapeHTML(display(deliveryNo)) +
+      "</small></div></td><td><span class=\"badge " + taskStatusClass(task.status) + "\"" + failureTitle + ">" +
+      escapeHTML(taskStatusLabel(task.status)) + "</span></td><td>" +
+      escapeHTML(formatTaskTime(task.updated_at)) +
       "</td><td><div class=\"action-row\"><button class=\"table-action\" data-check-task=\"" + index +
       "\" " + (canCheck ? "" : "disabled") + ">查询结果</button><button class=\"table-action primary\" data-label-task=\"" + index +
       "\" " + (canPrint ? "" : "disabled") + ">获取面单</button></div></td></tr>";
   }).join("");
-  byId("nav-label-count").textContent = String(state.tasks.length);
-  byId("metric-task-total").textContent = String(state.tasks.length);
-  byId("metric-task-placed").textContent = String(state.tasks.filter(function (task) { return task.status === "placed"; }).length);
-  byId("metric-task-checked").textContent = String(state.tasks.filter(function (task) {
+  const placed = state.tasks.filter(function (task) { return task.status === "placed"; }).length;
+  const checking = state.tasks.filter(function (task) {
     return ["checking", "confirming", "ready"].includes(task.status);
-  }).length);
-  byId("metric-task-label").textContent = String(state.tasks.filter(function (task) { return task.status === "label_ready"; }).length);
+  }).length;
+  const ready = state.tasks.filter(function (task) { return task.status === "label_ready"; }).length;
+  byId("nav-processing-count").textContent = String(visible.length);
+  byId("nav-label-count").textContent = String(visible.length);
+  byId("metric-task-total").textContent = String(visible.length);
+  byId("metric-task-placed").textContent = String(placed);
+  byId("metric-task-checked").textContent = String(checking);
+  byId("metric-task-label").textContent = String(ready);
 }
 
 function taskStatusLabel(status) {
@@ -717,7 +761,7 @@ async function checkTask(index, button) {
         : { deliveryNo: task.delivery_no };
       const payload = await post("shipping/check", data);
       await loadTasks();
-      showResult("订单 " + task.order_no + " 下单结果", payload);
+      toast("已查询订单 " + task.order_no + " 的下单结果");
     } catch (error) {
       toast(error.message, true);
     }
@@ -740,7 +784,10 @@ async function fetchLabel(index, button) {
         ":" + Math.floor(Date.now() / 3600000);
       const payload = await sensitivePost("shipping/label", data, "print-express-info", reference);
       await loadTasks();
-      showResult("订单 " + task.order_no + " 面单", payload);
+      const links = collectResultLinks(payload);
+      if (links.length) {
+        showResult("订单 " + task.order_no + " 面单", payload);
+      }
       toast(payload.cached ? "已返回此前生成的面单" : "面单已获取");
     } catch (error) {
       toast(error.message, true);
@@ -803,6 +850,7 @@ function renderOrderPager(total) {
 function filterOrders() {
   const query = byId("order-search").value.trim().toLowerCase();
   const filtered = state.orders.filter(function (order) {
+    if (isRecentlyPlacedOrder(order.order_no)) return false;
     if (!query) return true;
     const goods = Array.isArray(order.goods) ? order.goods : [];
     const text = [
@@ -1420,14 +1468,13 @@ async function purchaseLabel(button) {
       const payload = await sensitivePost("shipping/place", data, "place-express-order", state.orderNo);
       const info = infoOf(payload);
       if (!firstValue(info, ["placeRequestId", "deliveryNo"])) {
-        showResult("在线下单响应", payload);
         throw new Error("在线下单响应缺少履约编号，请检查接口结果");
       }
-      await loadTasks();
+      rememberPlacedOrder(state.orderNo);
       byId("fulfillment-dialog").close();
+      toast(payload.cached ? "该订单已有发货记录，未重复提交" : "面单购买请求已提交，后台将确认物流并等待面单");
+      await Promise.all([loadOrders(), loadManualOrders(), loadTasks(), loadJobQueue("processing")]);
       selectView("labels");
-      showResult("订单 " + state.orderNo + " 在线下单", payload);
-      toast(payload.cached ? "已返回此前的下单结果" : "在线下单已提交");
     } catch (error) {
       toast(error.message, true);
       state.preRequestId = "";
@@ -1486,6 +1533,7 @@ async function loadStatus() {
       return '<option value="' + escapeHTML(shop.code) + '" ' + (shop.code === state.shopKey ? "selected" : "") +
         '>' + escapeHTML(display(shop.name, shop.code)) + '</option>';
     }).join("") || '<option value="' + escapeHTML(state.shopKey) + '">' + escapeHTML(state.shopKey) + '</option>';
+    loadPlacedOrderNos();
     const selectedShop = state.shops.find(function (shop) { return shop.code === state.shopKey; });
     const selectedShopName = selectedShop ? display(selectedShop.name, state.shopKey) : state.shopKey;
     byId("brand-shop").textContent = selectedShopName;

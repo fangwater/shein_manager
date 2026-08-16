@@ -44,11 +44,12 @@ The production prefix is `/shein`, so `/api/order/list` is publicly routed as
 The page at `/shein/` follows the same shop-level operating model as the Temu
 console and does not require a web login. Operators select a shop, query orders,
 and for SHEIN platform-logistics orders go straight to warehouse selection,
-channel quote, and online label purchase. Only operated DPS/ARP warehouses
-remain selectable for platform labels; PG and other platform-listed warehouses
-stay visible as unavailable and cannot be quoted. `export-address` with
-`handleType=2` is only used for merchant self-ship orders that cannot buy a
-platform label.
+channel quote, and online label purchase. A successful purchase closes the
+dialog, leaves the pending queue, and opens the shared 自动处理中 view instead
+of a raw OpenAPI drawer. Only operated DPS/ARP warehouses remain selectable
+for platform labels; PG and other platform-listed warehouses stay visible as
+unavailable and cannot be quoted. `export-address` with `handleType=2` is only
+used for merchant self-ship orders that cannot buy a platform label.
 
 The selected shop is sent in `X-Shein-Shop` and kept in session storage. The
 shop selector displays `Beauty Hangers home` while requests use the stable

@@ -65,6 +65,30 @@ func TestPurchaseSuccessUsesTemuProcessingFlow(t *testing.T) {
 	}
 }
 
+func TestProcessingViewLetsOperatorsSelectATask(t *testing.T) {
+	script, err := webFiles.ReadFile("web/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := string(script)
+	for _, required := range []string{
+		"function selectProcessingTask",
+		`data-task-key="`,
+		"if (task) selectProcessingTask(task);",
+	} {
+		if !strings.Contains(source, required) {
+			t.Fatalf("processing selection does not contain %q", required)
+		}
+	}
+	css, err := webFiles.ReadFile("web/platform.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(css), "#task-rows tr.is-selected") {
+		t.Fatal("processing rows have no selected style")
+	}
+}
+
 func TestProcessingViewCanSearchPlacedOrders(t *testing.T) {
 	index, err := webFiles.ReadFile("web/index.html")
 	if err != nil {

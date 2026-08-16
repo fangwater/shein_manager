@@ -22,6 +22,7 @@ const state = {
   preRequestId: "",
   tasks: [],
   taskSearch: "",
+  selectedTaskKey: "",
   placedOrderNos: {},
   inventoryThresholds: [],
   inventoryThresholdMeta: {},
@@ -698,6 +699,21 @@ function taskStatusClass(status) {
   return "pending";
 }
 
+function taskKey(task) {
+  return [
+    task && task.order_no, task && task.place_request_id, task && task.delivery_no, task && task.package_no
+  ].filter(Boolean).join(":");
+}
+
+function selectProcessingTask(task) {
+  state.selectedTaskKey = taskKey(task);
+  document.querySelectorAll("#task-rows tr[data-task-key]").forEach(function (row) {
+    const selected = row.dataset.taskKey === state.selectedTaskKey;
+    row.classList.toggle("is-selected", selected);
+    row.setAttribute("aria-selected", selected ? "true" : "false");
+  });
+}
+
 function taskSearchText(task) {
   return [
     task.order_no, task.express_channel_code, task.warehouse_address_code,
@@ -725,8 +741,13 @@ function renderTasks() {
     const canPrint = Boolean(platformLabel || (task.status === "ready" || task.status === "label_ready") &&
       (task.delivery_no || task.order_no && task.package_no));
     const failureTitle = task.failure_reason ? ' title="' + escapeHTML(task.failure_reason) + '"' : "";
-    return "<tr><td><div class=\"order-id\"><strong>" + escapeHTML(task.order_no) +
-      "</strong><small>" + escapeHTML(display(task.warehouse_address_code, "发货仓待返回")) +
+    const key = taskKey(task);
+    const selected = key && key === state.selectedTaskKey;
+    return '<tr class="' + (selected ? "is-selected" : "") + '" data-task-index="' + index +
+      '" data-task-key="' + escapeHTML(key) + '" aria-selected="' + (selected ? "true" : "false") +
+      '" tabindex="0"><td><div class="order-id"><button class="order-link" type="button" data-task-order="' +
+      escapeHTML(task.order_no) + '">' + escapeHTML(task.order_no) +
+      '</button><small>' + escapeHTML(display(task.warehouse_address_code, "发货仓待返回")) +
       "</small></div></td><td><div class=\"order-id\"><strong>" +
       escapeHTML(display(task.express_channel_code)) + "</strong><small>" +
       escapeHTML(display(task.warehouse_address_code)) + "</small></div></td><td><div class=\"order-id\"><strong>" +
@@ -752,6 +773,9 @@ function renderTasks() {
   byId("task-total").textContent = query
     ? "匹配 " + visible.length + " / " + state.tasks.length + " 条"
     : "共 " + visible.length + " 条";
+  if (state.selectedTaskKey && !visible.some(function (task) { return taskKey(task) === state.selectedTaskKey; })) {
+    state.selectedTaskKey = "";
+  }
 }
 
 function taskStatusLabel(status) {
@@ -1684,8 +1708,27 @@ byId("exception-rows").addEventListener("click", function (event) {
 byId("task-rows").addEventListener("click", function (event) {
   const checkButton = event.target.closest("[data-check-task]");
   const labelButton = event.target.closest("[data-label-task]");
-  if (checkButton) checkTask(Number(checkButton.dataset.checkTask), checkButton);
-  if (labelButton) fetchLabel(Number(labelButton.dataset.labelTask), labelButton);
+  const orderButton = event.target.closest("[data-task-order]");
+  const row = event.target.closest("tr[data-task-index]");
+  const task = row ? state.tasks[Number(row.dataset.taskIndex)] : null;
+  if (task) selectProcessingTask(task);
+  if (checkButton) {
+    checkTask(Number(checkButton.dataset.checkTask), checkButton);
+    return;
+  }
+  if (labelButton) {
+    fetchLabel(Number(labelButton.dataset.labelTask), labelButton);
+    return;
+  }
+  if (orderButton) showOrderDetail(orderButton.dataset.taskOrder);
+});
+byId("task-rows").addEventListener("keydown", function (event) {
+  if (event.key !== "Enter" && event.key !== " ") return;
+  const row = event.target.closest("tr[data-task-index]");
+  if (!row) return;
+  event.preventDefault();
+  const task = state.tasks[Number(row.dataset.taskIndex)];
+  if (task) selectProcessingTask(task);
 });
 byId("warehouse-choices").addEventListener("change", function (event) {
   if (!event.target.matches("[data-warehouse-index]")) return;

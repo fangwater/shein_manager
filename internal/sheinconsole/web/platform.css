@@ -116,6 +116,23 @@ button:disabled {
   display: none;
 }
 
+#task-rows tr[data-task-key] {
+  cursor: pointer;
+}
+
+#task-rows tr[data-task-key]:hover {
+  background: #f7f8f9;
+}
+
+#task-rows tr.is-selected {
+  background: #eef6f3;
+  box-shadow: inset 3px 0 0 #315f50;
+}
+
+#task-rows tr.is-selected:hover {
+  background: #e7f2ee;
+}
+
 .table-action {
   min-height: 30px;
   display: inline-flex;

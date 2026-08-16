@@ -72,7 +72,7 @@ these public, no-store fulfillment queries:
 
 | Local endpoint | Purpose |
 | --- | --- |
-| `GET /api/oms-platform-orders/accounts` | List enabled XLWMS accounts |
+| `GET /api/oms-platform-orders/accounts` | List XLWMS accounts and their live Lingxing login status |
 | `GET /api/oms-platform-orders/{orderNo}?account=all` | Query the order across enabled accounts |
 | `POST /api/orders/{orderNo}/warehouse-preview` | Query live inventory and package specs for the order warehouse SKUs |
 

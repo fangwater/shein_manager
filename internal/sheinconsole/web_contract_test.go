@@ -268,7 +268,7 @@ func TestXLWMSAccountLookupWaitsForShopInitialization(t *testing.T) {
 	if !strings.Contains(string(appScript), "window.sheinShopReady = loadStatus()") {
 		t.Fatal("shop initialization promise is not exposed")
 	}
-	for _, required := range []string{"Promise.resolve(window.sheinShopReady)", "accountRetryTimer", "retryDelay"} {
+	for _, required := range []string{"Promise.resolve(window.sheinShopReady)", "accountRetryTimer", "retryDelay", "领星账户已掉线"} {
 		if !strings.Contains(string(xlwmsScript), required) {
 			t.Fatalf("XLWMS startup recovery does not contain %q", required)
 		}

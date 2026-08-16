@@ -31,6 +31,9 @@ type Account struct {
 	Key            string   `json:"key"`
 	Label          string   `json:"label"`
 	WarehouseCodes []string `json:"warehouse_codes"`
+	Available      bool     `json:"available"`
+	Status         string   `json:"status,omitempty"`
+	Error          string   `json:"error,omitempty"`
 }
 
 type PlatformOrder struct {

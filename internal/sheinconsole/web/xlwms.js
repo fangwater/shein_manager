@@ -28,16 +28,27 @@ async function loadXLWMSAccounts(button) {
       const payload = await request("oms-platform-orders/accounts");
       sheinXLWMS.accountFailures = 0;
       sheinXLWMS.accounts = Array.isArray(payload.data) ? payload.data : [];
+      const ready = sheinXLWMS.accounts.filter(function (account) { return account.available !== false; });
+      const offline = sheinXLWMS.accounts.filter(function (account) { return account.available === false; });
       byId("oms-account").innerHTML = '<option value="all">全部账户</option>' + sheinXLWMS.accounts.map(function (account) {
         const key = display(account.key);
         const label = display(account.label, key.toUpperCase());
-        return '<option value="' + escapeHTML(key) + '">' + escapeHTML(label) + "</option>";
+        const suffix = account.available === false ? "（已掉线）" : "";
+        return '<option value="' + escapeHTML(key) + '">' + escapeHTML(label + suffix) + "</option>";
       }).join("");
       if (!sheinXLWMS.accounts.length) {
         setXLWMSPill("warning", "暂无可用账户");
         return;
       }
-      setXLWMSPill("ready", "实时查询可用 · " + sheinXLWMS.accounts.length + " 个账户");
+      if (!ready.length) {
+        setXLWMSPill("error", "领星账户已掉线 · " + sheinXLWMS.accounts.length + " 个");
+        return;
+      }
+      if (offline.length) {
+        setXLWMSPill("warning", "实时查询可用 · " + ready.length + " / " + sheinXLWMS.accounts.length + " 个账户");
+        return;
+      }
+      setXLWMSPill("ready", "实时查询可用 · " + ready.length + " 个账户");
     } catch (error) {
       sheinXLWMS.accounts = [];
       sheinXLWMS.accountFailures += 1;

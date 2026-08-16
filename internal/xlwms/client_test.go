@@ -16,7 +16,7 @@ func TestClientUsesPublicManagerContract(t *testing.T) {
 		writer.Header().Set("Content-Type", "application/json")
 		switch request.URL.Path {
 		case "/api/platform-orders/accounts":
-			_, _ = writer.Write([]byte(`{"success":true,"data":[{"key":"dps","label":"DPS"}]}`))
+			_, _ = writer.Write([]byte(`{"success":true,"data":[{"key":"dps","label":"DPS","available":true,"status":"ready"}]}`))
 		case "/api/temu/platform-orders/SHEIN-1":
 			_, _ = writer.Write([]byte(`{"success":true,"data":{"account":"dps","platform_order_no":"SHEIN-1","found":true,"match_count":1,"orders":[{"oms_order_no":"OMS-1","platform_order_no":"SHEIN-1","platform_code":"SHEIN","status":2,"status_key":"processing"}],"queried_at":"2026-08-14T00:00:00Z"}}`))
 		case "/api/temu/warehouse-availability/query":

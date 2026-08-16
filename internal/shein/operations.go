@@ -56,7 +56,14 @@ func (c *Client) Call(ctx context.Context, operation string, data map[string]any
 	if err := Validate(operation, data); err != nil {
 		return nil, err
 	}
-	return c.Request(ctx, endpoint.Method, endpoint.Path, data, nil)
+	result, err := c.Request(ctx, endpoint.Method, endpoint.Path, data, nil)
+	if err != nil {
+		return nil, err
+	}
+	if operation == "available-shipping-warehouse" {
+		RestrictShippingWarehouseAvailability(result)
+	}
+	return result, nil
 }
 
 func (c *Client) LogisticsTrack(ctx context.Context, orderNo, packageNo, waybillNo, returnOrderNo string) (map[string]any, error) {
@@ -168,6 +175,13 @@ func validateMappingChannels(data map[string]any) error {
 		if err := requireString(data, field); err != nil {
 			return err
 		}
+	}
+	code, _ := stringValue(data["warehouseAddressCode"])
+	if !IsAllowedShippingWarehouse(code, "") {
+		if IsPGWarehouse(code, "") {
+			return errors.New(pgWarehouseUnavailableReason)
+		}
+		return errors.New(unoperatedWarehouseUnavailableReason)
 	}
 	size, ok := object(data["packageSizeInfo"])
 	if !ok {

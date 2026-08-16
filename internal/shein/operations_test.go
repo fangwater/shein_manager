@@ -56,12 +56,17 @@ func TestOrderDetailAndShippingValidation(t *testing.T) {
 		t.Fatal("more than 30 order numbers must fail")
 	}
 	channels := map[string]any{
-		"orderNo": "ORDER-1", "warehouseAddressCode": "WH-1",
+		"orderNo": "ORDER-1", "warehouseAddressCode": "DPSNY002",
 		"packageSizeInfo":   map[string]any{"packageLength": "10", "packageWidth": "8", "packageHeight": "2", "unit": "cm"},
 		"packageWeightInfo": map[string]any{"packageWeight": "200.5", "unit": "g"},
 	}
 	if err := Validate("order-mapping-channels", channels); err != nil {
 		t.Fatal(err)
+	}
+	blocked := clone(channels)
+	blocked["warehouseAddressCode"] = "PG1955"
+	if err := Validate("order-mapping-channels", blocked); err == nil {
+		t.Fatal("PG warehouses must not be quoted")
 	}
 	place := map[string]any{
 		"expressChannelCode": "CHANNEL-1", "preRequestId": "PRE-1",

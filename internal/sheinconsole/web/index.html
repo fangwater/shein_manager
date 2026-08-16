@@ -6,7 +6,7 @@
   <meta name="description" content="SHEIN 店铺发货与面单管理">
   <title>SHEIN Fulfillment</title>
   <link rel="stylesheet" href="/temu/dashboard.css?v=20260814-shared">
-  <link rel="stylesheet" href="./assets/platform.css?v=20260814-4">
+  <link rel="stylesheet" href="./assets/platform.css?v=20260816-1">
 </head>
 <body>
   <svg class="svg-sprite" aria-hidden="true">
@@ -41,6 +41,7 @@
         <button class="nav-button" data-view="oms-statuses"><svg><use href="#i-orders"/></svg><span>领星订单状态</span><b id="nav-oms-status-count">0</b></button>
         <button class="nav-button" data-view="ledger"><svg><use href="#i-ledger"/></svg><span>自动发货账本</span><b id="nav-ledger-count">0</b></button>
         <button class="nav-button" data-view="labels"><svg><use href="#i-label"/></svg><span>面单任务</span><b id="nav-label-count">0</b></button>
+        <button class="nav-button" data-view="inventory-thresholds"><svg><use href="#i-warning"/></svg><span>库存安全线</span></button>
         <button class="nav-button" data-view="tools"><svg><use href="#i-tools"/></svg><span>物流工具</span></button>
       </nav>
       <div class="sidebar-foot"><a class="app-switch-link" href="/warehouse-console/"><svg><use href="#i-tools"/></svg><span>仓库运营中台</span></a><div class="sidebar-service"><span class="dot warning" id="service-dot"></span><span id="service-text">检查服务</span></div></div>
@@ -208,6 +209,32 @@
           </div>
         </section>
 
+        <section class="view" id="view-inventory-thresholds">
+          <div class="page-head"><div><h1>库存安全线</h1><p>当前店铺独立维护自动发货转人工阈值，未单独设置的 SKU 使用店铺默认</p></div><button class="secondary-button" id="refresh-inventory-thresholds" type="button"><svg><use href="#i-refresh"/></svg>刷新</button></div>
+          <form class="threshold-defaults" id="shop-threshold-form">
+            <div class="threshold-default-title"><strong>店铺默认</strong><small id="shop-threshold-scope">当前店铺未单独设置 SKU 时使用</small></div>
+            <label><span>美东低于或等于</span><input id="shop-east-threshold" required type="number" min="0" step="1"></label>
+            <label><span>美西低于或等于</span><input id="shop-west-threshold" required type="number" min="0" step="1"></label>
+            <label><span>总库存低于或等于</span><input id="shop-total-threshold" required type="number" min="0" step="1"></label>
+            <div class="threshold-default-actions">
+              <button class="secondary-button" id="reset-shop-thresholds" type="button" hidden><svg><use href="#i-refresh"/></svg>恢复仓库默认</button>
+              <button class="primary-button" type="submit"><svg><use href="#i-check"/></svg>保存店铺默认</button>
+            </div>
+          </form>
+          <div class="toolbar">
+            <label class="search"><svg><use href="#i-search"/></svg><input id="inventory-threshold-search" type="search" placeholder="搜索仓库 SKU 或商品名称"></label>
+            <span class="table-note" id="inventory-threshold-total">共 0 个 SKU</span>
+          </div>
+          <div class="table-shell sku-rule-table">
+            <table>
+              <thead><tr><th>仓库 SKU / 商品</th><th>美东</th><th>美西</th><th>总库存</th><th>规则来源</th><th></th></tr></thead>
+              <tbody id="inventory-threshold-rows"></tbody>
+            </table>
+            <div class="empty" id="inventory-threshold-empty" hidden><svg><use href="#i-warning"/></svg><strong>没有可配置的 SKU</strong><span>仓库 SKU 同步后会显示在这里</span></div>
+          </div>
+          <div class="pager" id="inventory-threshold-pager" hidden></div>
+        </section>
+
         <section class="view" id="view-tools">
           <div class="page-head"><div><h1>物流工具</h1></div></div>
           <div class="tool-grid">
@@ -255,7 +282,7 @@
         <div class="package-spec-items" id="package-spec-items"></div>
       </section>
       <div class="transition-notice" id="fulfillment-transition" hidden>
-        <div><strong>订单尚未进入待发货</strong><span>流转完成后将在当前弹窗继续选择仓库和物流</span></div>
+        <div><strong>该订单仅支持商家自发货</strong><span>平台合作物流单可直接购买面单；只有自发货订单才需要先导出地址流转</span></div>
         <button class="primary-button" id="transition-fulfillment-order" type="button"><svg><use href="#i-truck"/></svg>流转到待发货</button>
       </div>
       <section class="workflow-section" id="warehouse-section">
@@ -288,7 +315,7 @@
   </aside>
   <button class="drawer-backdrop" id="drawer-backdrop" aria-label="关闭结果"></button>
   <div class="toast" id="toast" hidden></div>
-  <script src="./assets/app.js?v=20260814-5" defer></script>
+  <script src="./assets/app.js?v=20260816-1" defer></script>
   <script src="./assets/xlwms.js?v=20260814-2" defer></script>
 </body>
 </html>

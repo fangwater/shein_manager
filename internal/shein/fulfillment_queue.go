@@ -381,17 +381,51 @@ func classifyOrderQueueItem(item *OrderQueueItem, mappings map[string]packageMap
 	item.AutoEligible = len(reasons) == 0
 }
 
-func supportsIntegrated(detail map[string]any) bool {
+func logisticsOptions(detail map[string]any) []int {
 	values, ok := detail["optionalLogisticsList"].([]any)
-	if ok {
-		for _, candidate := range values {
-			if textValue(candidate) == "1" {
-				return true
-			}
+	if !ok {
+		return nil
+	}
+	options := make([]int, 0, len(values))
+	for _, candidate := range values {
+		parsed, err := strconv.Atoi(textValue(candidate))
+		if err != nil {
+			continue
 		}
-		return false
+		options = append(options, parsed)
+	}
+	return options
+}
+
+func hasLogisticsOption(detail map[string]any, option int) bool {
+	for _, candidate := range logisticsOptions(detail) {
+		if candidate == option {
+			return true
+		}
+	}
+	return false
+}
+
+func supportsIntegrated(detail map[string]any) bool {
+	if options := logisticsOptions(detail); len(options) > 0 {
+		return hasLogisticsOption(detail, 1)
 	}
 	return textValue(detail["performanceType"]) == "1"
+}
+
+func supportsSelfShipping(detail map[string]any) bool {
+	return hasLogisticsOption(detail, 2)
+}
+
+func CanPurchasePlatformLabel(detail map[string]any) bool {
+	return supportsIntegrated(detail)
+}
+
+func RequiresAddressTransition(detail map[string]any, orderStatus string) bool {
+	if strings.TrimSpace(orderStatus) != "1" {
+		return false
+	}
+	return !CanPurchasePlatformLabel(detail) && supportsSelfShipping(detail)
 }
 
 func (s *Store) EnqueueAutoJob(ctx context.Context, shopKey, orderNo string) (AutoFulfillmentJob, bool, error) {

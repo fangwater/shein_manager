@@ -186,7 +186,7 @@ func (s *Server) xlwmsWarehousePreview(writer http.ResponseWriter, request *http
 		items = append(items, xlwms.InventoryItem{WarehouseSKU: sku, Quantity: quantity})
 	}
 	sort.Slice(items, func(i, j int) bool { return items[i].WarehouseSKU < items[j].WarehouseSKU })
-	decision, queryErr := s.xlwms.QueryInventory(ctx, items)
+	decision, queryErr := s.xlwms.QueryInventoryForShop(ctx, "shein", shopKey, items)
 	if queryErr != nil {
 		preview.InventoryError = "领星实时库存查询失败"
 		writeJSON(writer, http.StatusOK, response{Success: true, Data: preview})
@@ -239,6 +239,127 @@ func (s *Server) xlwmsWarehousePreview(writer http.ResponseWriter, request *http
 	}
 	preview.Ready = summary.Complete && summary.PackageResolution.Complete && !preview.RequiresManual
 	writeJSON(writer, http.StatusOK, response{Success: true, Data: preview})
+}
+
+func (s *Server) inventoryThresholds(writer http.ResponseWriter, request *http.Request) {
+	if s.xlwms == nil {
+		writeJSON(writer, http.StatusServiceUnavailable, response{Success: false, Error: "领星查询服务未配置"})
+		return
+	}
+	shopKey, err := s.requestedShopKey(request, request.URL.Query().Get("shop_key"))
+	if err != nil {
+		writeJSON(writer, http.StatusBadRequest, response{Success: false, Error: err.Error()})
+		return
+	}
+	page := queryInt(request, "page", 1)
+	pageSize := queryInt(request, "page_size", 30)
+	ctx, cancel := context.WithTimeout(request.Context(), s.requestTimeout)
+	defer cancel()
+	item, err := s.xlwms.ListShopSKUInventoryThresholds(ctx, "shein", shopKey, request.URL.Query().Get("q"), page, pageSize)
+	if err != nil {
+		writeXLWMSError(writer, err)
+		return
+	}
+	writeJSON(writer, http.StatusOK, response{Success: true, Data: item.Records, Meta: map[string]any{
+		"page": item.Page, "page_size": item.PageSize, "total": item.Total, "pages": item.Pages,
+		"default_thresholds": item.DefaultThresholds,
+	}})
+}
+
+func (s *Server) inventoryThresholdDefaults(writer http.ResponseWriter, request *http.Request) {
+	if s.xlwms == nil {
+		writeJSON(writer, http.StatusServiceUnavailable, response{Success: false, Error: "领星查询服务未配置"})
+		return
+	}
+	shopKey, err := s.requestedShopKey(request, request.URL.Query().Get("shop_key"))
+	if err != nil {
+		writeJSON(writer, http.StatusBadRequest, response{Success: false, Error: err.Error()})
+		return
+	}
+	ctx, cancel := context.WithTimeout(request.Context(), s.requestTimeout)
+	defer cancel()
+	if request.Method == http.MethodGet {
+		item, err := s.xlwms.ShopInventoryThresholds(ctx, "shein", shopKey)
+		if err != nil {
+			writeXLWMSError(writer, err)
+			return
+		}
+		writeJSON(writer, http.StatusOK, response{Success: true, Data: item})
+		return
+	}
+	var payload xlwms.InventoryThresholds
+	if !decodeJSON(writer, request, &payload) {
+		return
+	}
+	item, err := s.xlwms.UpdateShopInventoryThresholds(ctx, "shein", shopKey, payload)
+	if err != nil {
+		writeXLWMSError(writer, err)
+		return
+	}
+	writeJSON(writer, http.StatusOK, response{Success: true, Data: item})
+}
+
+func (s *Server) resetInventoryThresholdDefaults(writer http.ResponseWriter, request *http.Request) {
+	if s.xlwms == nil {
+		writeJSON(writer, http.StatusServiceUnavailable, response{Success: false, Error: "领星查询服务未配置"})
+		return
+	}
+	shopKey, err := s.requestedShopKey(request, request.URL.Query().Get("shop_key"))
+	if err != nil {
+		writeJSON(writer, http.StatusBadRequest, response{Success: false, Error: err.Error()})
+		return
+	}
+	ctx, cancel := context.WithTimeout(request.Context(), s.requestTimeout)
+	defer cancel()
+	item, err := s.xlwms.ResetShopInventoryThresholds(ctx, "shein", shopKey)
+	if err != nil {
+		writeXLWMSError(writer, err)
+		return
+	}
+	writeJSON(writer, http.StatusOK, response{Success: true, Data: item})
+}
+
+func (s *Server) updateSKUInventoryThreshold(writer http.ResponseWriter, request *http.Request) {
+	if s.xlwms == nil {
+		writeJSON(writer, http.StatusServiceUnavailable, response{Success: false, Error: "领星查询服务未配置"})
+		return
+	}
+	shopKey, err := s.requestedShopKey(request, request.URL.Query().Get("shop_key"))
+	if err != nil {
+		writeJSON(writer, http.StatusBadRequest, response{Success: false, Error: err.Error()})
+		return
+	}
+	var payload xlwms.InventoryThresholds
+	if !decodeJSON(writer, request, &payload) {
+		return
+	}
+	ctx, cancel := context.WithTimeout(request.Context(), s.requestTimeout)
+	defer cancel()
+	item, err := s.xlwms.UpdateShopSKUInventoryThreshold(ctx, "shein", shopKey, request.PathValue("warehouseSKU"), payload)
+	if err != nil {
+		writeXLWMSError(writer, err)
+		return
+	}
+	writeJSON(writer, http.StatusOK, response{Success: true, Data: item})
+}
+
+func (s *Server) resetSKUInventoryThreshold(writer http.ResponseWriter, request *http.Request) {
+	if s.xlwms == nil {
+		writeJSON(writer, http.StatusServiceUnavailable, response{Success: false, Error: "领星查询服务未配置"})
+		return
+	}
+	shopKey, err := s.requestedShopKey(request, request.URL.Query().Get("shop_key"))
+	if err != nil {
+		writeJSON(writer, http.StatusBadRequest, response{Success: false, Error: err.Error()})
+		return
+	}
+	ctx, cancel := context.WithTimeout(request.Context(), s.requestTimeout)
+	defer cancel()
+	if err := s.xlwms.ResetShopSKUInventoryThreshold(ctx, "shein", shopKey, request.PathValue("warehouseSKU")); err != nil {
+		writeXLWMSError(writer, err)
+		return
+	}
+	writeJSON(writer, http.StatusOK, response{Success: true, Data: map[string]bool{"deleted": true}})
 }
 
 func warehouseQuantities(order shein.OrderQueueItem) (map[string]int, []string) {

@@ -86,9 +86,11 @@ This is the Top 3 detail table. It contains one to three rows for each
    quote tables keyed by `shop_key + preRequestId`. Customer data and raw API
    responses are not stored in this Go snapshot.
 2. SHEIN requires `warehouseAddressCode` before returning channel prices. The
-   automatic worker queries every available warehouse and ranks the comparable
-   channels across those recent quotes. A manual purchase keeps the candidates
-   within the operator-selected quote and warehouse.
+   automatic worker queries every operated DPS/ARP warehouse and ranks the
+   comparable channels across those recent quotes. PG and other
+   platform-listed warehouses are left unavailable and are not quoted. A
+   manual purchase keeps the candidates within the operator-selected quote and
+   warehouse.
 3. Candidates are comparable only when they use the selected channel's
    currency and include `performanceCost`. Ranking is by fee, then
    `expressChannelCode` for deterministic ties.
@@ -130,12 +132,15 @@ ORDER BY choice.purchased_at DESC;
 ## Fulfillment Queues
 
 The Go console classifies live store orders into the same operational queues
-used by the Temu service. An order is eligible for automatic fulfillment only
-when it has exactly one goods line, uses integrated logistics, is not an
-authentication-warehouse order, is in a processable label state, has one exact
-`skuCode` mapping, and that mapping has a complete enabled warehouse package
-specification. Orders that do not meet every condition remain visible in the
-manual queue with a concrete reason.
+used by the Temu service. Platform-logistics orders buy a SHEIN label the same
+way Temu buys a label: query warehouses, quote channels, then place the
+express order. Automatic fulfillment does not call `export-address` first.
+An order is eligible for automatic fulfillment only when it has exactly one
+goods line, uses integrated logistics, is not an authentication-warehouse
+order, is in a processable label state, has one exact `skuCode` mapping, and
+that mapping has a complete enabled warehouse package specification. Orders
+that do not meet every condition remain visible in the manual queue with a
+concrete reason. Merchant self-ship orders stay on the address-export path.
 
 Automatic fulfillment jobs are persisted in
 `shein_go_auto_fulfillment_jobs`. Each job records its current step, attempt,

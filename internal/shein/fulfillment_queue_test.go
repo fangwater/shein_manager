@@ -49,6 +49,29 @@ func TestClassifyOrderQueueItemRoutesMultiItemToManual(t *testing.T) {
 	}
 }
 
+func TestOptionalLogisticsListControlsPlatformLabelPurchase(t *testing.T) {
+	integratedPending := map[string]any{
+		"optionalLogisticsList": []any{float64(1)},
+		"performanceType":       float64(2),
+	}
+	if !CanPurchasePlatformLabel(integratedPending) {
+		t.Fatal("platform-logistics order must buy a label without export-address")
+	}
+	if RequiresAddressTransition(integratedPending, "1") {
+		t.Fatal("pending integrated order must not call handleType=2")
+	}
+	selfShipOnly := map[string]any{"optionalLogisticsList": []any{float64(2)}}
+	if CanPurchasePlatformLabel(selfShipOnly) {
+		t.Fatal("self-ship-only order must not enter platform label purchase")
+	}
+	if !RequiresAddressTransition(selfShipOnly, "1") {
+		t.Fatal("pending self-ship order still needs export-address")
+	}
+	if RequiresAddressTransition(selfShipOnly, "2") {
+		t.Fatal("already pending-shipment orders do not transition again")
+	}
+}
+
 func TestPackageSpecRequiresEveryPositiveValue(t *testing.T) {
 	complete := PackageSpec{LengthCM: "20", WidthCM: "15", HeightCM: "5", WeightKG: "0.3"}
 	if !complete.Complete() {

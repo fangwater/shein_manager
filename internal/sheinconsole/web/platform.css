@@ -1,4 +1,67 @@
 /* SHEIN adapter styles. The shared console shell and common components come from /temu/dashboard.css. */
+.threshold-defaults {
+  display: grid;
+  grid-template-columns: minmax(180px, 1.2fr) repeat(3, minmax(120px, .7fr)) auto;
+  align-items: end;
+  gap: 12px;
+  margin-bottom: 14px;
+  padding: 15px;
+  border: 1px solid #dfe2e4;
+  border-radius: 8px;
+  background: #fff;
+}
+
+.threshold-default-title {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.threshold-default-title strong { font-size: 12px; }
+.threshold-default-title small { color: #858c91; font-size: 10px; }
+
+.threshold-defaults label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  color: #6b7278;
+  font-size: 10px;
+}
+
+.threshold-default-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.threshold-input {
+  width: 100%;
+  height: 33px;
+  text-align: center;
+}
+
+.sku-rule-identity {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  text-align: left;
+}
+
+.sku-rule-identity code { font-size: 12px; }
+.sku-rule-identity span { color: #858c91; font-size: 10px; }
+
+.manual-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+@media (max-width: 960px) {
+  .threshold-defaults { grid-template-columns: 1fr 1fr; }
+  .threshold-default-title, .threshold-default-actions { grid-column: 1 / -1; }
+}
+
 button:disabled {
   cursor: not-allowed;
   opacity: .5;

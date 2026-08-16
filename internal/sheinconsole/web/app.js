@@ -20,7 +20,12 @@ const state = {
   warehouse: null,
   channel: null,
   preRequestId: "",
-  tasks: []
+  tasks: [],
+  inventoryThresholds: [],
+  inventoryThresholdMeta: {},
+  shopInventoryThresholds: {},
+  inventoryThresholdPage: 1,
+  inventoryThresholdSearchTimer: 0
 };
 
 function escapeHTML(value) {
@@ -347,6 +352,16 @@ function supportsIntegratedLogistics(order) {
   return Number(firstValue(order, ["performanceType", "performance_type"])) === 1;
 }
 
+function canPurchasePlatformLabel(order) {
+  return supportsIntegratedLogistics(order);
+}
+
+function requiresAddressTransition(order) {
+  order = orderDetail(order);
+  if (String(orderStatus(order)) !== "1") return false;
+  return !canPurchasePlatformLabel(order) && logisticsOptions(order).includes(2);
+}
+
 function fulfillmentTypeLabel(order) {
   order = orderDetail(order);
   const options = logisticsOptions(order);
@@ -448,6 +463,7 @@ function selectView(name) {
     "oms-statuses": "领星订单状态",
     ledger: "自动发货账本",
     labels: "面单任务",
+    "inventory-thresholds": "库存安全线",
     tools: "物流工具"
   };
   document.querySelectorAll(".nav-button").forEach(function (button) {
@@ -464,6 +480,161 @@ function selectView(name) {
   if (name === "manual") loadManualOrders();
   if (name === "ledger") loadJobQueue("all");
   if (name === "labels") loadTasks();
+  if (name === "inventory-thresholds") loadInventoryThresholds();
+}
+
+function inventoryThresholdSource(item) {
+  if (item.source === "shop_sku" || item.customized) return "店铺 SKU 单独设置";
+  if (item.source === "shop_default") return "店铺默认";
+  return "店铺默认";
+}
+
+function thresholdPayloadFromForm(form) {
+  if (form.id === "shop-threshold-form") {
+    return {
+      east_threshold: Number(byId("shop-east-threshold").value),
+      west_threshold: Number(byId("shop-west-threshold").value),
+      total_threshold: Number(byId("shop-total-threshold").value)
+    };
+  }
+  return {
+    east_threshold: Number(form.querySelector("[data-threshold-field='east_threshold']").value),
+    west_threshold: Number(form.querySelector("[data-threshold-field='west_threshold']").value),
+    total_threshold: Number(form.querySelector("[data-threshold-field='total_threshold']").value)
+  };
+}
+
+function renderInventoryThresholdPager() {
+  const pager = byId("inventory-threshold-pager");
+  const total = Number(state.inventoryThresholdMeta.total || 0);
+  const pages = Math.max(1, Number(state.inventoryThresholdMeta.pages || Math.ceil(total / state.pageSize) || 1));
+  const page = Number(state.inventoryThresholdMeta.page || state.inventoryThresholdPage || 1);
+  pager.hidden = total <= state.pageSize;
+  pager.innerHTML = '<button type="button" data-threshold-page="' + (page - 1) + '" title="上一页" aria-label="上一页" ' +
+    (page <= 1 ? "disabled" : "") + '><svg><use href="#i-chevron"/></svg></button><span>第 ' + page +
+    " / " + pages + " 页</span><button class=\"next\" type=\"button\" data-threshold-page=\"" + (page + 1) +
+    '" title="下一页" aria-label="下一页" ' + (page >= pages ? "disabled" : "") +
+    '><svg><use href="#i-chevron"/></svg></button>';
+}
+
+function renderInventoryThresholds() {
+  const defaults = state.shopInventoryThresholds || {};
+  const selectedShop = state.shops.find(function (shop) { return shop.code === state.shopKey; });
+  const shopName = selectedShop ? display(selectedShop.name, state.shopKey) : state.shopKey;
+  byId("shop-east-threshold").value = defaults.east_threshold ?? "";
+  byId("shop-west-threshold").value = defaults.west_threshold ?? "";
+  byId("shop-total-threshold").value = defaults.total_threshold ?? "";
+  byId("shop-threshold-scope").textContent = shopName + " 未单独设置 SKU 时使用";
+  byId("reset-shop-thresholds").hidden = !defaults.customized;
+  byId("inventory-threshold-rows").innerHTML = state.inventoryThresholds.map(function (item) {
+    return '<tr data-threshold-sku="' + escapeHTML(item.warehouse_sku) + '">' +
+      '<td><div class="sku-rule-identity"><code>' + escapeHTML(item.warehouse_sku) + '</code><span>' +
+      escapeHTML(item.product_name || "未记录商品名称") + "</span></div></td>" +
+      '<td><input class="threshold-input" data-threshold-field="east_threshold" type="number" min="0" step="1" value="' +
+      escapeHTML(item.east_threshold) + '"></td>' +
+      '<td><input class="threshold-input" data-threshold-field="west_threshold" type="number" min="0" step="1" value="' +
+      escapeHTML(item.west_threshold) + '"></td>' +
+      '<td><input class="threshold-input" data-threshold-field="total_threshold" type="number" min="0" step="1" value="' +
+      escapeHTML(item.total_threshold) + '"></td>' +
+      '<td><span class="status-badge ' + (item.customized ? "pending" : "neutral") + '">' +
+      escapeHTML(inventoryThresholdSource(item)) + "</span></td>" +
+      '<td><div class="manual-actions"><button class="secondary-button" data-save-threshold="' +
+      escapeHTML(item.warehouse_sku) + '"><svg><use href="#i-check"/></svg>保存</button>' +
+      (item.customized ? '<button class="secondary-button" data-reset-threshold="' +
+        escapeHTML(item.warehouse_sku) + '">恢复</button>' : "") +
+      "</div></td></tr>";
+  }).join("");
+  const table = byId("inventory-threshold-rows").closest(".table-shell");
+  table.classList.toggle("is-empty", state.inventoryThresholds.length === 0);
+  byId("inventory-threshold-empty").hidden = state.inventoryThresholds.length > 0;
+  byId("inventory-threshold-total").textContent = "共 " + Number(state.inventoryThresholdMeta.total || 0) + " 个 SKU";
+  renderInventoryThresholdPager();
+}
+
+async function loadInventoryThresholds(button) {
+  const query = byId("inventory-threshold-search").value.trim();
+  const params = new URLSearchParams({ page: String(state.inventoryThresholdPage), page_size: String(state.pageSize) });
+  if (query) params.set("q", query);
+  await busy(button || null, async function () {
+    try {
+      const payload = await request("inventory-thresholds?" + params.toString());
+      state.inventoryThresholds = Array.isArray(payload.data) ? payload.data : [];
+      state.inventoryThresholdMeta = payload.meta || {};
+      state.shopInventoryThresholds = payload.meta && payload.meta.default_thresholds
+        ? payload.meta.default_thresholds
+        : state.shopInventoryThresholds;
+      const pages = Number(state.inventoryThresholdMeta.pages || 1);
+      if (state.inventoryThresholdPage > pages && pages >= 1) {
+        state.inventoryThresholdPage = pages;
+        await loadInventoryThresholds();
+        return;
+      }
+      renderInventoryThresholds();
+    } catch (error) {
+      toast(error.message, true);
+    }
+  });
+}
+
+async function saveShopInventoryThresholds(event) {
+  event.preventDefault();
+  await busy(event.submitter, async function () {
+    try {
+      const payload = await request("inventory-thresholds/defaults", {
+        method: "PATCH",
+        body: JSON.stringify(thresholdPayloadFromForm(event.currentTarget))
+      });
+      state.shopInventoryThresholds = payload.data || {};
+      toast("当前店铺默认安全线已保存");
+      renderInventoryThresholds();
+    } catch (error) {
+      toast(error.message, true);
+    }
+  });
+}
+
+async function resetShopInventoryThresholds(button) {
+  await busy(button, async function () {
+    try {
+      const payload = await request("inventory-thresholds/defaults/reset", { method: "POST" });
+      state.shopInventoryThresholds = payload.data || {};
+      toast("当前店铺已恢复仓库默认安全线");
+      await loadInventoryThresholds();
+    } catch (error) {
+      toast(error.message, true);
+    }
+  });
+}
+
+async function saveSKUInventoryThreshold(warehouseSKU, button) {
+  const row = document.querySelector('[data-threshold-sku="' + CSS.escape(warehouseSKU) + '"]');
+  if (!row) return;
+  await busy(button, async function () {
+    try {
+      const payload = await request("inventory-thresholds/" + encodeURIComponent(warehouseSKU), {
+        method: "PATCH",
+        body: JSON.stringify(thresholdPayloadFromForm(row))
+      });
+      const index = state.inventoryThresholds.findIndex(function (item) { return item.warehouse_sku === warehouseSKU; });
+      if (index >= 0) state.inventoryThresholds[index] = Object.assign({}, state.inventoryThresholds[index], payload.data || {});
+      toast(warehouseSKU + " 安全线已保存");
+      renderInventoryThresholds();
+    } catch (error) {
+      toast(error.message, true);
+    }
+  });
+}
+
+async function resetSKUInventoryThreshold(warehouseSKU, button) {
+  await busy(button, async function () {
+    try {
+      await request("inventory-thresholds/" + encodeURIComponent(warehouseSKU) + "/reset", { method: "POST" });
+      toast(warehouseSKU + " 已恢复店铺默认安全线");
+      await loadInventoryThresholds();
+    } catch (error) {
+      toast(error.message, true);
+    }
+  });
 }
 
 async function loadTasks(button) {
@@ -583,25 +754,33 @@ function orderAction(order, number) {
   const status = String(orderStatus(order));
   const automatic = '<button class="table-action primary" data-auto-order="' + escapeHTML(number) + '">自动发货</button>';
   const oms = '<button class="table-action" data-oms-order="' + escapeHTML(number) + '">查领星</button>';
-  if (status === "1") {
-    const reason = unprocessableReason(order);
-    return '<div class="action-row">' + automatic + '<button class="table-action" data-fulfill-order="' + escapeHTML(number) + '"' +
-      (reason ? ' disabled title="' + escapeHTML(reason) + '"' : "") + ">" +
-      (reason ? "暂不可处理" : "人工发货") + "</button>" + oms + "</div>";
-  }
-  if (status === "2") {
-    const integrated = supportsIntegratedLogistics(order);
-    return '<div class="action-row">' + automatic + '<button class="table-action" data-fulfill-order="' + escapeHTML(number) + '"' +
-      (integrated ? "" : ' disabled title="订单仅支持商家自发货"') + ">" +
-      (integrated ? "人工发货" : "仅自发货") + "</button>" + oms + "</div>";
+  const reason = unprocessableReason(order);
+  const platformLabel = canPurchasePlatformLabel(order);
+  if (status === "1" || status === "2") {
+    let action;
+    if (status === "1" && reason) {
+      action = '<button class="table-action" data-fulfill-order="' + escapeHTML(number) + '" disabled title="' +
+        escapeHTML(reason) + '">暂不可处理</button>';
+    } else if (platformLabel) {
+      action = '<button class="table-action" data-fulfill-order="' + escapeHTML(number) + '">人工发货</button>';
+    } else if (requiresAddressTransition(order)) {
+      action = '<button class="table-action" data-fulfill-order="' + escapeHTML(number) + '">流转自发货</button>';
+    } else {
+      action = '<button class="table-action" data-fulfill-order="' + escapeHTML(number) +
+        '" disabled title="订单仅支持商家自发货">仅自发货</button>';
+    }
+    return '<div class="action-row">' + automatic + action + oms + "</div>";
   }
   return oms;
 }
 
 function workflowStatusText(order) {
   const status = String(orderStatus(order));
-  if (status === "1") return unprocessableReason(order) ? "平台暂不可处理" : "待流转";
-  if (status === "2") return supportsIntegratedLogistics(order) ? "待选择物流" : "待商家自发货";
+  if (status === "1") {
+    if (unprocessableReason(order)) return "平台暂不可处理";
+    return canPurchasePlatformLabel(order) ? "待购买面单" : "待流转";
+  }
+  if (status === "2") return canPurchasePlatformLabel(order) ? "待购买面单" : "待商家自发货";
   return statusLabel(status);
 }
 
@@ -910,16 +1089,20 @@ function renderManualOrders() {
     }).join("");
     const status = String(order.order_status);
     const blocked = unprocessableReason(order);
+    const platformLabel = canPurchasePlatformLabel(order);
     let action;
-    if (status === "1") {
-      action = '<button class="table-action primary" data-manual-fulfill="' + escapeHTML(order.order_no) + '"' +
-        (blocked ? ' disabled title="' + escapeHTML(blocked) + '"' : "") + ">" +
-        (blocked ? "暂不可处理" : "人工发货") + "</button>";
+    if (status === "1" && blocked) {
+      action = '<button class="table-action primary" data-manual-fulfill="' + escapeHTML(order.order_no) +
+        '" disabled title="' + escapeHTML(blocked) + '">暂不可处理</button>';
+    } else if (platformLabel && (status === "1" || status === "2")) {
+      action = '<button class="table-action primary" data-manual-fulfill="' + escapeHTML(order.order_no) +
+        '">人工发货</button>';
+    } else if (requiresAddressTransition(order)) {
+      action = '<button class="table-action primary" data-manual-fulfill="' + escapeHTML(order.order_no) +
+        '">流转自发货</button>';
     } else {
-      const integrated = supportsIntegratedLogistics(order);
-      action = '<button class="table-action primary" data-manual-fulfill="' + escapeHTML(order.order_no) + '"' +
-        (integrated ? "" : ' disabled title="订单仅支持商家自发货"') + ">" +
-        (integrated ? "人工发货" : "仅自发货") + "</button>";
+      action = '<button class="table-action primary" data-manual-fulfill="' + escapeHTML(order.order_no) +
+        '" disabled title="订单仅支持商家自发货">仅自发货</button>';
     }
     action = '<div class="action-row">' + action + '<button class="table-action" data-oms-order="' + escapeHTML(order.order_no) + '">查领星</button></div>';
     return '<tr><td><button class="order-link" data-manual-detail="' + escapeHTML(order.order_no) + '">' +
@@ -946,11 +1129,19 @@ function renderManualOrders() {
 
 async function transitionFulfillmentOrder(button) {
   const orderNo = state.orderNo;
-  if (!window.confirm("确认将订单 " + orderNo + " 流转到待发货？完成后将在当前弹窗继续选择仓库和物流。")) return;
+  if (!window.confirm("确认将订单 " + orderNo + " 流转到待发货？该操作只用于商家自发货，不会购买平台面单。")) return;
   await busy(button, async function () {
     try {
       const detailPayload = await post("order/detail", { orderNoList: [orderNo] });
       const detail = detailFrom(detailPayload) || {};
+      if (canPurchasePlatformLabel(detail)) {
+        toast("该订单支持平台面单，无需先流转");
+        await loadFulfillmentContext();
+        return;
+      }
+      if (!requiresAddressTransition(detail)) {
+        throw new Error("当前订单不能通过导出地址流转");
+      }
       const status = String(orderStatus(detail));
       if (status === "2") {
         toast("订单已经处于待发货状态");
@@ -1023,6 +1214,22 @@ function renderOrderSummary(detail) {
   }).join("");
 }
 
+function warehouseIdentity(warehouse) {
+  warehouse = warehouse || {};
+  return [warehouse.warehouseAddressCode, warehouse.warehouseCode, warehouse.warehouseName,
+    warehouse.warehouseAddressName, warehouse.warehouseDesc].filter(Boolean).join(" ").toUpperCase();
+}
+
+function isPGWarehouse(warehouse) {
+  const identity = warehouseIdentity(warehouse);
+  return /(?:^|[^A-Z0-9])PG\d+/.test(identity) || identity.includes("PG仓") || identity.includes("PG 仓");
+}
+
+function isAllowedShippingWarehouse(warehouse) {
+  const identity = warehouseIdentity(warehouse);
+  return /DPS|ARP/.test(identity) && !isPGWarehouse(warehouse);
+}
+
 function warehouseList(payload) {
   const info = infoOf(payload);
   const result = listFromInfo(info, ["availableWarehouses", "warehouseList", "warehouses", "list"]);
@@ -1037,8 +1244,11 @@ function renderWarehouses(warehouses) {
   renderChannels([]);
   byId("warehouse-choices").innerHTML = warehouses.map(function (warehouse, index) {
     const code = warehouse.warehouseAddressCode || warehouse.warehouseCode || "";
-    const available = warehouse.availableStatus == null || Number(warehouse.availableStatus) === 1;
-    const reason = warehouse.unavailableReason || warehouse.reason || (available ? "当前订单可用" : "当前不可用");
+    const platformAvailable = warehouse.availableStatus == null || Number(warehouse.availableStatus) === 1;
+    const allowed = isAllowedShippingWarehouse(warehouse);
+    const available = platformAvailable && allowed;
+    const reason = warehouse.unavailableReason || warehouse.reason ||
+      (available ? "当前订单可用" : allowed ? "当前不可用" : (isPGWarehouse(warehouse) ? "PG仓不在实际发货范围内，不能选择" : "非实际发货仓，不能用于平台面单"));
     return '<label class="choice ' + (available ? "" : "disabled") + '"><input type="radio" name="warehouse" value="' +
       escapeHTML(code) + '" data-warehouse-index="' + index + '" ' + (available ? "" : "disabled") +
       '><span><strong>' + escapeHTML(warehouse.warehouseName || code) + '</strong><small>' +
@@ -1062,14 +1272,14 @@ async function loadFulfillmentContext() {
     state.detail = detailFrom(detailPayload);
     renderOrderSummary(state.detail || {});
     const status = String(orderStatus(state.detail || {}));
-    if (status === "1") {
+    if (requiresAddressTransition(state.detail || {})) {
       setFulfillmentTransitionRequired(true);
       renderChannels([]);
       updatePurchaseSummary();
       return status;
     }
-    if (status !== "2") {
-      throw new Error("订单当前不在可人工履约状态，请刷新订单后重试");
+    if (!canPurchasePlatformLabel(state.detail || {}) || (status !== "1" && status !== "2")) {
+      throw new Error("订单当前不支持平台面单购买，请刷新订单后重试");
     }
     const warehousePayload = await post("shipping/warehouses", { orderNo: state.orderNo });
     renderWarehouses(warehouseList(warehousePayload));
@@ -1323,6 +1533,30 @@ byId("refresh-exceptions").addEventListener("click", function (event) { loadJobQ
 byId("refresh-manual").addEventListener("click", function (event) { loadManualOrders(event.currentTarget); });
 byId("refresh-ledger").addEventListener("click", function (event) { loadJobQueue("all", event.currentTarget); });
 byId("refresh-tasks").addEventListener("click", function (event) { loadTasks(event.currentTarget); });
+byId("refresh-inventory-thresholds").addEventListener("click", function (event) {
+  loadInventoryThresholds(event.currentTarget);
+});
+byId("inventory-threshold-search").addEventListener("input", function () {
+  state.inventoryThresholdPage = 1;
+  window.clearTimeout(state.inventoryThresholdSearchTimer);
+  state.inventoryThresholdSearchTimer = window.setTimeout(function () { loadInventoryThresholds(); }, 250);
+});
+byId("shop-threshold-form").addEventListener("submit", saveShopInventoryThresholds);
+byId("reset-shop-thresholds").addEventListener("click", function (event) {
+  resetShopInventoryThresholds(event.currentTarget);
+});
+byId("inventory-threshold-rows").addEventListener("click", function (event) {
+  const saveButton = event.target.closest("[data-save-threshold]");
+  const resetButton = event.target.closest("[data-reset-threshold]");
+  if (saveButton) saveSKUInventoryThreshold(saveButton.dataset.saveThreshold, saveButton);
+  if (resetButton) resetSKUInventoryThreshold(resetButton.dataset.resetThreshold, resetButton);
+});
+byId("inventory-threshold-pager").addEventListener("click", function (event) {
+  const button = event.target.closest("[data-threshold-page]");
+  if (!button || button.disabled) return;
+  state.inventoryThresholdPage = Number(button.dataset.thresholdPage);
+  loadInventoryThresholds();
+});
 byId("order-search").addEventListener("input", function () {
   state.orderPage = 1;
   filterOrders();

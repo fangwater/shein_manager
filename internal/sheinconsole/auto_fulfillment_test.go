@@ -59,6 +59,32 @@ func TestLowestQuotedChannelComparesWarehouses(t *testing.T) {
 	}
 }
 
+func TestPlatformLabelPurchaseSkipsAddressTransition(t *testing.T) {
+	pendingIntegrated := map[string]any{
+		"optionalLogisticsList": []any{float64(1)},
+		"performanceType":       float64(2),
+		"orderStatus":           float64(1),
+	}
+	if !shein.CanPurchasePlatformLabel(pendingIntegrated) {
+		t.Fatal("pending integrated order should purchase a platform label")
+	}
+	if shein.RequiresAddressTransition(pendingIntegrated, "1") {
+		t.Fatal("automatic fulfillment must not export-address a platform-logistics order")
+	}
+}
+
+func TestAvailableWarehousesKeepsOnlyOperatedWarehouses(t *testing.T) {
+	warehouses := availableWarehouses(map[string]any{"info": map[string]any{"availableWarehouses": []any{
+		map[string]any{"warehouseAddressCode": "PG1955", "warehouseName": "PG仓", "availableStatus": "1"},
+		map[string]any{"warehouseAddressCode": "DPSNY002", "warehouseName": "DPS达派思-纽约", "availableStatus": "1"},
+		map[string]any{"warehouseAddressCode": "OTHER", "warehouseName": "第三方仓", "availableStatus": "1"},
+		map[string]any{"warehouseAddressCode": "ARPCA01", "warehouseName": "ARP8号仓-美西LA", "availableStatus": "0"},
+	}}})
+	if len(warehouses) != 1 || scalarString(warehouses[0], "warehouseAddressCode") != "DPSNY002" {
+		t.Fatalf("automatic quoting must ignore PG and unavailable warehouses: %#v", warehouses)
+	}
+}
+
 func TestLowestQuotedChannelRejectsMixedCurrencies(t *testing.T) {
 	_, err := lowestQuotedChannel([]quotedChannel{
 		{Candidate: shein.ShippingQuoteCandidate{PerformanceCost: "1", CurrencyCode: "USD"}},

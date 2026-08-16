@@ -513,43 +513,11 @@ func (s *Server) executeAutoFulfillment(ctx context.Context, ref autoQueueRef) e
 	if !order.AutoEligible || order.PackageSpec == nil {
 		return errors.New("订单已转入人工处理队列")
 	}
-	if order.OrderStatus == "1" {
-		if err := s.setAutomaticStep(ctx, ref, "transition_order"); err != nil {
-			return err
-		}
-		data := map[string]any{"orderNo": ref.OrderNo, "handleType": 2}
-		key := "shein-auto-transition-" + hashRequest(data)[:24] + "-" + strconv.Itoa(job.Attempts)
-		if _, err := s.callAutomaticOperation(ctx, client, ref.ShopKey, "export-address", data, key); err != nil {
-			return err
-		}
-		for attempt := 0; attempt < 3; attempt++ {
-			if attempt > 0 {
-				select {
-				case <-ctx.Done():
-					return ctx.Err()
-				case <-time.After(2 * time.Second):
-				}
-			}
-			if err := s.refreshSingleOrder(ctx, client, ref.ShopKey, ref.OrderNo); err != nil {
-				return err
-			}
-			current, err := s.store.ListOrderQueue(ctx, ref.ShopKey, "all")
-			if err != nil {
-				return err
-			}
-			for index := range current {
-				if current[index].OrderNo == ref.OrderNo {
-					order = &current[index]
-					break
-				}
-			}
-			if order != nil && order.OrderStatus == "2" {
-				break
-			}
-		}
+	if !shein.CanPurchasePlatformLabel(order.Detail) {
+		return errors.New("订单不支持 SHEIN 平台面单购买")
 	}
-	if order == nil || order.OrderStatus != "2" {
-		return errors.New("订单尚未流转到待发货状态")
+	if shein.RequiresAddressTransition(order.Detail, order.OrderStatus) {
+		return errors.New("商家自发货订单不能走平台面单购买")
 	}
 
 	if err := s.setAutomaticStep(ctx, ref, "query_warehouses"); err != nil {
@@ -791,7 +759,9 @@ func availableWarehouses(result map[string]any) []map[string]any {
 	filtered := warehouses[:0]
 	for _, warehouse := range warehouses {
 		status := scalarString(warehouse, "availableStatus")
-		if status == "" || status == "1" {
+		code := scalarString(warehouse, "warehouseAddressCode", "warehouseCode")
+		name := scalarString(warehouse, "warehouseName", "warehouseAddressName", "warehouseDesc")
+		if (status == "" || status == "1") && shein.IsAllowedShippingWarehouse(code, name) {
 			filtered = append(filtered, warehouse)
 		}
 	}

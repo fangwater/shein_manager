@@ -17,6 +17,7 @@ func TestConsoleUsesSharedTemuShell(t *testing.T) {
 	for _, required := range []string{
 		`href="/temu/dashboard.css`,
 		`id="view-oms-statuses"`,
+		`id="view-inventory-thresholds"`,
 		`id="warehouse-check"`,
 		`src="./assets/xlwms.js`,
 	} {
@@ -47,6 +48,66 @@ func TestXLWMSConsoleAssetsAreEmbedded(t *testing.T) {
 		}
 		if !strings.HasPrefix(recorder.Header().Get("Content-Type"), asset.contentType) {
 			t.Fatalf("asset %s Content-Type = %q", asset.name, recorder.Header().Get("Content-Type"))
+		}
+	}
+}
+
+func TestFulfillmentConsoleBuysPlatformLabelsWithoutTransition(t *testing.T) {
+	script, err := webFiles.ReadFile("web/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := string(script)
+	for _, required := range []string{
+		"function canPurchasePlatformLabel",
+		"function requiresAddressTransition",
+		"待购买面单",
+		"shipping/warehouses",
+	} {
+		if !strings.Contains(source, required) {
+			t.Fatalf("fulfillment console does not contain %q", required)
+		}
+	}
+	if !strings.Contains(source, "if (requiresAddressTransition(state.detail || {}))") {
+		t.Fatal("fulfillment dialog still treats every pending order as an address transition")
+	}
+	if strings.Contains(source, "if (status === \"1\") {\n      setFulfillmentTransitionRequired(true)") {
+		t.Fatal("pending orders still force export-address before warehouse selection")
+	}
+}
+
+func TestFulfillmentConsoleKeepsPGWarehousesUnselectable(t *testing.T) {
+	script, err := webFiles.ReadFile("web/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := string(script)
+	for _, required := range []string{
+		"function isAllowedShippingWarehouse",
+		"function isPGWarehouse",
+		"PG仓不在实际发货范围内，不能选择",
+		"非实际发货仓，不能用于平台面单",
+	} {
+		if !strings.Contains(source, required) {
+			t.Fatalf("fulfillment console does not contain %q", required)
+		}
+	}
+}
+
+func TestInventoryThresholdConsoleIsShopScoped(t *testing.T) {
+	script, err := webFiles.ReadFile("web/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := string(script)
+	for _, required := range []string{
+		"function loadInventoryThresholds",
+		"inventory-thresholds/defaults/reset",
+		"当前店铺默认安全线已保存",
+		"当前店铺已恢复仓库默认安全线",
+	} {
+		if !strings.Contains(source, required) {
+			t.Fatalf("inventory threshold console does not contain %q", required)
 		}
 	}
 }

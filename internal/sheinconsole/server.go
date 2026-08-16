@@ -41,6 +41,7 @@ type response struct {
 	Code    string `json:"code,omitempty"`
 	TraceID string `json:"trace_id,omitempty"`
 	Cached  bool   `json:"cached,omitempty"`
+	Meta    any    `json:"meta,omitempty"`
 }
 
 type proxyRequest struct {
@@ -71,6 +72,12 @@ func (server *Server) routes() http.Handler {
 	mux.Handle("GET /api/fulfillment/orders", http.HandlerFunc(server.fulfillmentOrders))
 	mux.Handle("POST /api/fulfillment/orders/sync", http.HandlerFunc(server.syncFulfillmentOrders))
 	mux.Handle("POST /api/orders/{orderNo}/warehouse-preview", http.HandlerFunc(server.xlwmsWarehousePreview))
+	mux.Handle("GET /api/inventory-thresholds", http.HandlerFunc(server.inventoryThresholds))
+	mux.Handle("GET /api/inventory-thresholds/defaults", http.HandlerFunc(server.inventoryThresholdDefaults))
+	mux.Handle("PATCH /api/inventory-thresholds/defaults", http.HandlerFunc(server.inventoryThresholdDefaults))
+	mux.Handle("POST /api/inventory-thresholds/defaults/reset", http.HandlerFunc(server.resetInventoryThresholdDefaults))
+	mux.Handle("PATCH /api/inventory-thresholds/{warehouseSKU}", http.HandlerFunc(server.updateSKUInventoryThreshold))
+	mux.Handle("POST /api/inventory-thresholds/{warehouseSKU}/reset", http.HandlerFunc(server.resetSKUInventoryThreshold))
 	mux.Handle("GET /api/auto-fulfillment/jobs", http.HandlerFunc(server.autoFulfillmentJobs))
 	mux.Handle("POST /api/auto-fulfillment/run", http.HandlerFunc(server.runAutoFulfillment))
 	mux.Handle("GET /api/auto-fulfillment/batches/latest", http.HandlerFunc(server.latestAutoFulfillmentBatch))
@@ -384,6 +391,14 @@ func integerValue(value any) (int, bool) {
 	default:
 		return 0, false
 	}
+}
+
+func queryInt(request *http.Request, name string, fallback int) int {
+	value, err := strconv.Atoi(request.URL.Query().Get(name))
+	if err != nil || value < 1 {
+		return fallback
+	}
+	return value
 }
 
 func writeJSON(writer http.ResponseWriter, status int, payload response) {

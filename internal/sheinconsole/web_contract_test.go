@@ -98,6 +98,7 @@ func TestProcessingStatusCardsAreSelectable(t *testing.T) {
 		`if (filter === "parcel") return canComplementaryUploadLabel(task) || canStartManualParcel(task);`,
 		"function canStartManualParcel",
 		"function parcelNeedsComplementaryUpload",
+		"Number(task.outbound_status) === 7",
 		`if (filter === "label_ready") return status === "label_ready" && !task.parcel_complete;`,
 		"function sheinOrderAlreadyCollected",
 		"function canComplementaryUploadLabel",

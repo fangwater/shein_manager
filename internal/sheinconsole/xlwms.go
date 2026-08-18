@@ -1142,7 +1142,9 @@ func finalizeParcelDraft(draft *xlwmsParcelDraft) {
 
 func parcelDraftFromTask(shopKey, shopName string, task shein.FulfillmentTask) xlwmsParcelDraft {
 	warehouse := shein.ResolvedDPSWarehouseCode(task.WarehouseAddressCode, "")
-	required := shein.RequiresManualParcelCreate(shopKey, task.WarehouseAddressCode, "") && shein.LabelPrintable(task)
+	required := shein.RequiresManualParcelCreate(shopKey, task.WarehouseAddressCode, "") && shein.LabelPrintable(task) &&
+		(!task.ParcelComplete || (task.OutboundStatus != nil && *task.OutboundStatus == 7) ||
+			(strings.TrimSpace(task.OutboundOrderNo) != "" && !task.LabelAttached))
 	draft := xlwmsParcelDraft{
 		Required:       required,
 		Warehouse:      warehouse,

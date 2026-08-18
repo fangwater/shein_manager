@@ -712,7 +712,10 @@ function taskKey(task) {
 }
 
 function parcelNeedsComplementaryUpload(task) {
-  return Boolean(task) && task.label_printable !== false && (!task.parcel_complete || Number(task.outbound_status) === 2 || Number(task.outbound_status) === 7);
+  if (!task || task.label_printable === false) return false;
+  if (!task.parcel_complete) return true;
+  if (Number(task.outbound_status) === 7) return true;
+  return Boolean(task.outbound_order_no) && !task.label_attached;
 }
 
 function sheinOrderAlreadyCollected(task) {
@@ -731,7 +734,10 @@ function canStartManualParcel(task) {
 }
 
 function canComplementaryUploadLabel(task) {
-  return canCreateManualParcel(task) && (Number(task && task.outbound_status) === 2 || Number(task && task.outbound_status) === 7);
+  return canCreateManualParcel(task) && (
+    Number(task && task.outbound_status) === 7 ||
+    (Boolean(task && task.outbound_order_no) && !task.label_attached)
+  );
 }
 
 function taskMatchesFilter(task, filter) {
@@ -742,7 +748,7 @@ function taskMatchesFilter(task, filter) {
   if (filter === "label_ready") return status === "label_ready" && !task.parcel_complete;
   if (filter === "parcel") return canComplementaryUploadLabel(task) || canStartManualParcel(task);
   if (filter === "failed") return status === "failed";
-  if (task && task.parcel_complete && Number(task.outbound_status) !== 2 && Number(task.outbound_status) !== 7) return false;
+  if (task && task.parcel_complete && Number(task.outbound_status) !== 7) return false;
   return status !== "failed";
 }
 
@@ -840,7 +846,7 @@ function renderTasks() {
       placed: ["没有下单已提交的订单", "购单成功后会显示在这里"],
       checking: ["没有处理中 / 可打印的订单", "后台确认物流后会显示在这里"],
       label_ready: ["没有面单已就绪的订单", "SHEIN 面单已生成、但还没在领星建好出库单的订单会显示在这里"],
-      parcel: ["没有待补传的 DPS 订单", "面单已就绪但还没在领星建好出库单的 DPS 订单会出现在这里"],
+      parcel: ["没有待补传的 DPS 订单", "还没建领星出库单，或出库单还缺面单 / 面单异常的 DPS 订单会出现在这里"],
       processing: ["没有正在处理的面单", "订单提交购单后会进入这里；领星已建单并带上面单后会离开处理中"]
     }[state.taskFilter || "processing"] || ["没有正在处理的面单", "订单提交购单后会进入这里，不再显示在待发货队列"];
     empty.querySelector("strong").textContent = query ? "没有匹配的处理中订单" : emptyCopy[0];

@@ -252,6 +252,23 @@ func TestParcelDraftFromTaskRequiresBeautyHangersDPSOnly(t *testing.T) {
 	if delivered.Required || delivered.Ready {
 		t.Fatalf("delivered SHEIN orders must leave complementary upload: %#v", delivered)
 	}
+	processing := 2
+	warehouseProcessing := parcelDraftFromTask("beauty-hangers-home", "Beauty Hangers home", shein.FulfillmentTask{
+		OrderNo: "GSU1RY59300M3TG", WarehouseAddressCode: "WH2604283535967233",
+		OutboundOrderNo: "OBS5272608180XC", OutboundStatus: &processing, LabelAttached: true, ParcelComplete: true,
+		OrderStatus: "7", OrderStatusNormalized: "pending_pickup",
+	})
+	if warehouseProcessing.Required || warehouseProcessing.Ready {
+		t.Fatalf("labeled warehouse-processing parcels must leave complementary upload: %#v", warehouseProcessing)
+	}
+	labelException := 7
+	exceptionDraft := parcelDraftFromTask("beauty-hangers-home", "Beauty Hangers home", shein.FulfillmentTask{
+		OrderNo: "GSU-EXCEPTION", WarehouseAddressCode: "WH2604283535967233",
+		OutboundOrderNo: "OBS-7", OutboundStatus: &labelException, LabelAttached: true, ParcelComplete: false,
+	})
+	if !exceptionDraft.Required {
+		t.Fatalf("label-exception parcels must stay complementary: %#v", exceptionDraft)
+	}
 }
 
 func TestFinalizeParcelDraftMarksMissingFields(t *testing.T) {

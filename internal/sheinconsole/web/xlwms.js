@@ -6,7 +6,11 @@ const sheinXLWMS = {
   accountRetryTimer: null,
   lastOrderNo: "",
   warehouseController: null,
-  warehouseOrderNo: ""
+  warehouseOrderNo: "",
+  platformOrders: [],
+  platformCounts: {},
+  platformStatus: "all",
+  lastQueriedAt: ""
 };
 
 function setXLWMSPill(tone, text) {
@@ -86,6 +90,56 @@ function xlwmsLookupRows(result) {
   return rows;
 }
 
+function omsArchiveLabel(item) {
+  if (item.oms_sync_status === "verified") return "已确认";
+  if (item.oms_sync_status === "manual_required") return "需人工处理";
+  if (item.oms_sync_status === "failed") return "等待重试";
+  if (item.outbound_order_no) return "待领星推进";
+  return "等待建单";
+}
+
+function renderOMSPlatformOrders() {
+  const items = Array.isArray(sheinXLWMS.platformOrders) ? sheinXLWMS.platformOrders : [];
+  const counts = sheinXLWMS.platformCounts || {};
+  const total = (counts["0"] || 0) + (counts["1"] || 0) + (counts["2"] || 0) + (counts["3"] || 0) + (counts.missing || 0) + (counts.manual_required || 0);
+  byId("metric-oms-status-all").textContent = String(total);
+  ["0", "2", "3"].forEach(function (status) {
+    const node = byId("metric-oms-status-" + status);
+    if (node) node.textContent = String(counts[status] || 0);
+  });
+  byId("metric-oms-status-missing").textContent = String(counts.missing || 0);
+  byId("nav-oms-status-count").textContent = String(total);
+  document.querySelectorAll("[data-oms-status]").forEach(function (button) {
+    const active = button.dataset.omsStatus === sheinXLWMS.platformStatus;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-selected", String(active));
+  });
+  const body = byId("oms-status-rows");
+  const table = body.closest(".table-shell");
+  table.classList.toggle("is-empty", items.length === 0);
+  body.innerHTML = items.map(function (item) {
+    const status = xlwmsStatusMeta(item.oms_status_code, item.oms_status_text || item.outbound_status_name);
+    const archiveTone = item.oms_sync_status === "verified" ? "" : item.oms_sync_status === "manual_required" ? "failed" : "pending";
+    return '<tr data-oms-order="' + escapeHTML(item.order_no) + '"><td><div class="order-id"><strong>' + escapeHTML(item.order_no) +
+      '</strong><small>' + escapeHTML(display(item.waybill_no || item.delivery_no, "暂无跟踪号")) +
+      '</small></div></td><td><div class="order-id"><strong>' + escapeHTML(display(item.oms_order_no || item.outbound_order_no)) +
+      '</strong><small>' + escapeHTML(display(item.outbound_status_name, "尚未建单")) +
+      '</small></div></td><td><span class="status-badge neutral">' + escapeHTML(display(item.oms_account, "-").toUpperCase()) +
+      '</span></td><td><span class="status-badge ' + status.tone + '">' + escapeHTML(status.label) +
+      '</span></td><td>' + escapeHTML(display(item.oms_warehouse_code, "等待分仓")) +
+      '</td><td>' + escapeHTML(display(item.waybill_no || item.delivery_no)) +
+      '</td><td><span class="status-badge ' + archiveTone + '">' + escapeHTML(omsArchiveLabel(item)) +
+      '</span></td><td>' + escapeHTML(formatTaskTime(item.oms_queried_at || item.updated_at)) + "</td></tr>";
+  }).join("");
+  byId("metric-oms-order").textContent = sheinXLWMS.platformStatus === "all" ? "已建单列表" : "状态 " + sheinXLWMS.platformStatus;
+  byId("metric-oms-matches").textContent = String(items.length);
+  byId("metric-oms-accounts").textContent = String(sheinXLWMS.accounts.length || 0);
+  byId("metric-oms-time").textContent = sheinXLWMS.lastQueriedAt ? formatTaskTime(sheinXLWMS.lastQueriedAt) : "-";
+  const empty = byId("oms-status-empty");
+  empty.querySelector("strong").textContent = items.length ? "" : "还没有进入仓库检测的订单";
+  empty.querySelector("span").textContent = items.length ? "" : "领星建单并带上面单后，会自动出现在这里";
+}
+
 function renderXLWMSLookup(result) {
   const rows = xlwmsLookupRows(result);
   const body = byId("oms-status-rows");
@@ -94,30 +148,41 @@ function renderXLWMSLookup(result) {
   body.innerHTML = rows.map(function (item) {
     const order = item.order || {};
     const status = xlwmsStatusMeta(order.status, order.status_text);
-    const platform = display(order.platform_code, "未返回");
-    const platformTone = /shein/i.test(platform) ? "neutral" : "failed";
     return '<tr><td><div class="order-id"><strong>' + escapeHTML(display(order.platform_order_no, result.platform_order_no)) +
-      '</strong><small>' + escapeHTML(display(order.order_time, "未返回下单时间")) +
+      '</strong><small>' + escapeHTML(display(order.order_time, "实时复核")) +
       '</small></div></td><td><div class="order-id"><strong>' + escapeHTML(display(order.oms_order_no)) +
       '</strong><small>' + escapeHTML(display(order.create_time, "未返回创建时间")) +
       '</small></div></td><td><span class="status-badge neutral">' + escapeHTML(display(item.account).toUpperCase()) +
-      '</span></td><td><span class="status-badge ' + platformTone + '">' + escapeHTML(platform) +
       '</span></td><td><span class="status-badge ' + status.tone + '">状态 ' + escapeHTML(display(order.status)) + " · " +
       escapeHTML(status.label) + '</span></td><td>' + escapeHTML(display(order.send_warehouse_code, "等待分仓")) +
       '</td><td>' + escapeHTML(display(order.tracking_number)) +
-      '</td><td>' + escapeHTML(display(order.audit_time)) + "</td></tr>";
+      '</td><td><span class="status-badge pending">实时复核</span></td><td>' +
+      escapeHTML(result.queried_at ? formatTaskTime(result.queried_at) : "-") + "</td></tr>";
   }).join("");
   byId("metric-oms-order").textContent = display(result.platform_order_no, "-");
   byId("metric-oms-matches").textContent = String(result.match_count || rows.length);
   byId("metric-oms-accounts").textContent = String((result.accounts || []).length);
   byId("metric-oms-time").textContent = result.queried_at ? formatTaskTime(result.queried_at) : "-";
-  byId("nav-oms-status-count").textContent = String(result.match_count || rows.length);
   const empty = byId("oms-status-empty");
   empty.querySelector("strong").textContent = rows.length ? "" : "领星未找到同号订单";
   empty.querySelector("span").textContent = rows.length ? "" : "已查询所有选择的领星账户";
   if ((result.failures || []).length) {
     toast("部分领星账户查询失败，请稍后重试", true);
   }
+}
+
+async function loadOMSPlatformOrders(button) {
+  await busy(button || null, async function () {
+    try {
+      const payload = await request("oms-platform-orders?status=" + encodeURIComponent(sheinXLWMS.platformStatus || "all"));
+      sheinXLWMS.platformOrders = Array.isArray(payload.data) ? payload.data : [];
+      sheinXLWMS.platformCounts = (payload.meta && payload.meta.status_counts) || {};
+      sheinXLWMS.lastQueriedAt = new Date().toISOString();
+      renderOMSPlatformOrders();
+    } catch (error) {
+      toast(error.message, true);
+    }
+  });
 }
 
 async function queryXLWMSOrder(button) {
@@ -311,7 +376,15 @@ byId("oms-order-form").addEventListener("submit", function (event) {
 });
 
 byId("refresh-oms-statuses").addEventListener("click", function (event) {
-  loadXLWMSAccounts(event.currentTarget);
+  loadXLWMSAccounts();
+  loadOMSPlatformOrders(event.currentTarget);
+});
+
+document.querySelectorAll("[data-oms-status]").forEach(function (button) {
+  button.addEventListener("click", function () {
+    sheinXLWMS.platformStatus = button.dataset.omsStatus || "all";
+    loadOMSPlatformOrders(button);
+  });
 });
 
 byId("refresh-warehouse-preview").addEventListener("click", function () {
@@ -327,10 +400,11 @@ const omsNavigation = document.querySelector('[data-view="oms-statuses"]');
 if (omsNavigation) {
   omsNavigation.addEventListener("click", function () {
     byId("crumb-current").textContent = "领星订单状态";
-    window.setTimeout(function () { byId("oms-order-number").focus(); }, 0);
+    loadOMSPlatformOrders();
   });
 }
 
 Promise.resolve(window.sheinShopReady).then(function () {
   loadXLWMSAccounts();
+  loadOMSPlatformOrders();
 });

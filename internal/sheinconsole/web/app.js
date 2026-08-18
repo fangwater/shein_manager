@@ -29,7 +29,9 @@ const state = {
   inventoryThresholdMeta: {},
   shopInventoryThresholds: {},
   inventoryThresholdPage: 1,
-  inventoryThresholdSearchTimer: 0
+  inventoryThresholdSearchTimer: 0,
+  parcelDraft: null,
+  parcelDraftOrderNo: ""
 };
 
 function escapeHTML(value) {
@@ -518,6 +520,7 @@ function selectView(name) {
   if (name === "manual") loadManualOrders();
   if (name === "ledger") loadJobQueue("all");
   if (name === "labels") loadTasks();
+  if (name === "oms-statuses" && typeof loadOMSPlatformOrders === "function") loadOMSPlatformOrders();
   if (name === "inventory-thresholds") loadInventoryThresholds();
 }
 
@@ -693,7 +696,9 @@ function formatTaskTime(value) {
   return Number.isNaN(parsed.getTime()) ? display(value) : formatChinaTime(parsed);
 }
 
-function taskStatusClass(status) {
+function taskStatusClass(task) {
+  const status = task && typeof task === "object" ? task.status : task;
+  if (task && typeof task === "object" && task.parcel_complete) return "good";
   if (status === "label_ready") return "good";
   if (status === "ready") return "info";
   if (status === "failed") return "error";
@@ -706,13 +711,25 @@ function taskKey(task) {
   ].filter(Boolean).join(":");
 }
 
+function parcelNeedsComplementaryUpload(task) {
+  return Boolean(task) && !task.parcel_complete;
+}
+
+function canCreateManualParcel(task) {
+  return shopRequiresManualParcelCreate() && isDPSFulfillmentWarehouse(task && task.warehouse_address_code) &&
+    (task && (task.status === "label_ready" || task.status === "ready")) &&
+    parcelNeedsComplementaryUpload(task);
+}
+
 function taskMatchesFilter(task, filter) {
   const status = task && task.status;
   if (filter === "placed") return status === "placed";
   if (filter === "checking") return ["checking", "confirming", "ready"].includes(status);
-  if (filter === "label_ready") return status === "label_ready";
+  if (filter === "label_ready") return status === "label_ready" && !task.parcel_complete;
+  if (filter === "parcel") return canCreateManualParcel(task);
   if (filter === "failed") return status === "failed";
-  return status !== "failed" && status !== "label_ready";
+  if (task && task.parcel_complete) return false;
+  return status !== "failed";
 }
 
 function setTaskFilter(filter) {
@@ -728,13 +745,14 @@ function selectProcessingTask(task) {
     row.classList.toggle("is-selected", selected);
     row.setAttribute("aria-selected", selected ? "true" : "false");
   });
+  if (task && task.order_no) loadXLWMSParcelDraft(task.order_no);
 }
 
 function taskSearchText(task) {
   return [
     task.order_no, task.express_channel_code, task.warehouse_address_code,
     task.place_request_id, task.delivery_no, task.package_no, task.waybill_no,
-    taskStatusLabel(task.status)
+    taskStatusLabel(task)
   ].join(" ").toLowerCase();
 }
 
@@ -756,6 +774,7 @@ function renderTasks() {
     const platformLabel = Number(task.order_place_type) === 1 && task.order_no && task.package_no;
     const canPrint = Boolean(platformLabel || (task.status === "ready" || task.status === "label_ready") &&
       (task.delivery_no || task.order_no && task.package_no));
+    const canCreateParcel = canCreateManualParcel(task);
     const failureTitle = task.failure_reason ? ' title="' + escapeHTML(task.failure_reason) + '"' : "";
     const key = taskKey(task);
     const selected = key && key === state.selectedTaskKey;
@@ -768,18 +787,21 @@ function renderTasks() {
       escapeHTML(display(task.express_channel_code)) + "</strong><small>" +
       escapeHTML(display(task.warehouse_address_code)) + "</small></div></td><td><div class=\"order-id\"><strong>" +
       escapeHTML(display(packageNo)) + "</strong><small>" + escapeHTML(display(deliveryNo)) +
-      "</small></div></td><td><span class=\"badge " + taskStatusClass(task.status) + "\"" + failureTitle + ">" +
-      escapeHTML(taskStatusLabel(task.status)) + "</span></td><td>" +
+      "</small></div></td><td><span class=\"badge " + taskStatusClass(task) + "\"" + failureTitle + ">" +
+      escapeHTML(taskStatusLabel(task)) + "</span></td><td>" +
       escapeHTML(formatTaskTime(task.updated_at)) +
       "</td><td><div class=\"action-row\"><button class=\"table-action\" data-check-task=\"" + index +
       "\" " + (canCheck ? "" : "disabled") + ">查询结果</button><button class=\"table-action primary\" data-label-task=\"" + index +
-      "\" " + (canPrint ? "" : "disabled") + ">获取面单</button></div></td></tr>";
+      "\" " + (canPrint ? "" : "disabled") + ">获取面单</button>" +
+      (canCreateParcel ? '<button class="table-action" data-parcel-task="' + index + '">手动建单</button><button class="table-action" data-upload-label-task="' + index + '">补传面单</button>' : "") +
+      "</div></td></tr>";
   }).join("");
   const placed = state.tasks.filter(function (task) { return task.status === "placed"; }).length;
   const checking = state.tasks.filter(function (task) {
     return ["checking", "confirming", "ready"].includes(task.status);
   }).length;
-  const ready = state.tasks.filter(function (task) { return task.status === "label_ready"; }).length;
+  const ready = state.tasks.filter(function (task) { return taskMatchesFilter(task, "label_ready"); }).length;
+  const parcelReady = state.tasks.filter(function (task) { return canCreateManualParcel(task); }).length;
   const processing = state.tasks.filter(function (task) { return taskMatchesFilter(task, "processing"); }).length;
   byId("nav-processing-count").textContent = String(processing);
   byId("nav-label-count").textContent = String(processing);
@@ -787,6 +809,7 @@ function renderTasks() {
   byId("metric-task-placed").textContent = String(placed);
   byId("metric-task-checked").textContent = String(checking);
   byId("metric-task-label").textContent = String(ready);
+  byId("metric-task-parcel").textContent = String(parcelReady);
   document.querySelectorAll("#task-status-filters [data-task-filter]").forEach(function (button) {
     const selected = button.dataset.taskFilter === (state.taskFilter || "processing");
     button.classList.toggle("is-selected", selected);
@@ -800,18 +823,209 @@ function renderTasks() {
     const emptyCopy = {
       placed: ["没有下单已提交的订单", "购单成功后会显示在这里"],
       checking: ["没有处理中 / 可打印的订单", "后台确认物流后会显示在这里"],
-      label_ready: ["没有面单已就绪的订单", "面单生成后会显示在这里"],
-      processing: ["没有正在处理的面单", "订单提交购单后会进入这里，不再显示在待发货队列"]
+      label_ready: ["没有面单已就绪的订单", "SHEIN 面单已生成、但还没在领星建好出库单的订单会显示在这里"],
+      parcel: ["没有待补传的 DPS 订单", "面单已就绪但还没在领星建好出库单的 DPS 订单会出现在这里"],
+      processing: ["没有正在处理的面单", "订单提交购单后会进入这里；领星已建单并带上面单后会离开处理中"]
     }[state.taskFilter || "processing"] || ["没有正在处理的面单", "订单提交购单后会进入这里，不再显示在待发货队列"];
     empty.querySelector("strong").textContent = query ? "没有匹配的处理中订单" : emptyCopy[0];
     empty.querySelector("span").textContent = query ? "换一个订单号或状态筛选再试" : emptyCopy[1];
   }
   if (state.selectedTaskKey && !visible.some(function (task) { return taskKey(task) === state.selectedTaskKey; })) {
     state.selectedTaskKey = "";
+    renderXLWMSParcelDraft(null);
   }
 }
 
-function taskStatusLabel(status) {
+function selectedShopName() {
+  const selectedShop = state.shops.find(function (shop) { return shop.code === state.shopKey; });
+  return selectedShop ? display(selectedShop.name, state.shopKey) : (state.shopKey || "");
+}
+
+function shopRequiresManualParcelCreate(shopKey) {
+  shopKey = shopKey || state.shopKey || "";
+  return shopKey === "" || shopKey === "default" || shopKey === "beauty-hangers-home";
+}
+
+function isDPSFulfillmentWarehouse(code, name) {
+  const identity = [code, name].filter(Boolean).join(" ").toUpperCase();
+  if (!identity) return false;
+  return identity.includes("WH2604283535967233") || identity.includes("DPSNY002") || identity.includes("DPS002") ||
+    identity.includes("WH2603303477748739") || identity.includes("DPSCA004") || identity.includes("DPS004");
+}
+
+function selectedProcessingTask() {
+  return state.tasks.find(function (task) { return taskKey(task) === state.selectedTaskKey; }) || null;
+}
+
+function parseParcelProducts(value) {
+  return String(value || "").split(/\n+/).map(function (line) {
+    const parts = line.trim().split(/\s+/);
+    if (!parts[0]) return null;
+    const quantity = Number(parts[1] || 1);
+    return { sku: parts[0], quantity: Number.isFinite(quantity) && quantity > 0 ? Math.ceil(quantity) : 1 };
+  }).filter(Boolean);
+}
+
+function fillXLWMSParcelForm(draft) {
+  draft = draft || {};
+  byId("parcel-warehouse").value = display(draft.warehouse, "");
+  byId("parcel-order-no").value = display(draft.order_no, "");
+  byId("parcel-sales-platform").value = display(draft.sales_platform, "SHEIN");
+  byId("parcel-store-name").value = display(draft.store_name, "");
+  byId("parcel-channel").value = display(draft.channel_code, "Upload_Shipping_Label");
+  byId("parcel-tracking").value = display(draft.tracking_number, "");
+  byId("parcel-receiver").value = display(draft.receiver, "");
+  byId("parcel-phone").value = display(draft.phone, "");
+  byId("parcel-country").value = display(draft.country_region_code, "US");
+  byId("parcel-province-code").value = display(draft.province_code, draft.province_name || "");
+  byId("parcel-province-name").value = display(draft.province_name, "");
+  byId("parcel-city").value = display(draft.city_name, "");
+  byId("parcel-postcode").value = display(draft.post_code, "");
+  byId("parcel-address-one").value = display(draft.address_one, "");
+  byId("parcel-address-two").value = display(draft.address_two, "");
+  byId("parcel-products").value = (draft.products || []).map(function (item) {
+    return display(item.sku) + " " + display(item.quantity, 1);
+  }).join("\n");
+}
+
+function renderXLWMSParcelDraft(draft) {
+  const panel = byId("parcel-create-panel");
+  const required = Boolean(draft && draft.required);
+  panel.hidden = !required;
+  state.parcelDraft = required ? draft : null;
+  if (!required) return;
+  fillXLWMSParcelForm(draft);
+  const missing = (draft.missing_fields || []).join("、");
+  byId("parcel-create-copy").textContent = draft.reason || "当前店铺发往 DPS 仓时，先建领星小包出库单；建单时会带上 SHEIN 面单";
+  const sheinChannel = display(draft.channel_hint, "");
+  const uploadHint = display(draft.upload_hint, "");
+  byId("parcel-create-hint").textContent = missing
+    ? "还缺：" + missing + "。可直接在表单里补齐后再建单。"
+    : (uploadHint || (sheinChannel && sheinChannel !== "-"
+      ? "SHEIN 渠道 " + sheinChannel + " 不能直接建单，已改用领星 Upload_Shipping_Label。先建单，建单时会带上 SHEIN 面单。"
+      : "已按收件地址预填。先点手动建单；建单时会带上 SHEIN 面单。"));
+  byId("create-xlwms-parcel").disabled = false;
+  byId("upload-xlwms-label").disabled = !draft.can_upload_label;
+}
+
+async function loadXLWMSParcelDraft(orderNo, button) {
+  const task = selectedProcessingTask();
+  orderNo = orderNo || (task || {}).order_no || "";
+  if (!orderNo || !shopRequiresManualParcelCreate() ||
+      (task && task.order_no === orderNo && !isDPSFulfillmentWarehouse(task.warehouse_address_code))) {
+    renderXLWMSParcelDraft(null);
+    return;
+  }
+  state.parcelDraftOrderNo = orderNo;
+  await busy(button || byId("refresh-parcel-draft"), async function () {
+    try {
+      const payload = await request("orders/" + encodeURIComponent(orderNo) + "/xlwms-parcel");
+      if (state.parcelDraftOrderNo !== orderNo) return;
+      renderXLWMSParcelDraft(payload.data || {});
+    } catch (error) {
+      if (state.parcelDraftOrderNo !== orderNo) return;
+      renderXLWMSParcelDraft(null);
+      toast(error.message, true);
+    }
+  });
+}
+
+async function submitXLWMSParcel(button) {
+  const orderNo = byId("parcel-order-no").value.trim();
+  const products = parseParcelProducts(byId("parcel-products").value);
+  if (!orderNo) {
+    toast("请先选择需要建单的订单", true);
+    return;
+  }
+  if (!products.length) {
+    toast("请填写仓库 SKU 和数量", true);
+    return;
+  }
+  if (!byId("parcel-sales-platform").value.trim() || !byId("parcel-store-name").value.trim()) {
+    toast("销售平台和店铺都要填写", true);
+    return;
+  }
+  const existing = display((state.parcelDraft || {}).outbound_order_no, "");
+  const confirmText = existing && existing !== "-"
+    ? "订单 " + orderNo + " 已有出库单 " + existing + "。确认取消后按当前收件人和店铺重新建单？"
+    : "确认向领星提交订单 " + orderNo + " 的手动建单？建单时会带上当前 SHEIN 面单。";
+  if (!window.confirm(confirmText)) return;
+  await busy(button, async function () {
+    try {
+      const payload = await request("orders/" + encodeURIComponent(orderNo) + "/xlwms-parcel", {
+        method: "POST",
+        body: JSON.stringify({
+          warehouse: byId("parcel-warehouse").value.trim(),
+          platform_order_no: orderNo,
+          sales_platform: byId("parcel-sales-platform").value.trim(),
+          store_name: byId("parcel-store-name").value.trim(),
+          channel_code: byId("parcel-channel").value.trim(),
+          tracking_number: byId("parcel-tracking").value.trim(),
+          receiver: byId("parcel-receiver").value.trim(),
+          phone: byId("parcel-phone").value.trim(),
+          country_region_code: byId("parcel-country").value.trim(),
+          province_code: byId("parcel-province-code").value.trim(),
+          province_name: byId("parcel-province-name").value.trim(),
+          city_name: byId("parcel-city").value.trim(),
+          post_code: byId("parcel-postcode").value.trim(),
+          address_one: byId("parcel-address-one").value.trim(),
+          address_two: byId("parcel-address-two").value.trim(),
+          products: products
+        })
+      });
+      const data = payload.data || {};
+      const outboundNo = data.outbound_order_no || "";
+      byId("parcel-create-hint").textContent = data.upload_hint || (outboundNo
+        ? "已建单 " + outboundNo + "。面单已随建单提交，需要覆盖时再点补传。"
+        : "已提交领星小包建单。");
+      byId("upload-xlwms-label").disabled = !data.can_upload_label;
+      toast(outboundNo ? "领星手动建单已提交 · " + outboundNo : "领星手动建单已提交");
+      loadXLWMSParcelDraft(orderNo);
+      loadTasks();
+      loadJobQueue("all");
+      if (typeof loadOMSPlatformOrders === "function") loadOMSPlatformOrders();
+    } catch (error) {
+      toast(error.message, true);
+    }
+  });
+}
+
+async function uploadXLWMSParcelLabel(button) {
+  const orderNo = byId("parcel-order-no").value.trim();
+  if (!orderNo) {
+    toast("请先选择需要补传面单的订单", true);
+    return;
+  }
+  if (byId("upload-xlwms-label").disabled) {
+    toast(byId("parcel-create-hint").textContent || "当前出库单还不能补传面单", true);
+    return;
+  }
+  if (!window.confirm("确认向领星补传订单 " + orderNo + " 的 SHEIN 面单？出库单需要已在仓库处理中。")) return;
+  await busy(button, async function () {
+    try {
+      const payload = await request("orders/" + encodeURIComponent(orderNo) + "/xlwms-parcel-label", {
+        method: "POST",
+        body: JSON.stringify({
+          warehouse: byId("parcel-warehouse").value.trim(),
+          tracking_number: byId("parcel-tracking").value.trim()
+        })
+      });
+      const outboundNo = ((payload.data || {}).outbound_order_no) || "";
+      byId("parcel-create-hint").textContent = outboundNo
+        ? "已向出库单 " + outboundNo + " 补传 SHEIN 面单。"
+        : "已向领星补传 SHEIN 面单。";
+      toast(outboundNo ? "领星面单已补传 · " + outboundNo : "领星面单已补传");
+    } catch (error) {
+      toast(error.message, true);
+    }
+  });
+}
+
+function taskStatusLabel(task) {
+  if (task && typeof task === "object") {
+    if (task.parcel_complete) return "领星已建单";
+    task = task.status;
+  }
   return {
     discovered: "历史包裹",
     placed: "下单已提交",
@@ -820,7 +1034,7 @@ function taskStatusLabel(status) {
     ready: "可获取面单",
     failed: "下单失败",
     label_ready: "面单已生成"
-  }[status] || status;
+  }[task] || task;
 }
 
 async function checkTask(index, button) {
@@ -1076,6 +1290,7 @@ function autoStatusLabel(status) {
     queued: "排队中",
     running: "执行中",
     waiting_confirmation: "等待承运商",
+    waiting_oms: "等待领星确认",
     failed: "异常",
     completed: "已完成"
   }[status] || display(status);
@@ -1083,9 +1298,28 @@ function autoStatusLabel(status) {
 
 function autoStatusClass(status) {
   if (status === "completed") return "good";
-  if (status === "failed") return "error";
-  if (status === "waiting_confirmation") return "info";
+  if (status === "failed" || status === "manual_required") return "error";
+  if (status === "waiting_confirmation" || status === "waiting_oms" || status === "waiting_sync") return "info";
   return "pending";
+}
+
+function omsSyncLabel(item) {
+  const sync = item && item.oms_sync_status;
+  return {
+    querying: "正在查询领星",
+    waiting_sync: "等待领星确认",
+    verified: "领星已确认",
+    failed: "等待重试领星查询",
+    manual_required: "领星需人工处理"
+  }[sync] || (item && item.outbound_order_no ? "等待领星确认" : "尚未进入领星");
+}
+
+function omsWarehouseCell(item) {
+  const warehouse = display(item.oms_warehouse_code || item.warehouse_address_code, "尚未选仓");
+  const outbound = display(item.outbound_order_no, "尚未建单");
+  const statusText = item.outbound_status_name || omsSyncLabel(item);
+  return '<div class="order-id"><strong>' + escapeHTML(warehouse) +
+    '</strong><small>' + escapeHTML(outbound) + " · " + escapeHTML(statusText) + "</small></div>";
 }
 
 async function loadJobQueue(queue, button) {
@@ -1161,21 +1395,25 @@ function renderLedgerJobs() {
   const rows = byId("ledger-rows");
   rows.closest(".table-shell").classList.toggle("is-empty", jobs.length === 0);
   rows.innerHTML = jobs.map(function (job) {
-    const identifier = job.delivery_no || job.place_request_id || "-";
+    const identifier = job.outbound_order_no || job.delivery_no || job.place_request_id || "-";
     return '<tr><td><strong>' + escapeHTML(job.order_no) +
-      '</strong></td><td><span class="badge ' + autoStatusClass(job.status) + '">' +
-      escapeHTML(autoStatusLabel(job.status)) + "</span></td><td>" + jobWarehouseChannel(job) +
-      '</td><td>' + escapeHTML(job.performance_cost ? job.performance_cost + " " + display(job.currency_code, "") : "-") +
+      '</strong></td><td><span class="badge ' + autoStatusClass(job.oms_sync_status || job.status) + '">' +
+      escapeHTML(job.parcel_complete ? omsSyncLabel(job) : autoStatusLabel(job.status)) + "</span></td><td>" + jobWarehouseChannel(job) +
+      '</td><td>' + omsWarehouseCell(job) +
       '</td><td>' + escapeHTML(identifier) +
-      '</td><td>' + escapeHTML(formatTaskTime(job.updated_at)) + "</td></tr>";
+      '</td><td>' + escapeHTML(formatTaskTime(job.oms_queried_at || job.updated_at)) + "</td></tr>";
   }).join("");
   const processing = jobs.filter(function (job) {
-    return ["queued", "running", "waiting_confirmation"].includes(job.status);
+    return ["queued", "running", "waiting_confirmation", "waiting_sync", "querying"].includes(job.oms_sync_status || job.status);
   }).length;
   byId("metric-ledger-total").textContent = String(jobs.length);
   byId("metric-ledger-processing").textContent = String(processing);
-  byId("metric-ledger-failed").textContent = String(jobs.filter(function (job) { return job.status === "failed"; }).length);
-  byId("metric-ledger-completed").textContent = String(jobs.filter(function (job) { return job.status === "completed"; }).length);
+  byId("metric-ledger-failed").textContent = String(jobs.filter(function (job) {
+    return job.status === "failed" || job.oms_sync_status === "manual_required";
+  }).length);
+  byId("metric-ledger-completed").textContent = String(jobs.filter(function (job) {
+    return job.oms_sync_status === "verified" || (job.status === "completed" && job.parcel_complete);
+  }).length);
   byId("nav-ledger-count").textContent = String(jobs.length);
 }
 
@@ -1621,6 +1859,9 @@ async function loadStatus() {
       loadBulkBatch(),
       loadTasks()
     ]);
+    if (typeof loadOMSPlatformOrders === "function") {
+      loadOMSPlatformOrders();
+    }
     loadOrders(byId("refresh-orders")).then(loadManualOrders);
   } catch (error) {
     byId("service-dot").className = "dot error";
@@ -1742,13 +1983,35 @@ byId("exception-rows").addEventListener("click", function (event) {
   const job = state.exceptionJobs[Number(button.dataset.retryJob)];
   if (job) runAutoOrders([job.order_no], button);
 });
+byId("refresh-parcel-draft").addEventListener("click", function (event) {
+  loadXLWMSParcelDraft("", event.currentTarget);
+});
+byId("parcel-create-form").addEventListener("submit", function (event) {
+  event.preventDefault();
+  submitXLWMSParcel(event.submitter || byId("create-xlwms-parcel"));
+});
+byId("upload-xlwms-label").addEventListener("click", function (event) {
+  uploadXLWMSParcelLabel(event.currentTarget);
+});
 byId("task-rows").addEventListener("click", function (event) {
   const checkButton = event.target.closest("[data-check-task]");
   const labelButton = event.target.closest("[data-label-task]");
+  const parcelButton = event.target.closest("[data-parcel-task]");
+  const uploadButton = event.target.closest("[data-upload-label-task]");
   const orderButton = event.target.closest("[data-task-order]");
   const row = event.target.closest("tr[data-task-index]");
   const task = row ? state.tasks[Number(row.dataset.taskIndex)] : null;
   if (task) selectProcessingTask(task);
+  if (parcelButton) {
+    const panel = byId("parcel-create-panel");
+    if (panel) panel.scrollIntoView({ behavior: "smooth", block: "start" });
+    return;
+  }
+  if (uploadButton) {
+    const panel = byId("parcel-create-panel");
+    if (panel) panel.scrollIntoView({ behavior: "smooth", block: "start" });
+    return;
+  }
   if (checkButton) {
     checkTask(Number(checkButton.dataset.checkTask), checkButton);
     return;

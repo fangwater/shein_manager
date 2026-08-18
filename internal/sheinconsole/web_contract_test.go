@@ -17,6 +17,9 @@ func TestConsoleUsesSharedTemuShell(t *testing.T) {
 	for _, required := range []string{
 		`href="/temu/dashboard.css`,
 		`id="view-oms-statuses"`,
+		`data-oms-status="all"`,
+		`data-oms-status="2"`,
+		"领星建单后自动进入这里",
 		`id="view-inventory-thresholds"`,
 		`id="warehouse-check"`,
 		`src="./assets/xlwms.js`,
@@ -75,6 +78,7 @@ func TestProcessingStatusCardsAreSelectable(t *testing.T) {
 		`data-task-filter="placed"`,
 		`data-task-filter="checking"`,
 		`data-task-filter="label_ready"`,
+		`data-task-filter="parcel"`,
 		`data-task-filter="processing"`,
 	} {
 		if !strings.Contains(html, required) {
@@ -90,6 +94,10 @@ func TestProcessingStatusCardsAreSelectable(t *testing.T) {
 		"function taskMatchesFilter",
 		"function setTaskFilter",
 		`if (filter === "placed") return status === "placed";`,
+		`if (filter === "parcel") return canCreateManualParcel(task);`,
+		"function parcelNeedsComplementaryUpload",
+		`if (filter === "label_ready") return status === "label_ready" && !task.parcel_complete;`,
+		"parcel_complete",
 		`byId("task-status-filters").addEventListener("click"`,
 	} {
 		if !strings.Contains(source, required) {
@@ -119,6 +127,52 @@ func TestProcessingViewLetsOperatorsSelectATask(t *testing.T) {
 	}
 	if !strings.Contains(string(css), "#task-rows tr.is-selected") {
 		t.Fatal("processing rows have no selected style")
+	}
+}
+
+func TestProcessingViewExposesManualParcelCreateForDPS(t *testing.T) {
+	index, err := webFiles.ReadFile("web/index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	html := string(index)
+	for _, required := range []string{
+		`id="parcel-create-panel"`,
+		`id="parcel-create-form"`,
+		`id="create-xlwms-parcel"`,
+		`id="upload-xlwms-label"`,
+		`id="refresh-parcel-draft"`,
+		`id="parcel-sales-platform"`,
+		`id="parcel-store-name"`,
+	} {
+		if !strings.Contains(html, required) {
+			t.Fatalf("parcel create UI does not contain %q", required)
+		}
+	}
+	script, err := webFiles.ReadFile("web/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := string(script)
+	for _, required := range []string{
+		"function shopRequiresManualParcelCreate",
+		"function isDPSFulfillmentWarehouse",
+		`data-parcel-task="`,
+		`data-upload-label-task="`,
+		`byId("parcel-create-form").addEventListener("submit"`,
+		`orders/" + encodeURIComponent(orderNo) + "/xlwms-parcel"`,
+		`orders/" + encodeURIComponent(orderNo) + "/xlwms-parcel-label"`,
+		"Upload_Shipping_Label",
+		`toast(outboundNo ? "领星手动建单已提交 · " + outboundNo : "领星手动建单已提交")`,
+		"function omsWarehouseCell",
+		"byId(\"upload-xlwms-label\").disabled = !draft.can_upload_label",
+		"sales_platform: byId(\"parcel-sales-platform\").value.trim()",
+		"store_name: byId(\"parcel-store-name\").value.trim()",
+		`toast("销售平台和店铺都要填写", true)`,
+	} {
+		if !strings.Contains(source, required) {
+			t.Fatalf("parcel create flow does not contain %q", required)
+		}
 	}
 }
 
@@ -268,7 +322,10 @@ func TestXLWMSAccountLookupWaitsForShopInitialization(t *testing.T) {
 	if !strings.Contains(string(appScript), "window.sheinShopReady = loadStatus()") {
 		t.Fatal("shop initialization promise is not exposed")
 	}
-	for _, required := range []string{"Promise.resolve(window.sheinShopReady)", "accountRetryTimer", "retryDelay", "领星账户已掉线"} {
+	for _, required := range []string{
+		"Promise.resolve(window.sheinShopReady)", "accountRetryTimer", "retryDelay", "领星账户已掉线",
+		"function loadOMSPlatformOrders", "oms-platform-orders?status=",
+	} {
 		if !strings.Contains(string(xlwmsScript), required) {
 			t.Fatalf("XLWMS startup recovery does not contain %q", required)
 		}

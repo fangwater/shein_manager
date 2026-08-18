@@ -75,6 +75,15 @@ func TestOptionalLogisticsListControlsPlatformLabelPurchase(t *testing.T) {
 	}
 }
 
+func TestOrderFulfilledOnPlatformArchivesShippedAndDelivered(t *testing.T) {
+	if !OrderFulfilledOnPlatform("5") || !OrderFulfilledOnPlatform("delivered") || !OrderFulfilledOnPlatform("4") {
+		t.Fatal("SHEIN shipped/delivered statuses must count as already fulfilled")
+	}
+	if OrderFulfilledOnPlatform("1") || OrderFulfilledOnPlatform("2") || OrderFulfilledOnPlatform("6") {
+		t.Fatal("open or refunded SHEIN statuses must not auto-archive warehouse watch")
+	}
+}
+
 func TestPackageSpecRequiresEveryPositiveValue(t *testing.T) {
 	complete := PackageSpec{LengthCM: "20", WidthCM: "15", HeightCM: "5", WeightKG: "0.3"}
 	if !complete.Complete() {

@@ -27,6 +27,13 @@ var operatedWarehouseAddressCodes = map[string]struct{}{
 	"ARPCA01":            {},
 }
 
+var dpsWarehouseAddressCodes = map[string]string{
+	"WH2604283535967233": "DPSNY002",
+	"WH2603303477748739": "DPSCA004",
+	"DPSNY002":           "DPSNY002",
+	"DPSCA004":           "DPSCA004",
+}
+
 var pgWarehouseAddressCodes = map[string]struct{}{
 	"WH2602103441974274": {},
 	"PG1955":             {},
@@ -93,6 +100,60 @@ func IsOperatedShippingWarehouse(code, name string) bool {
 
 func IsAllowedShippingWarehouse(code, name string) bool {
 	return IsOperatedShippingWarehouse(code, name) && !IsPGWarehouse(code, name)
+}
+
+func RequiresManualParcelCreate(shopKey, code, name string) bool {
+	if !shopRequiresManualParcelCreate(shopKey) {
+		return false
+	}
+	return ResolvedDPSWarehouseCode(code, name) != ""
+}
+
+func ResolvedDPSWarehouseCode(code, name string) string {
+	if mapped, ok := dpsWarehouseAddressCodes[normalizedWarehouseCode(code)]; ok {
+		return mapped
+	}
+	identity := warehouseIdentity(code, name)
+	if identity == "" || !strings.Contains(identity, "DPS") {
+		return ""
+	}
+	if strings.Contains(identity, "DPSNY002") || strings.Contains(identity, "DPS002") {
+		return "DPSNY002"
+	}
+	if strings.Contains(identity, "DPSCA004") || strings.Contains(identity, "DPS004") {
+		return "DPSCA004"
+	}
+	return ""
+}
+
+func shopRequiresManualParcelCreate(shopKey string) bool {
+	switch strings.TrimSpace(shopKey) {
+	case "", "default", "beauty-hangers-home":
+		return true
+	default:
+		return false
+	}
+}
+
+func OMSAccountForWarehouse(code, name string) string {
+	if ResolvedDPSWarehouseCode(code, name) != "" {
+		return "dps"
+	}
+	if IsOperatedShippingWarehouse(code, name) && !IsPGWarehouse(code, name) {
+		return "arp"
+	}
+	return ""
+}
+
+func OppositeOMSAccount(account string) string {
+	switch strings.ToLower(strings.TrimSpace(account)) {
+	case "dps":
+		return "arp"
+	case "arp":
+		return "dps"
+	default:
+		return ""
+	}
 }
 
 func RestrictShippingWarehouseAvailability(result map[string]any) {

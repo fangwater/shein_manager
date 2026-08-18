@@ -55,6 +55,7 @@ func New(store *shein.Store, shopKey, shopName string, requestTimeout time.Durat
 		requestTimeout: requestTimeout, logger: logger, xlwms: xlwmsClient, autoQueue: make(chan autoQueueRef, 500),
 	}
 	server.startAutoWorkers()
+	server.startWarehouseWatch()
 	return server.routes()
 }
 
@@ -65,6 +66,8 @@ func (server *Server) routes() http.Handler {
 	mux.Handle("GET /assets/{name}", http.HandlerFunc(server.asset))
 	mux.Handle("GET /api/status", http.HandlerFunc(server.status))
 	mux.Handle("GET /api/oms-platform-orders/accounts", http.HandlerFunc(server.xlwmsAccounts))
+	mux.Handle("GET /api/oms-platform-orders", http.HandlerFunc(server.listOMSPlatformOrders))
+	mux.Handle("POST /api/oms-platform-orders/sync", http.HandlerFunc(server.syncOMSPlatformOrders))
 	mux.Handle("GET /api/oms-platform-orders/{orderNo}", http.HandlerFunc(server.xlwmsPlatformOrder))
 	mux.Handle("POST /api/order/list", server.operationHandler("order-list"))
 	mux.Handle("POST /api/order/detail", server.operationHandler("order-detail"))
@@ -72,6 +75,9 @@ func (server *Server) routes() http.Handler {
 	mux.Handle("GET /api/fulfillment/orders", http.HandlerFunc(server.fulfillmentOrders))
 	mux.Handle("POST /api/fulfillment/orders/sync", http.HandlerFunc(server.syncFulfillmentOrders))
 	mux.Handle("POST /api/orders/{orderNo}/warehouse-preview", http.HandlerFunc(server.xlwmsWarehousePreview))
+	mux.Handle("GET /api/orders/{orderNo}/xlwms-parcel", http.HandlerFunc(server.xlwmsParcelDraft))
+	mux.Handle("POST /api/orders/{orderNo}/xlwms-parcel", http.HandlerFunc(server.createXLWMSParcel))
+	mux.Handle("POST /api/orders/{orderNo}/xlwms-parcel-label", http.HandlerFunc(server.uploadXLWMSParcelLabel))
 	mux.Handle("GET /api/inventory-thresholds", http.HandlerFunc(server.inventoryThresholds))
 	mux.Handle("GET /api/inventory-thresholds/defaults", http.HandlerFunc(server.inventoryThresholdDefaults))
 	mux.Handle("PATCH /api/inventory-thresholds/defaults", http.HandlerFunc(server.inventoryThresholdDefaults))
@@ -154,6 +160,7 @@ func (s *Server) fulfillmentTasks(writer http.ResponseWriter, request *http.Requ
 		s.internalError(writer, "list fulfillment tasks", err)
 		return
 	}
+	s.attachLingxingParcelStatusToTasks(ctx, shopKey, tasks)
 	writeJSON(writer, http.StatusOK, response{Success: true, Data: tasks})
 }
 

@@ -46,6 +46,36 @@ func TestIsAllowedShippingWarehouseRejectsPGAndUnknownWarehouses(t *testing.T) {
 	}
 }
 
+func TestOMSAccountForWarehouseUsesOperatedOwnership(t *testing.T) {
+	if got := OMSAccountForWarehouse("WH2604283535967233", "DPSNY002（美东）"); got != "dps" {
+		t.Fatalf("DPS account = %q", got)
+	}
+	if got := OMSAccountForWarehouse("WH2607084039788546", "ARP仓-美东"); got != "arp" {
+		t.Fatalf("ARP account = %q", got)
+	}
+	if got := OMSAccountForWarehouse("PG1955", "PG仓"); got != "" {
+		t.Fatalf("PG account = %q", got)
+	}
+	if OppositeOMSAccount("dps") != "arp" || OppositeOMSAccount("ARP") != "dps" {
+		t.Fatal("opposite OMS account mapping is wrong")
+	}
+}
+
+func TestRequiresManualParcelCreateIsShopScopedToDPS(t *testing.T) {
+	if !RequiresManualParcelCreate("beauty-hangers-home", "WH2604283535967233", "DPSNY002（美东）") {
+		t.Fatal("Beauty Hangers DPS warehouse must require a manual XLWMS parcel")
+	}
+	if !RequiresManualParcelCreate("beauty-hangers-home", "DPSCA004", "DPS达派思-加州") {
+		t.Fatal("Beauty Hangers west DPS warehouse must require a manual XLWMS parcel")
+	}
+	if RequiresManualParcelCreate("beauty-hangers-home", "WH2607084039788546", "ARP仓-美东") {
+		t.Fatal("Beauty Hangers ARP warehouse must not require a manual XLWMS parcel")
+	}
+	if RequiresManualParcelCreate("other-shop", "WH2604283535967233", "DPSNY002（美东）") {
+		t.Fatal("unconfigured shops must not inherit the Beauty Hangers DPS rule")
+	}
+}
+
 func TestRestrictShippingWarehouseAvailabilityDisablesPGWarehouses(t *testing.T) {
 	result := map[string]any{"info": map[string]any{"availableWarehouses": []any{
 		map[string]any{"warehouseAddressCode": "WH2604283535967233", "warehouseName": "DPSNY002（美东）", "availableStatus": "1"},

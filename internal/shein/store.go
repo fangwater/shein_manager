@@ -34,6 +34,11 @@ type OperationRecord struct {
 	ErrorMessage string
 }
 
+var (
+	ErrFulfillmentTaskNotFound = errors.New("SHEIN fulfillment task not found")
+	ErrOrderNotFound           = errors.New("SHEIN order not found")
+)
+
 type FulfillmentTask struct {
 	OrderNo              string    `json:"order_no"`
 	ExpressChannelCode   string    `json:"express_channel_code"`
@@ -47,7 +52,22 @@ type FulfillmentTask struct {
 	PrintStatus          *int      `json:"print_status,omitempty"`
 	Status               string    `json:"status"`
 	FailureReason        string    `json:"failure_reason,omitempty"`
+	CreatedAt            time.Time `json:"created_at"`
 	UpdatedAt            time.Time `json:"updated_at"`
+	OutboundOrderNo      string     `json:"outbound_order_no,omitempty"`
+	OutboundStatus       *int       `json:"outbound_status,omitempty"`
+	OutboundStatusName   string     `json:"outbound_status_name,omitempty"`
+	LabelAttached        bool       `json:"label_attached,omitempty"`
+	ParcelComplete       bool       `json:"parcel_complete,omitempty"`
+	OMSAccount           string     `json:"oms_account,omitempty"`
+	OMSOrderNo           string     `json:"oms_order_no,omitempty"`
+	OMSStatusCode        *int       `json:"oms_status_code,omitempty"`
+	OMSStatusKey         string     `json:"oms_status_key,omitempty"`
+	OMSStatusText        string     `json:"oms_status_text,omitempty"`
+	OMSWarehouseCode     string     `json:"oms_warehouse_code,omitempty"`
+	OMSSyncStatus        string     `json:"oms_sync_status,omitempty"`
+	OMSSyncMessage       string     `json:"oms_sync_message,omitempty"`
+	OMSQueriedAt         *time.Time `json:"oms_queried_at,omitempty"`
 }
 
 var postgresSchemaPattern = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
@@ -279,6 +299,35 @@ func (s *Store) Migrate(ctx context.Context) error {
 		);
 		CREATE INDEX IF NOT EXISTS idx_shein_label_purchase_candidates_price
 			ON shein_label_purchase_candidates (shop_key, currency_code, performance_cost, price_rank);
+
+		ALTER TABLE shein_go_fulfillment_tasks
+			ADD COLUMN IF NOT EXISTS outbound_order_no text NOT NULL DEFAULT '';
+		ALTER TABLE shein_go_fulfillment_tasks
+			ADD COLUMN IF NOT EXISTS outbound_status integer;
+		ALTER TABLE shein_go_fulfillment_tasks
+			ADD COLUMN IF NOT EXISTS outbound_status_name text NOT NULL DEFAULT '';
+		ALTER TABLE shein_go_fulfillment_tasks
+			ADD COLUMN IF NOT EXISTS label_attached boolean NOT NULL DEFAULT false;
+		ALTER TABLE shein_go_fulfillment_tasks
+			ADD COLUMN IF NOT EXISTS oms_account text NOT NULL DEFAULT '';
+		ALTER TABLE shein_go_fulfillment_tasks
+			ADD COLUMN IF NOT EXISTS oms_order_no text NOT NULL DEFAULT '';
+		ALTER TABLE shein_go_fulfillment_tasks
+			ADD COLUMN IF NOT EXISTS oms_status_code integer;
+		ALTER TABLE shein_go_fulfillment_tasks
+			ADD COLUMN IF NOT EXISTS oms_status_key text NOT NULL DEFAULT '';
+		ALTER TABLE shein_go_fulfillment_tasks
+			ADD COLUMN IF NOT EXISTS oms_status_text text NOT NULL DEFAULT '';
+		ALTER TABLE shein_go_fulfillment_tasks
+			ADD COLUMN IF NOT EXISTS oms_warehouse_code text NOT NULL DEFAULT '';
+		ALTER TABLE shein_go_fulfillment_tasks
+			ADD COLUMN IF NOT EXISTS oms_sync_status text NOT NULL DEFAULT '';
+		ALTER TABLE shein_go_fulfillment_tasks
+			ADD COLUMN IF NOT EXISTS oms_sync_message text NOT NULL DEFAULT '';
+		ALTER TABLE shein_go_fulfillment_tasks
+			ADD COLUMN IF NOT EXISTS oms_queried_at timestamptz;
+		CREATE INDEX IF NOT EXISTS idx_shein_go_fulfillment_tasks_watch
+			ON shein_go_fulfillment_tasks (shop_key, oms_sync_status, outbound_order_no, updated_at DESC);
 	`)
 	if err != nil {
 		return fmt.Errorf("migrate SHEIN Go tables: %w", err)
@@ -482,15 +531,290 @@ func (s *Store) MarkFulfillmentTaskLabelReady(
 	return nil
 }
 
+func (s *Store) LatestFulfillmentTask(ctx context.Context, shopKey, orderNo string) (FulfillmentTask, error) {
+	orderNo = strings.TrimSpace(orderNo)
+	if shopKey == "" || orderNo == "" {
+		return FulfillmentTask{}, ErrFulfillmentTaskNotFound
+	}
+	row := s.pool.QueryRow(ctx, fulfillmentTaskSelect+`
+		WHERE shop_key = $1 AND order_no = $2
+		ORDER BY
+			CASE status
+				WHEN 'label_ready' THEN 0
+				WHEN 'ready' THEN 1
+				WHEN 'confirming' THEN 2
+				WHEN 'checking' THEN 3
+				WHEN 'placed' THEN 4
+				ELSE 5
+			END,
+			updated_at DESC
+		LIMIT 1
+	`, shopKey, orderNo)
+	task, err := scanFulfillmentTask(row)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return FulfillmentTask{}, ErrFulfillmentTaskNotFound
+	}
+	if err != nil {
+		return FulfillmentTask{}, fmt.Errorf("load SHEIN fulfillment task: %w", err)
+	}
+	return task, nil
+}
+
+type ParcelWatchUpdate struct {
+	OutboundOrderNo    string
+	OutboundStatus     *int
+	OutboundStatusName string
+	LabelAttached      bool
+	OMSAccount         string
+	OMSOrderNo         string
+	OMSStatusCode      *int
+	OMSStatusKey       string
+	OMSStatusText      string
+	OMSWarehouseCode   string
+	OMSSyncStatus      string
+	OMSSyncMessage     string
+}
+
+func (s *Store) SaveParcelWatch(ctx context.Context, shopKey, orderNo string, update ParcelWatchUpdate) error {
+	orderNo = strings.TrimSpace(orderNo)
+	if shopKey == "" || orderNo == "" {
+		return ErrFulfillmentTaskNotFound
+	}
+	message := strings.TrimSpace(update.OMSSyncMessage)
+	if len(message) > 500 {
+		message = message[:500]
+	}
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE shein_go_fulfillment_tasks
+		SET outbound_order_no = COALESCE(NULLIF($3, ''), outbound_order_no),
+			outbound_status = COALESCE($4, outbound_status),
+			outbound_status_name = COALESCE(NULLIF($5, ''), outbound_status_name),
+			label_attached = $6,
+			oms_account = COALESCE(NULLIF($7, ''), oms_account),
+			oms_order_no = COALESCE(NULLIF($8, ''), oms_order_no),
+			oms_status_code = COALESCE($9, oms_status_code),
+			oms_status_key = COALESCE(NULLIF($10, ''), oms_status_key),
+			oms_status_text = COALESCE(NULLIF($11, ''), oms_status_text),
+			oms_warehouse_code = COALESCE(NULLIF($12, ''), oms_warehouse_code),
+			oms_sync_status = COALESCE(NULLIF($13, ''), oms_sync_status),
+			oms_sync_message = $14,
+			oms_queried_at = now(),
+			updated_at = now()
+		WHERE shop_key = $1 AND order_no = $2
+			AND updated_at = (
+				SELECT max(updated_at) FROM shein_go_fulfillment_tasks
+				WHERE shop_key = $1 AND order_no = $2
+			)
+	`, shopKey, orderNo, strings.TrimSpace(update.OutboundOrderNo), update.OutboundStatus,
+		strings.TrimSpace(update.OutboundStatusName), update.LabelAttached,
+		strings.TrimSpace(update.OMSAccount), strings.TrimSpace(update.OMSOrderNo),
+		update.OMSStatusCode, strings.TrimSpace(update.OMSStatusKey),
+		strings.TrimSpace(update.OMSStatusText), strings.TrimSpace(update.OMSWarehouseCode),
+		strings.TrimSpace(update.OMSSyncStatus), message)
+	if err != nil {
+		return fmt.Errorf("save SHEIN parcel watch: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrFulfillmentTaskNotFound
+	}
+	return nil
+}
+
+func (s *Store) ListWarehouseWatchTasks(ctx context.Context, shopKey string, limit int) ([]FulfillmentTask, error) {
+	if limit < 1 || limit > 200 {
+		limit = 80
+	}
+	rows, err := s.pool.Query(ctx, fulfillmentTaskSelect+`
+		WHERE shop_key = $1
+			AND status IN ('label_ready', 'ready')
+			AND COALESCE(oms_sync_status, '') <> 'verified'
+			AND (
+				outbound_order_no <> ''
+				OR COALESCE(oms_sync_status, '') <> ''
+				OR warehouse_address_code IN ('WH2604283535967233', 'WH2603303477748739', 'DPSNY002', 'DPSCA004')
+			)
+		ORDER BY
+			CASE WHEN oms_queried_at IS NULL THEN 0 ELSE 1 END,
+			oms_queried_at ASC NULLS FIRST,
+			updated_at DESC
+		LIMIT $2
+	`, shopKey, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list SHEIN warehouse watch tasks: %w", err)
+	}
+	defer rows.Close()
+	return scanFulfillmentTasks(rows)
+}
+
+func (s *Store) ListOMSPlatformOrders(ctx context.Context, shopKey, status string, limit int) ([]FulfillmentTask, error) {
+	if limit < 1 || limit > 500 {
+		limit = 200
+	}
+	filter, err := omsPlatformOrderFilter(status)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := s.pool.Query(ctx, fulfillmentTaskSelect+`
+		WHERE shop_key = $1 AND (`+filter+`)
+		ORDER BY COALESCE(oms_queried_at, updated_at) DESC
+		LIMIT $2
+	`, shopKey, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list SHEIN OMS platform orders: %w", err)
+	}
+	defer rows.Close()
+	return scanFulfillmentTasks(rows)
+}
+
+func (s *Store) CountOMSPlatformOrders(ctx context.Context, shopKey string) (map[string]int, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT
+			COUNT(*) FILTER (WHERE oms_status_code = 0 AND COALESCE(oms_sync_status, '') <> '') AS status_0,
+			COUNT(*) FILTER (WHERE oms_status_code = 1) AS status_1,
+			COUNT(*) FILTER (WHERE oms_status_code = 2) AS status_2,
+			COUNT(*) FILTER (WHERE oms_status_code = 3) AS status_3,
+			COUNT(*) FILTER (WHERE oms_sync_status IN ('waiting_sync', 'querying', 'failed') AND oms_status_code IS NULL AND outbound_order_no <> '') AS missing,
+			COUNT(*) FILTER (WHERE oms_sync_status = 'manual_required') AS manual_required
+		FROM shein_go_fulfillment_tasks
+		WHERE shop_key = $1
+			AND (
+				outbound_order_no <> ''
+				OR COALESCE(oms_sync_status, '') <> ''
+			)
+	`, shopKey)
+	if err != nil {
+		return nil, fmt.Errorf("count SHEIN OMS platform orders: %w", err)
+	}
+	defer rows.Close()
+	var status0, status1, status2, status3, missing, manualRequired int
+	if !rows.Next() {
+		return map[string]int{"0": 0, "1": 0, "2": 0, "3": 0, "missing": 0, "manual_required": 0}, rows.Err()
+	}
+	if err := rows.Scan(&status0, &status1, &status2, &status3, &missing, &manualRequired); err != nil {
+		return nil, fmt.Errorf("scan SHEIN OMS platform order counts: %w", err)
+	}
+	return map[string]int{
+		"0": status0, "1": status1, "2": status2, "3": status3,
+		"missing": missing, "manual_required": manualRequired,
+	}, rows.Err()
+}
+
+func omsPlatformOrderFilter(status string) (string, error) {
+	switch strings.TrimSpace(status) {
+	case "", "all":
+		return `(outbound_order_no <> '' OR COALESCE(oms_sync_status, '') <> '')`, nil
+	case "0":
+		return `oms_status_code = 0 AND COALESCE(oms_sync_status, '') <> ''`, nil
+	case "1":
+		return `oms_status_code = 1`, nil
+	case "2":
+		return `oms_status_code = 2`, nil
+	case "3":
+		return `oms_status_code = 3`, nil
+	case "missing":
+		return `oms_sync_status IN ('waiting_sync', 'querying', 'failed') AND oms_status_code IS NULL AND outbound_order_no <> ''`, nil
+	case "manual_required":
+		return `oms_sync_status = 'manual_required'`, nil
+	default:
+		return "", errors.New("unknown SHEIN OMS platform order status")
+	}
+}
+
+const fulfillmentTaskSelect = `SELECT order_no, express_channel_code, warehouse_address_code,
+	place_request_id, delivery_no, package_no, waybill_no,
+	order_place_type, handle_result, print_status, status, failure_reason, created_at, updated_at,
+	outbound_order_no, outbound_status, outbound_status_name, label_attached,
+	oms_account, oms_order_no, oms_status_code, oms_status_key, oms_status_text,
+	oms_warehouse_code, oms_sync_status, oms_sync_message, oms_queried_at
+	FROM shein_go_fulfillment_tasks`
+
+type fulfillmentTaskScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanFulfillmentTask(scanner fulfillmentTaskScanner) (FulfillmentTask, error) {
+	var task FulfillmentTask
+	err := scanner.Scan(
+		&task.OrderNo, &task.ExpressChannelCode, &task.WarehouseAddressCode,
+		&task.PlaceRequestID, &task.DeliveryNo, &task.PackageNo, &task.WaybillNo,
+		&task.OrderPlaceType, &task.HandleResult, &task.PrintStatus, &task.Status, &task.FailureReason, &task.CreatedAt, &task.UpdatedAt,
+		&task.OutboundOrderNo, &task.OutboundStatus, &task.OutboundStatusName, &task.LabelAttached,
+		&task.OMSAccount, &task.OMSOrderNo, &task.OMSStatusCode, &task.OMSStatusKey, &task.OMSStatusText,
+		&task.OMSWarehouseCode, &task.OMSSyncStatus, &task.OMSSyncMessage, &task.OMSQueriedAt,
+	)
+	if err != nil {
+		return FulfillmentTask{}, fmt.Errorf("scan SHEIN fulfillment task: %w", err)
+	}
+	task.ParcelComplete = task.OutboundOrderNo != "" && task.LabelAttached &&
+		task.OutboundStatus != nil && (*task.OutboundStatus == 0 || *task.OutboundStatus == 1 || *task.OutboundStatus == 2 || *task.OutboundStatus == 3)
+	return task, nil
+}
+
+func scanFulfillmentTasks(rows pgx.Rows) ([]FulfillmentTask, error) {
+	tasks := make([]FulfillmentTask, 0)
+	for rows.Next() {
+		task, err := scanFulfillmentTask(rows)
+		if err != nil {
+			return nil, err
+		}
+		tasks = append(tasks, task)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list SHEIN fulfillment tasks: %w", err)
+	}
+	return tasks, nil
+}
+
+func (s *Store) OrderFulfillmentState(ctx context.Context, shopKey, orderNo string) (string, string, error) {
+	orderNo = strings.TrimSpace(orderNo)
+	if shopKey == "" || orderNo == "" {
+		return "", "", nil
+	}
+	var status, normalized string
+	err := s.pool.QueryRow(ctx, `
+		SELECT COALESCE(order_status, ''), COALESCE(order_status_normalized, '')
+		FROM shein_orders
+		WHERE shop_key = $1 AND order_no = $2
+	`, shopKey, orderNo).Scan(&status, &normalized)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", "", nil
+	}
+	if err != nil {
+		return "", "", fmt.Errorf("load SHEIN order fulfillment state: %w", err)
+	}
+	if strings.TrimSpace(normalized) == "" {
+		normalized = NormalizeOrderStatus(status)
+	}
+	return status, normalized, nil
+}
+
+func (s *Store) OrderDetail(ctx context.Context, shopKey, orderNo string) (map[string]any, error) {
+	orderNo = strings.TrimSpace(orderNo)
+	if shopKey == "" || orderNo == "" {
+		return nil, ErrOrderNotFound
+	}
+	var raw []byte
+	err := s.pool.QueryRow(ctx, `
+		SELECT detail_payload FROM shein_orders WHERE shop_key = $1 AND order_no = $2
+	`, shopKey, orderNo).Scan(&raw)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrOrderNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("load SHEIN order detail: %w", err)
+	}
+	var detail map[string]any
+	if err := json.Unmarshal(raw, &detail); err != nil {
+		return nil, fmt.Errorf("decode SHEIN order detail: %w", err)
+	}
+	return detail, nil
+}
+
 func (s *Store) ListFulfillmentTasks(ctx context.Context, shopKey string, limit int) ([]FulfillmentTask, error) {
 	if limit < 1 || limit > 500 {
 		limit = 200
 	}
-	rows, err := s.pool.Query(ctx, `
-		SELECT order_no, express_channel_code, warehouse_address_code,
-			place_request_id, delivery_no, package_no, waybill_no,
-			order_place_type, handle_result, print_status, status, failure_reason, updated_at
-		FROM shein_go_fulfillment_tasks
+	rows, err := s.pool.Query(ctx, fulfillmentTaskSelect+`
 		WHERE shop_key = $1
 		ORDER BY updated_at DESC
 		LIMIT $2
@@ -499,22 +823,7 @@ func (s *Store) ListFulfillmentTasks(ctx context.Context, shopKey string, limit 
 		return nil, fmt.Errorf("list SHEIN fulfillment tasks: %w", err)
 	}
 	defer rows.Close()
-	tasks := make([]FulfillmentTask, 0)
-	for rows.Next() {
-		var task FulfillmentTask
-		if err := rows.Scan(
-			&task.OrderNo, &task.ExpressChannelCode, &task.WarehouseAddressCode,
-			&task.PlaceRequestID, &task.DeliveryNo, &task.PackageNo, &task.WaybillNo,
-			&task.OrderPlaceType, &task.HandleResult, &task.PrintStatus, &task.Status, &task.FailureReason, &task.UpdatedAt,
-		); err != nil {
-			return nil, fmt.Errorf("scan SHEIN fulfillment task: %w", err)
-		}
-		tasks = append(tasks, task)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("list SHEIN fulfillment tasks: %w", err)
-	}
-	return tasks, nil
+	return scanFulfillmentTasks(rows)
 }
 
 func (s *Store) FailOperation(ctx context.Context, shopKey, operation, idempotencyKey, message string) error {

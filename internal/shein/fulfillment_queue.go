@@ -55,6 +55,19 @@ type AutoFulfillmentJob struct {
 	UpdatedAt            time.Time  `json:"updated_at"`
 	StartedAt            *time.Time `json:"started_at,omitempty"`
 	CompletedAt          *time.Time `json:"completed_at,omitempty"`
+	OutboundOrderNo      string     `json:"outbound_order_no,omitempty"`
+	OutboundStatus       *int       `json:"outbound_status,omitempty"`
+	OutboundStatusName   string     `json:"outbound_status_name,omitempty"`
+	OMSAccount           string     `json:"oms_account,omitempty"`
+	OMSOrderNo           string     `json:"oms_order_no,omitempty"`
+	OMSStatusCode        *int       `json:"oms_status_code,omitempty"`
+	OMSStatusKey         string     `json:"oms_status_key,omitempty"`
+	OMSStatusText        string     `json:"oms_status_text,omitempty"`
+	OMSWarehouseCode     string     `json:"oms_warehouse_code,omitempty"`
+	OMSSyncStatus        string     `json:"oms_sync_status,omitempty"`
+	OMSSyncMessage       string     `json:"oms_sync_message,omitempty"`
+	OMSQueriedAt         *time.Time `json:"oms_queried_at,omitempty"`
+	ParcelComplete       bool       `json:"parcel_complete,omitempty"`
 }
 
 type OrderQueueItem struct {
@@ -127,7 +140,7 @@ func (s *Store) UpsertOrderSnapshots(ctx context.Context, shopKey string, snapsh
 				detail_payload = EXCLUDED.detail_payload,
 				detail_fetched_at = now(),
 				last_seen_at = now()
-		`, shopKey, orderNo, status, normalizeOrderStatus(status), listJSON, detailJSON, snapshot.ListData != nil)
+		`, shopKey, orderNo, status, NormalizeOrderStatus(status), listJSON, detailJSON, snapshot.ListData != nil)
 		if err != nil {
 			return fmt.Errorf("upsert SHEIN order snapshot: %w", err)
 		}
@@ -138,21 +151,63 @@ func (s *Store) UpsertOrderSnapshots(ctx context.Context, shopKey string, snapsh
 	return nil
 }
 
-func normalizeOrderStatus(status string) string {
+func NormalizeOrderStatus(status string) string {
 	switch strings.TrimSpace(status) {
-	case "1":
+	case "1", "pending_processing":
 		return "pending_processing"
-	case "2":
+	case "2", "pending_shipping":
 		return "pending_shipping"
-	case "4", "7":
+	case "4", "7", "shipped":
 		return "shipped"
-	case "5":
+	case "5", "delivered":
 		return "delivered"
-	case "6":
+	case "6", "refunded":
 		return "refunded"
 	default:
 		return "unknown"
 	}
+}
+
+func OrderFulfilledOnPlatform(status string) bool {
+	switch NormalizeOrderStatus(status) {
+	case "shipped", "delivered":
+		return true
+	default:
+		return false
+	}
+}
+
+func (s *Store) MappedOrderGoods(ctx context.Context, shopKey, orderNo string) ([]QueueGoods, error) {
+	detail, err := s.OrderDetail(ctx, shopKey, orderNo)
+	if err != nil {
+		return nil, err
+	}
+	goods := queueGoods(detail)
+	skus := make([]string, 0, len(goods))
+	for _, item := range goods {
+		if sku := strings.TrimSpace(item.SKUCode); sku != "" {
+			skus = append(skus, sku)
+		}
+	}
+	mappings, err := s.packageMappings(ctx, shopKey, skus)
+	if err != nil {
+		return nil, err
+	}
+	for index := range goods {
+		mapping, ok := mappings[goods[index].SKUCode]
+		if !ok || mapping.MappingCount != 1 {
+			continue
+		}
+		goods[index].WarehouseSKU = mapping.WarehouseSKU
+		goods[index].WarehouseQuantity = mapping.WarehouseQty
+	}
+	if job, jobErr := s.GetAutoJob(ctx, shopKey, orderNo); jobErr == nil && job.WarehouseSKU != "" && len(goods) == 1 && goods[0].WarehouseSKU == "" {
+		goods[0].WarehouseSKU = job.WarehouseSKU
+		if goods[0].WarehouseQuantity == "" {
+			goods[0].WarehouseQuantity = "1"
+		}
+	}
+	return goods, nil
 }
 
 func (s *Store) ListPendingOrderNos(ctx context.Context, shopKey string) ([]string, error) {
@@ -432,6 +487,31 @@ func RequiresAddressTransition(detail map[string]any, orderStatus string) bool {
 	return !CanPurchasePlatformLabel(detail) && supportsSelfShipping(detail)
 }
 
+func (s *Store) EnsureWarehouseLedgerJob(ctx context.Context, shopKey, orderNo, warehouseAddressCode, channelCode, placeRequestID, deliveryNo string) error {
+	orderNo = strings.TrimSpace(orderNo)
+	if shopKey == "" || orderNo == "" {
+		return errors.New("order number is required")
+	}
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO shein_go_auto_fulfillment_jobs (
+			shop_key, order_no, status, current_step,
+			warehouse_address_code, express_channel_code, place_request_id, delivery_no
+		) VALUES ($1, $2, 'completed', 'completed', $3, $4, $5, $6)
+		ON CONFLICT (shop_key, order_no) DO UPDATE SET
+			warehouse_address_code = COALESCE(NULLIF(EXCLUDED.warehouse_address_code, ''), shein_go_auto_fulfillment_jobs.warehouse_address_code),
+			express_channel_code = COALESCE(NULLIF(EXCLUDED.express_channel_code, ''), shein_go_auto_fulfillment_jobs.express_channel_code),
+			place_request_id = COALESCE(NULLIF(EXCLUDED.place_request_id, ''), shein_go_auto_fulfillment_jobs.place_request_id),
+			delivery_no = COALESCE(NULLIF(EXCLUDED.delivery_no, ''), shein_go_auto_fulfillment_jobs.delivery_no),
+			updated_at = now()
+		WHERE shein_go_auto_fulfillment_jobs.status IN ('completed', 'failed')
+	`, shopKey, orderNo, strings.TrimSpace(warehouseAddressCode), strings.TrimSpace(channelCode),
+		strings.TrimSpace(placeRequestID), strings.TrimSpace(deliveryNo))
+	if err != nil {
+		return fmt.Errorf("ensure SHEIN warehouse ledger job: %w", err)
+	}
+	return nil
+}
+
 func (s *Store) EnqueueAutoJob(ctx context.Context, shopKey, orderNo string) (AutoFulfillmentJob, bool, error) {
 	orderNo = strings.TrimSpace(orderNo)
 	if orderNo == "" {
@@ -525,7 +605,7 @@ func (s *Store) RequeueWaitingAutoJob(ctx context.Context, shopKey, orderNo stri
 }
 
 func (s *Store) GetAutoJob(ctx context.Context, shopKey, orderNo string) (AutoFulfillmentJob, error) {
-	row := s.pool.QueryRow(ctx, autoJobSelect+` WHERE shop_key = $1 AND order_no = $2`, shopKey, orderNo)
+	row := s.pool.QueryRow(ctx, autoJobSelect+` WHERE j.shop_key = $1 AND j.order_no = $2`, shopKey, orderNo)
 	job, err := scanAutoJob(row)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return AutoFulfillmentJob{}, errors.New("SHEIN auto fulfillment job not found")
@@ -540,14 +620,14 @@ func (s *Store) ListAutoJobs(ctx context.Context, shopKey, queue string, limit i
 	filter := ""
 	switch queue {
 	case "processing":
-		filter = " AND status IN ('queued', 'running', 'waiting_confirmation')"
+		filter = " AND j.status IN ('queued', 'running', 'waiting_confirmation')"
 	case "exceptions":
-		filter = " AND status = 'failed'"
+		filter = " AND j.status = 'failed'"
 	case "all", "":
 	default:
 		return nil, errors.New("unknown SHEIN automatic fulfillment queue")
 	}
-	rows, err := s.pool.Query(ctx, autoJobSelect+` WHERE shop_key = $1`+filter+` ORDER BY updated_at DESC LIMIT $2`, shopKey, limit)
+	rows, err := s.pool.Query(ctx, autoJobSelect+` WHERE j.shop_key = $1`+filter+` ORDER BY j.updated_at DESC LIMIT $2`, shopKey, limit)
 	if err != nil {
 		return nil, fmt.Errorf("list SHEIN auto fulfillment jobs: %w", err)
 	}
@@ -585,12 +665,26 @@ func (s *Store) ListResumableAutoJobs(ctx context.Context, shopKey string) ([][2
 	return jobs, rows.Err()
 }
 
-const autoJobSelect = `SELECT id, order_no, status, current_step, attempts,
-	shein_sku, warehouse_sku, warehouse_address_code, pre_request_id,
-	express_channel_code, COALESCE(performance_cost::text, ''), currency_code,
-	place_request_id, delivery_no, error_code, error_message,
-	created_at, updated_at, started_at, completed_at
-	FROM shein_go_auto_fulfillment_jobs`
+const autoJobSelect = `SELECT j.id, j.order_no, j.status, j.current_step, j.attempts,
+	j.shein_sku, j.warehouse_sku, j.warehouse_address_code, j.pre_request_id,
+	j.express_channel_code, COALESCE(j.performance_cost::text, ''), j.currency_code,
+	j.place_request_id, j.delivery_no, j.error_code, j.error_message,
+	j.created_at, j.updated_at, j.started_at, j.completed_at,
+	COALESCE(t.outbound_order_no, ''), t.outbound_status, COALESCE(t.outbound_status_name, ''),
+	COALESCE(t.oms_account, ''), COALESCE(t.oms_order_no, ''), t.oms_status_code,
+	COALESCE(t.oms_status_key, ''), COALESCE(t.oms_status_text, ''),
+	COALESCE(t.oms_warehouse_code, ''), COALESCE(t.oms_sync_status, ''),
+	COALESCE(t.oms_sync_message, ''), t.oms_queried_at, COALESCE(t.label_attached, false)
+	FROM shein_go_auto_fulfillment_jobs j
+	LEFT JOIN LATERAL (
+		SELECT outbound_order_no, outbound_status, outbound_status_name, label_attached,
+			oms_account, oms_order_no, oms_status_code, oms_status_key, oms_status_text,
+			oms_warehouse_code, oms_sync_status, oms_sync_message, oms_queried_at
+		FROM shein_go_fulfillment_tasks
+		WHERE shop_key = j.shop_key AND order_no = j.order_no
+		ORDER BY updated_at DESC
+		LIMIT 1
+	) t ON true`
 
 type autoJobScanner interface {
 	Scan(dest ...any) error
@@ -598,14 +692,20 @@ type autoJobScanner interface {
 
 func scanAutoJob(scanner autoJobScanner) (AutoFulfillmentJob, error) {
 	var job AutoFulfillmentJob
+	var labelAttached bool
 	err := scanner.Scan(&job.ID, &job.OrderNo, &job.Status, &job.CurrentStep, &job.Attempts,
 		&job.SheinSKU, &job.WarehouseSKU, &job.WarehouseAddressCode, &job.PreRequestID,
 		&job.ExpressChannelCode, &job.PerformanceCost, &job.CurrencyCode,
 		&job.PlaceRequestID, &job.DeliveryNo, &job.ErrorCode, &job.ErrorMessage,
-		&job.CreatedAt, &job.UpdatedAt, &job.StartedAt, &job.CompletedAt)
+		&job.CreatedAt, &job.UpdatedAt, &job.StartedAt, &job.CompletedAt,
+		&job.OutboundOrderNo, &job.OutboundStatus, &job.OutboundStatusName,
+		&job.OMSAccount, &job.OMSOrderNo, &job.OMSStatusCode, &job.OMSStatusKey, &job.OMSStatusText,
+		&job.OMSWarehouseCode, &job.OMSSyncStatus, &job.OMSSyncMessage, &job.OMSQueriedAt, &labelAttached)
 	if err != nil {
 		return AutoFulfillmentJob{}, fmt.Errorf("scan SHEIN automatic fulfillment job: %w", err)
 	}
+	job.ParcelComplete = job.OutboundOrderNo != "" && labelAttached &&
+		job.OutboundStatus != nil && (*job.OutboundStatus == 0 || *job.OutboundStatus == 1 || *job.OutboundStatus == 2 || *job.OutboundStatus == 3)
 	return job, nil
 }
 

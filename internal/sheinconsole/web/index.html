@@ -6,7 +6,7 @@
   <meta name="description" content="SHEIN 店铺发货与面单管理">
   <title>SHEIN Fulfillment</title>
   <link rel="stylesheet" href="/temu/dashboard.css?v=20260814-shared">
-  <link rel="stylesheet" href="./assets/platform.css?v=20260816-3">
+  <link rel="stylesheet" href="./assets/platform.css?v=20260818-1">
 </head>
 <body>
   <svg class="svg-sprite" aria-hidden="true">
@@ -152,7 +152,7 @@
 
         <section class="view" id="view-ledger">
           <div class="page-head">
-            <div><h1>自动发货账本</h1><p>只读记录自动选仓、最低价渠道、购单结果和最终状态</p></div>
+            <div><h1>自动发货账本</h1><p>只读记录自动选仓、购单结果、领星建单和仓库状态</p></div>
             <button class="secondary-button" id="refresh-ledger" type="button"><svg><use href="#i-refresh"/></svg>刷新</button>
           </div>
           <div class="status-band">
@@ -163,7 +163,7 @@
           </div>
           <div class="table-shell">
             <table>
-              <thead><tr><th>订单号</th><th>状态</th><th>仓库 / 渠道</th><th>最终价格</th><th>履约编号</th><th>更新时间</th></tr></thead>
+              <thead><tr><th>订单号</th><th>状态</th><th>仓库 / 渠道</th><th>领星仓库</th><th>履约编号</th><th>更新时间</th></tr></thead>
               <tbody id="ledger-rows"></tbody>
             </table>
             <div class="empty" id="ledger-empty"><svg><use href="#i-ledger"/></svg><strong>暂无自动发货账本</strong><span>自动履约任务创建后会永久保留在这里</span></div>
@@ -185,10 +185,42 @@
             <button class="status-filter" type="button" role="tab" data-task-filter="label_ready" aria-selected="false">
               <small>面单已就绪</small><strong id="metric-task-label">0</strong>
             </button>
+            <button class="status-filter" type="button" role="tab" data-task-filter="parcel" aria-selected="false">
+              <small>待补传</small><strong id="metric-task-parcel">0</strong>
+            </button>
             <button class="status-filter is-selected" type="button" role="tab" data-task-filter="processing" aria-selected="true">
               <small>处理中总数</small><strong id="metric-task-total">0</strong>
             </button>
           </div>
+          <section class="parcel-create-panel" id="parcel-create-panel" hidden>
+            <div class="page-head">
+              <div><h2>领星手动建单</h2><p id="parcel-create-copy">当前店铺发往 DPS 仓时，先建领星小包出库单；建单时会带上 SHEIN 面单</p></div>
+              <button class="secondary-button" id="refresh-parcel-draft" type="button"><svg><use href="#i-refresh"/></svg>重新预填</button>
+            </div>
+            <form class="parcel-create-form" id="parcel-create-form">
+              <label><span>建单仓库</span><input id="parcel-warehouse" required autocomplete="off"></label>
+              <label><span>平台订单号</span><input id="parcel-order-no" required autocomplete="off"></label>
+              <label><span>销售平台</span><input id="parcel-sales-platform" required autocomplete="off" value="SHEIN"></label>
+              <label><span>店铺</span><input id="parcel-store-name" required autocomplete="off"></label>
+              <label><span>领星物流渠道</span><input id="parcel-channel" required autocomplete="off" value="Upload_Shipping_Label"></label>
+              <label><span>跟踪号</span><input id="parcel-tracking" autocomplete="off"></label>
+              <label><span>收件人</span><input id="parcel-receiver" required autocomplete="off"></label>
+              <label><span>电话</span><input id="parcel-phone" autocomplete="off"></label>
+              <label><span>国家</span><input id="parcel-country" required autocomplete="off"></label>
+              <label><span>省州代码</span><input id="parcel-province-code" required autocomplete="off"></label>
+              <label><span>省州名称</span><input id="parcel-province-name" required autocomplete="off"></label>
+              <label><span>城市</span><input id="parcel-city" required autocomplete="off"></label>
+              <label><span>邮编</span><input id="parcel-postcode" required autocomplete="off"></label>
+              <label class="full"><span>地址一行</span><input id="parcel-address-one" required autocomplete="off"></label>
+              <label class="full"><span>地址二行</span><input id="parcel-address-two" autocomplete="off"></label>
+              <label class="full"><span>商品明细</span><textarea id="parcel-products" required rows="3" placeholder="每行：仓库SKU 数量"></textarea></label>
+              <div class="parcel-create-actions">
+                <small id="parcel-create-hint">选择一条面单已就绪的 DPS 订单后预填</small>
+                <button class="secondary-button" id="upload-xlwms-label" type="button">补传面单</button>
+                <button class="primary-button" id="create-xlwms-parcel" type="submit"><svg><use href="#i-label"/></svg>手动建单</button>
+              </div>
+            </form>
+          </section>
           <div class="toolbar">
             <label class="search"><svg><use href="#i-search"/></svg><input id="task-search" type="search" placeholder="搜索订单号、渠道或履约编号"></label>
             <span class="table-note" id="task-total">共 0 条</span>
@@ -203,21 +235,28 @@
         </section>
 
         <section class="view" id="view-oms-statuses">
-          <div class="page-head"><div><h1>领星订单状态</h1><p>按 SHEIN 平台订单号实时查询全部领星账户，只展示履约核验字段</p></div><button class="secondary-button" id="refresh-oms-statuses" type="button"><svg><use href="#i-refresh"/></svg>刷新账户</button></div>
+          <div class="page-head"><div><h1>领星订单状态</h1><p>领星建单后自动进入这里，后台查询仓库状态；也可以按单号实时复核</p></div><button class="secondary-button" id="refresh-oms-statuses" type="button"><svg><use href="#i-refresh"/></svg>刷新状态</button></div>
+          <div class="oms-status-tabs" role="tablist" aria-label="领星订单状态">
+            <button class="active" type="button" role="tab" aria-selected="true" data-oms-status="all"><span>全部</span><strong>已建单</strong><b id="metric-oms-status-all">0</b></button>
+            <button type="button" role="tab" aria-selected="false" data-oms-status="0"><span>状态 0</span><strong>待处理</strong><b id="metric-oms-status-0">0</b></button>
+            <button type="button" role="tab" aria-selected="false" data-oms-status="2"><span>状态 2</span><strong>处理中</strong><b id="metric-oms-status-2">0</b></button>
+            <button type="button" role="tab" aria-selected="false" data-oms-status="3"><span>状态 3</span><strong>已发货</strong><b id="metric-oms-status-3">0</b></button>
+            <button type="button" role="tab" aria-selected="false" data-oms-status="missing"><span>已建单</span><strong>领星无匹配</strong><b id="metric-oms-status-missing">0</b></button>
+          </div>
           <form class="oms-query-bar" id="oms-order-form">
-            <label><span>SHEIN 平台订单号</span><input id="oms-order-number" type="search" autocomplete="off" placeholder="输入订单号" required></label>
+            <label><span>SHEIN 平台订单号</span><input id="oms-order-number" type="search" autocomplete="off" placeholder="输入订单号复核"></label>
             <label><span>领星账户</span><select id="oms-account"><option value="all">全部账户</option></select></label>
             <button class="primary-button" id="query-oms-order" type="submit"><svg><use href="#i-search"/></svg>查询订单</button>
           </form>
           <div class="status-band">
-            <div><small>查询订单</small><strong class="compact" id="metric-oms-order">尚未查询</strong></div>
+            <div><small>当前列表</small><strong class="compact" id="metric-oms-order">尚未同步</strong></div>
             <div><small>命中记录</small><strong id="metric-oms-matches">0</strong></div>
             <div><small>已查询账户</small><strong id="metric-oms-accounts">0</strong></div>
             <div><small>查询时间</small><strong class="compact" id="metric-oms-time">尚未查询</strong></div>
           </div>
           <div class="table-shell oms-lookup-table is-empty">
-            <table><thead><tr><th>平台订单</th><th>领星订单</th><th>账户</th><th>平台</th><th>领星状态</th><th>发货仓</th><th>跟踪号</th><th>审核时间</th></tr></thead><tbody id="oms-status-rows"></tbody></table>
-            <div class="empty" id="oms-status-empty"><svg><use href="#i-orders"/></svg><strong>等待查询领星订单</strong><span>输入 SHEIN 平台订单号后查询 DPS、ARP 等已启用账户</span></div>
+            <table><thead><tr><th>平台订单</th><th>领星订单</th><th>账户</th><th>仓库状态</th><th>发货仓</th><th>跟踪号</th><th>归档结果</th><th>最近查询</th></tr></thead><tbody id="oms-status-rows"></tbody></table>
+            <div class="empty" id="oms-status-empty"><svg><use href="#i-orders"/></svg><strong>还没有进入仓库检测的订单</strong><span>领星建单并带上面单后，会自动出现在这里</span></div>
           </div>
         </section>
 
@@ -327,7 +366,7 @@
   </aside>
   <button class="drawer-backdrop" id="drawer-backdrop" aria-label="关闭结果"></button>
   <div class="toast" id="toast" hidden></div>
-  <script src="./assets/app.js?v=20260816-8" defer></script>
-  <script src="./assets/xlwms.js?v=20260816-9" defer></script>
+  <script src="./assets/app.js?v=20260818-6" defer></script>
+  <script src="./assets/xlwms.js?v=20260818-6" defer></script>
 </body>
 </html>

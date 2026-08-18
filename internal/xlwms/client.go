@@ -99,6 +99,38 @@ func (client *Client) Accounts(ctx context.Context) ([]Account, error) {
 	return accounts, nil
 }
 
+type FulfillmentAuditSnapshotOrder struct {
+	PlatformOrderNo    string     `json:"platform_order_no"`
+	PlatformStatus     string     `json:"platform_status"`
+	PlatformStatusCode *int       `json:"platform_status_code,omitempty"`
+	PlatformShippingAt *time.Time `json:"platform_shipping_at,omitempty"`
+	WarehouseKey       string     `json:"warehouse_key"`
+	WarehouseCode      string     `json:"wh_code"`
+	TrackingNumber     string     `json:"tracking_number"`
+}
+
+type FulfillmentAuditSnapshot struct {
+	Platform string                          `json:"platform"`
+	ShopCode string                          `json:"shop_code"`
+	ShopName string                          `json:"shop_name"`
+	Orders   []FulfillmentAuditSnapshotOrder `json:"orders"`
+}
+
+func (client *Client) SyncFulfillmentAudits(ctx context.Context, snapshot FulfillmentAuditSnapshot) error {
+	if strings.TrimSpace(snapshot.Platform) == "" || strings.TrimSpace(snapshot.ShopCode) == "" {
+		return errors.New("platform and shop_code are required")
+	}
+	if snapshot.Orders == nil {
+		snapshot.Orders = []FulfillmentAuditSnapshotOrder{}
+	}
+	body, err := json.Marshal(snapshot)
+	if err != nil {
+		return err
+	}
+	var result map[string]any
+	return client.do(ctx, http.MethodPost, "/fulfillment-audits/sync", body, "", snapshot.Platform, snapshot.ShopCode, &result)
+}
+
 func (client *Client) QueryPlatformOrder(ctx context.Context, account, platformOrderNo string) (PlatformOrderLookup, error) {
 	account = strings.TrimSpace(account)
 	platformOrderNo = strings.TrimSpace(platformOrderNo)
@@ -249,6 +281,127 @@ func (client *Client) UpdateShopSKUInventoryThreshold(ctx context.Context, platf
 	var result SKUInventoryThreshold
 	if err := client.do(ctx, http.MethodPatch, "/inventory-thresholds/"+url.PathEscape(warehouseSKU)+"?platform="+url.QueryEscape(platform)+"&shop="+url.QueryEscape(shopCode), body, "", platform, shopCode, &result); err != nil {
 		return SKUInventoryThreshold{}, err
+	}
+	return result, nil
+}
+
+func (client *Client) CreateParcel(ctx context.Context, warehouse string, data any) (json.RawMessage, error) {
+	return client.postOutbound(ctx, warehouse, "parcel-create", data)
+}
+
+func (client *Client) UpdateParcelTrackingLabel(ctx context.Context, warehouse string, data any) (json.RawMessage, error) {
+	return client.postOutbound(ctx, warehouse, "tracking-label-update", data)
+}
+
+func (client *Client) LookupParcel(ctx context.Context, warehouse, thirdOrderNo, referOrderNo string) (json.RawMessage, error) {
+	thirdOrderNo = strings.TrimSpace(thirdOrderNo)
+	referOrderNo = strings.TrimSpace(referOrderNo)
+	if thirdOrderNo == "" && referOrderNo == "" {
+		return nil, errors.New("third order number is required")
+	}
+	if thirdOrderNo != "" {
+		result, err := client.postOutbound(ctx, warehouse, "parcel-detail", map[string]any{
+			"thirdOrderNoList": []any{thirdOrderNo},
+		})
+		if err != nil {
+			return nil, err
+		}
+		if parcelDetailHasRecords(result) {
+			return result, nil
+		}
+	}
+	if referOrderNo == "" {
+		referOrderNo = thirdOrderNo
+	}
+	if referOrderNo == "" {
+		return json.RawMessage(`[]`), nil
+	}
+	return client.postOutbound(ctx, warehouse, "parcel-detail", map[string]any{
+		"referOrderNoList": []any{referOrderNo},
+	})
+}
+
+func (client *Client) CancelParcel(ctx context.Context, warehouse string, outboundOrderNos []string) (json.RawMessage, error) {
+	values := outboundOrderValues(outboundOrderNos)
+	if len(values) == 0 {
+		return nil, errors.New("outbound order number is required")
+	}
+	return client.postOutbound(ctx, warehouse, "parcel-cancel", map[string]any{
+		"outboundOrderNoList": values,
+	})
+}
+
+func (client *Client) ParcelCancelStatus(ctx context.Context, warehouse string, outboundOrderNos []string) (json.RawMessage, error) {
+	values := outboundOrderValues(outboundOrderNos)
+	if len(values) == 0 {
+		return nil, errors.New("outbound order number is required")
+	}
+	return client.postOutbound(ctx, warehouse, "cancel-status", map[string]any{
+		"outboundOrderNoList": values,
+	})
+}
+
+func (client *Client) LookupParcelByOutbound(ctx context.Context, warehouse string, outboundOrderNos []string) (json.RawMessage, error) {
+	values := outboundOrderValues(outboundOrderNos)
+	if len(values) == 0 {
+		return nil, errors.New("outbound order number is required")
+	}
+	return client.postOutbound(ctx, warehouse, "parcel-detail", map[string]any{
+		"outboundOrderNoList": values,
+	})
+}
+
+func outboundOrderValues(outboundOrderNos []string) []any {
+	values := make([]any, 0, len(outboundOrderNos))
+	for _, outbound := range outboundOrderNos {
+		if value := strings.TrimSpace(outbound); value != "" {
+			values = append(values, value)
+		}
+	}
+	return values
+}
+
+func parcelDetailHasRecords(result json.RawMessage) bool {
+	if len(result) == 0 {
+		return false
+	}
+	var decoded any
+	if err := json.Unmarshal(result, &decoded); err != nil {
+		return false
+	}
+	return parcelDetailRecordCount(decoded) > 0
+}
+
+func parcelDetailRecordCount(value any) int {
+	switch typed := value.(type) {
+	case []any:
+		return len(typed)
+	case map[string]any:
+		for _, key := range []string{"data", "info", "records"} {
+			if count := parcelDetailRecordCount(typed[key]); count > 0 {
+				return count
+			}
+		}
+	}
+	return 0
+}
+
+func (client *Client) postOutbound(ctx context.Context, warehouse, operation string, data any) (json.RawMessage, error) {
+	warehouse = strings.TrimSpace(warehouse)
+	operation = strings.TrimSpace(operation)
+	if warehouse == "" {
+		return nil, errors.New("warehouse is required")
+	}
+	if operation == "" {
+		return nil, errors.New("outbound operation is required")
+	}
+	body, err := json.Marshal(map[string]any{"warehouse": warehouse, "data": data})
+	if err != nil {
+		return nil, err
+	}
+	var result json.RawMessage
+	if err := client.do(ctx, http.MethodPost, "/outbound/"+url.PathEscape(operation), body, "", "", "", &result); err != nil {
+		return nil, err
 	}
 	return result, nil
 }

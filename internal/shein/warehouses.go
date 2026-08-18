@@ -34,6 +34,20 @@ var dpsWarehouseAddressCodes = map[string]string{
 	"DPSCA004":           "DPSCA004",
 }
 
+// SHEIN quote/purchase rows store opaque warehouseAddressCode values. The
+// operated OMS warehouse is recovered from those purchase codes, the same way
+// Temu recovers DPSNY002/HYTX30 from temu_label_purchase_choices.
+var omsWarehouseAddressCodes = map[string]string{
+	"WH2604283535967233": "DPSNY002",
+	"WH2603303477748739": "DPSCA004",
+	"WH2607084039788546": "HYTX30",
+	"WH2608123417047040": "ARPCA01",
+	"DPSNY002":           "DPSNY002",
+	"DPSCA004":           "DPSCA004",
+	"HYTX30":             "HYTX30",
+	"ARPCA01":            "ARPCA01",
+}
+
 var pgWarehouseAddressCodes = map[string]struct{}{
 	"WH2602103441974274": {},
 	"PG1955":             {},
@@ -110,11 +124,22 @@ func RequiresManualParcelCreate(shopKey, code, name string) bool {
 }
 
 func ResolvedDPSWarehouseCode(code, name string) string {
+	oms := ResolvedOMSWarehouseCode(code, name)
+	if OMSAccountForResolvedWarehouse(oms) == "dps" {
+		return oms
+	}
+	return ""
+}
+
+func ResolvedOMSWarehouseCode(code, name string) string {
+	if mapped, ok := omsWarehouseAddressCodes[normalizedWarehouseCode(code)]; ok {
+		return mapped
+	}
 	if mapped, ok := dpsWarehouseAddressCodes[normalizedWarehouseCode(code)]; ok {
 		return mapped
 	}
 	identity := warehouseIdentity(code, name)
-	if identity == "" || !strings.Contains(identity, "DPS") {
+	if identity == "" {
 		return ""
 	}
 	if strings.Contains(identity, "DPSNY002") || strings.Contains(identity, "DPS002") {
@@ -123,7 +148,86 @@ func ResolvedDPSWarehouseCode(code, name string) string {
 	if strings.Contains(identity, "DPSCA004") || strings.Contains(identity, "DPS004") {
 		return "DPSCA004"
 	}
+	if strings.Contains(identity, "HYTX30") {
+		return "HYTX30"
+	}
+	if strings.Contains(identity, "ARPCA01") {
+		return "ARPCA01"
+	}
+	if strings.Contains(identity, "ARP") && (strings.Contains(identity, "美东") || strings.Contains(identity, "EAST") || strings.Contains(identity, "PA")) {
+		return "HYTX30"
+	}
+	if strings.Contains(identity, "ARP") && (strings.Contains(identity, "美西") || strings.Contains(identity, "WEST") || strings.Contains(identity, "LA")) {
+		return "ARPCA01"
+	}
 	return ""
+}
+
+func OMSAccountForResolvedWarehouse(omsCode string) string {
+	switch normalizedWarehouseCode(omsCode) {
+	case "DPSNY002", "DPSCA004":
+		return "dps"
+	case "HYTX30", "ARPCA01":
+		return "arp"
+	default:
+		return ""
+	}
+}
+
+type PurchasedWarehouse struct {
+	AddressCode string
+	OMSCode     string
+	Account     string
+}
+
+func (purchase PurchasedWarehouse) OK() bool {
+	return purchase.OMSCode != "" && purchase.Account != ""
+}
+
+// ResolvePurchasedWarehouse maps a bought-label SHEIN warehouse to the OMS
+// warehouse. Same-price quote/purchase siblings are part of the buy-label
+// record: when SHEIN stores a DPS address ID but the same purchased channel
+// and price also quoted an ARP warehouse, OMS assignment follows ARP.
+func ResolvePurchasedWarehouse(selected string, samePriceAddressCodes []string) PurchasedWarehouse {
+	selected = strings.TrimSpace(selected)
+	selectedOMS := ResolvedOMSWarehouseCode(selected, "")
+	selectedAccount := OMSAccountForResolvedWarehouse(selectedOMS)
+	arp := PurchasedWarehouse{}
+	dps := PurchasedWarehouse{}
+	consider := func(addressCode string) {
+		oms := ResolvedOMSWarehouseCode(addressCode, "")
+		account := OMSAccountForResolvedWarehouse(oms)
+		switch account {
+		case "arp":
+			if arp.OMSCode == "" {
+				arp = PurchasedWarehouse{AddressCode: strings.TrimSpace(addressCode), OMSCode: oms, Account: account}
+			}
+		case "dps":
+			if dps.OMSCode == "" {
+				dps = PurchasedWarehouse{AddressCode: strings.TrimSpace(addressCode), OMSCode: oms, Account: account}
+			}
+		}
+	}
+	consider(selected)
+	for _, addressCode := range samePriceAddressCodes {
+		if strings.TrimSpace(addressCode) == "" || strings.EqualFold(strings.TrimSpace(addressCode), selected) {
+			continue
+		}
+		consider(addressCode)
+	}
+	if selectedAccount == "arp" {
+		return PurchasedWarehouse{AddressCode: selected, OMSCode: selectedOMS, Account: "arp"}
+	}
+	if selectedAccount == "dps" && arp.OMSCode == "" {
+		return PurchasedWarehouse{AddressCode: selected, OMSCode: selectedOMS, Account: "dps"}
+	}
+	if arp.OK() {
+		return arp
+	}
+	if dps.OK() {
+		return dps
+	}
+	return PurchasedWarehouse{}
 }
 
 func shopRequiresManualParcelCreate(shopKey string) bool {
@@ -136,6 +240,9 @@ func shopRequiresManualParcelCreate(shopKey string) bool {
 }
 
 func OMSAccountForWarehouse(code, name string) string {
+	if account := OMSAccountForResolvedWarehouse(ResolvedOMSWarehouseCode(code, name)); account != "" {
+		return account
+	}
 	if ResolvedDPSWarehouseCode(code, name) != "" {
 		return "dps"
 	}

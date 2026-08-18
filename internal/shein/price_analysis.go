@@ -287,6 +287,74 @@ func (s *Store) ReserveLabelPurchaseSelection(
 	return true, nil
 }
 
+type LabelPurchaseRecord struct {
+	OrderNo                      string
+	SelectedWarehouseAddressCode string
+	SelectedExpressChannelCode   string
+	SelectedPerformanceCost      string
+	SelectedCurrencyCode         string
+	DeliveryNo                   string
+	SamePriceWarehouseCodes      []string
+}
+
+func (s *Store) LatestLabelPurchase(ctx context.Context, shopKey, orderNo string) (LabelPurchaseRecord, error) {
+	shopKey = strings.TrimSpace(shopKey)
+	orderNo = strings.TrimSpace(orderNo)
+	if shopKey == "" || orderNo == "" {
+		return LabelPurchaseRecord{}, errors.New("shop and order are required")
+	}
+	record := LabelPurchaseRecord{OrderNo: orderNo}
+	err := s.pool.QueryRow(ctx, `
+		SELECT selected_warehouse_address_code, selected_express_channel_code,
+			COALESCE(selected_performance_cost::text, ''), COALESCE(selected_currency_code, ''),
+			COALESCE(delivery_no, '')
+		FROM shein_label_purchase_choices
+		WHERE shop_key = $1 AND order_no = $2
+		ORDER BY purchased_at DESC
+		LIMIT 1
+	`, shopKey, orderNo).Scan(
+		&record.SelectedWarehouseAddressCode, &record.SelectedExpressChannelCode,
+		&record.SelectedPerformanceCost, &record.SelectedCurrencyCode, &record.DeliveryNo,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return LabelPurchaseRecord{}, err
+	}
+	if err != nil {
+		return LabelPurchaseRecord{}, fmt.Errorf("load SHEIN label purchase: %w", err)
+	}
+	rows, err := s.pool.Query(ctx, `
+		SELECT DISTINCT quote.warehouse_address_code
+		FROM shein_go_shipping_quotes quote
+		JOIN shein_go_shipping_quote_candidates candidate USING (shop_key, pre_request_id)
+		WHERE quote.shop_key = $1 AND quote.order_no = $2
+			AND candidate.express_channel_code = $3
+			AND candidate.performance_cost IS NOT NULL
+			AND candidate.performance_cost = $4::numeric
+			AND candidate.currency_code = $5
+	`, shopKey, orderNo, record.SelectedExpressChannelCode, record.SelectedPerformanceCost, record.SelectedCurrencyCode)
+	if err != nil {
+		return LabelPurchaseRecord{}, fmt.Errorf("load SHEIN same-price purchase warehouses: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var warehouse string
+		if err := rows.Scan(&warehouse); err != nil {
+			return LabelPurchaseRecord{}, fmt.Errorf("scan SHEIN same-price purchase warehouse: %w", err)
+		}
+		if strings.TrimSpace(warehouse) != "" {
+			record.SamePriceWarehouseCodes = append(record.SamePriceWarehouseCodes, strings.TrimSpace(warehouse))
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return LabelPurchaseRecord{}, fmt.Errorf("read SHEIN same-price purchase warehouses: %w", err)
+	}
+	return record, nil
+}
+
+func (record LabelPurchaseRecord) ResolvedWarehouse() PurchasedWarehouse {
+	return ResolvePurchasedWarehouse(record.SelectedWarehouseAddressCode, record.SamePriceWarehouseCodes)
+}
+
 func (s *Store) UpdateLabelPurchaseResult(ctx context.Context, shopKey, preRequestID, placeRequestID, deliveryNo string) error {
 	_, err := s.pool.Exec(ctx, `
 		UPDATE shein_label_purchase_choices

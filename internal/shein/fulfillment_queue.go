@@ -157,10 +157,12 @@ func NormalizeOrderStatus(status string) string {
 		return "pending_processing"
 	case "2", "pending_shipping":
 		return "pending_shipping"
-	case "4", "7", "shipped":
+	case "4", "shipped":
 		return "shipped"
 	case "5", "delivered":
 		return "delivered"
+	case "7", "pending_pickup":
+		return "pending_pickup"
 	case "6", "refunded":
 		return "refunded"
 	default:
@@ -175,6 +177,25 @@ func OrderFulfilledOnPlatform(status string) bool {
 	default:
 		return false
 	}
+}
+
+func LabelPrintable(task FulfillmentTask) bool {
+	if OrderFulfilledOnPlatform(task.OrderStatusNormalized) || OrderFulfilledOnPlatform(task.OrderStatus) || OrderFulfilledOnPlatform(task.OMSStatusKey) {
+		return false
+	}
+	if task.OMSSyncStatus == "verified" && OrderFulfilledOnPlatform(firstNonEmptyStatus(task.OMSStatusKey, task.OMSStatusText)) {
+		return false
+	}
+	return true
+}
+
+func firstNonEmptyStatus(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func (s *Store) MappedOrderGoods(ctx context.Context, shopKey, orderNo string) ([]QueueGoods, error) {

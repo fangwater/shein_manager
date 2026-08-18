@@ -94,21 +94,36 @@ func (s *Server) recordParcelWatch(ctx context.Context, shopKey, orderNo, wareho
 }
 
 func (s *Server) refreshWarehouseWatch(ctx context.Context, task shein.FulfillmentTask) (shein.FulfillmentTask, error) {
-	warehouse := firstNonEmpty(shein.ResolvedDPSWarehouseCode(task.WarehouseAddressCode, ""), strings.TrimSpace(task.OMSWarehouseCode))
-	parcel, parcelErr := s.lookupLingxingParcel(ctx, warehouse, task.OrderNo)
-	if parcelErr == nil && strings.TrimSpace(parcel.OutboundOrderNo) != "" {
-		task.OutboundOrderNo = parcel.OutboundOrderNo
-		task.OutboundStatus = parcel.Status
-		task.OutboundStatusName = parcel.StatusName
-		task.LabelAttached = parcel.LabelAttached
-		task.ParcelComplete = lingxingParcelCompletesManualCreate(parcel)
+	purchase, purchaseWarehouse := s.purchasedWarehouseForTask(ctx, task)
+	dpsWarehouse := ""
+	if purchaseWarehouse.Account == "dps" {
+		dpsWarehouse = purchaseWarehouse.OMSCode
+	} else {
+		dpsWarehouse = shein.ResolvedDPSWarehouseCode(task.WarehouseAddressCode, "")
+		if purchaseWarehouse.OK() {
+			dpsWarehouse = ""
+		}
+	}
+	warehouse := firstNonEmpty(purchaseWarehouse.OMSCode, dpsWarehouse, strings.TrimSpace(task.OMSWarehouseCode))
+	var parcel lingxingParcelStatus
+	var parcelErr error
+	if dpsWarehouse != "" {
+		parcel, parcelErr = s.lookupLingxingParcel(ctx, dpsWarehouse, task.OrderNo)
+		if parcelErr == nil && strings.TrimSpace(parcel.OutboundOrderNo) != "" {
+			task.OutboundOrderNo = parcel.OutboundOrderNo
+			task.OutboundStatus = parcel.Status
+			task.OutboundStatusName = parcel.StatusName
+			task.LabelAttached = parcel.LabelAttached
+			task.ParcelComplete = lingxingParcelCompletesManualCreate(parcel)
+			warehouse = dpsWarehouse
+		}
 	}
 	update := shein.ParcelWatchUpdate{
 		OutboundOrderNo:    task.OutboundOrderNo,
 		OutboundStatus:     task.OutboundStatus,
 		OutboundStatusName: task.OutboundStatusName,
 		LabelAttached:      task.LabelAttached,
-		OMSAccount:         firstNonEmpty(task.OMSAccount, shein.OMSAccountForWarehouse(task.WarehouseAddressCode, warehouse)),
+		OMSAccount:         firstNonEmpty(purchaseWarehouse.Account, task.OMSAccount, shein.OMSAccountForWarehouse(task.WarehouseAddressCode, warehouse)),
 		OMSOrderNo:         task.OMSOrderNo,
 		OMSStatusCode:      task.OMSStatusCode,
 		OMSStatusKey:       task.OMSStatusKey,
@@ -117,7 +132,7 @@ func (s *Server) refreshWarehouseWatch(ctx context.Context, task shein.Fulfillme
 		OMSSyncStatus:      "waiting_sync",
 		OMSSyncMessage:     "正在查询领星仓库状态",
 	}
-	if parcelErr != nil && strings.TrimSpace(task.OutboundOrderNo) == "" {
+	if parcelErr != nil && strings.TrimSpace(task.OutboundOrderNo) == "" && !shein.RequiresManualParcelCreate(s.shopKey, task.WarehouseAddressCode, warehouse) {
 		if decision, ok := sheinPlatformAlreadyFulfilledDecision(s.sheinPlatformFulfillmentStatus(ctx, s.shopKey, task.OrderNo)); ok {
 			applySHEINOMSDecision(&update, decision)
 			if err := s.store.SaveParcelWatch(ctx, s.shopKey, task.OrderNo, update); err != nil {
@@ -153,33 +168,67 @@ func (s *Server) refreshWarehouseWatch(ctx context.Context, task shein.Fulfillme
 		_ = s.store.SaveParcelWatch(ctx, s.shopKey, task.OrderNo, update)
 		return task, errors.New(update.OMSSyncMessage)
 	}
-	account := firstNonEmpty(update.OMSAccount, "dps")
-	expected, err := s.xlwms.QueryPlatformOrder(ctx, account, task.OrderNo)
+	preferredAccount := firstNonEmpty(purchaseWarehouse.Account, update.OMSAccount, shein.OMSAccountForWarehouse(task.WarehouseAddressCode, warehouse), "dps")
+	dpsLookup, err := s.xlwms.QueryPlatformOrder(ctx, "dps", task.OrderNo)
 	if err != nil {
 		update.OMSSyncStatus = "failed"
 		update.OMSSyncMessage = err.Error()
 		_ = s.store.SaveParcelWatch(ctx, s.shopKey, task.OrderNo, update)
 		return task, err
 	}
-	oppositeAccount := shein.OppositeOMSAccount(account)
-	var opposite xlwms.PlatformOrderLookup
-	if oppositeAccount != "" {
-		opposite, err = s.xlwms.QueryPlatformOrder(ctx, oppositeAccount, task.OrderNo)
-		if err != nil {
-			update.OMSSyncStatus = "failed"
-			update.OMSSyncMessage = err.Error()
-			_ = s.store.SaveParcelWatch(ctx, s.shopKey, task.OrderNo, update)
+	arpLookup, err := s.xlwms.QueryPlatformOrder(ctx, "arp", task.OrderNo)
+	if err != nil {
+		update.OMSSyncStatus = "failed"
+		update.OMSSyncMessage = err.Error()
+		_ = s.store.SaveParcelWatch(ctx, s.shopKey, task.OrderNo, update)
+		return task, err
+	}
+	if purchaseWarehouse.Account != "arp" &&
+		shein.RequiresManualParcelCreate(s.shopKey, task.WarehouseAddressCode, warehouse) &&
+		strings.TrimSpace(firstNonEmpty(parcel.OutboundOrderNo, task.OutboundOrderNo)) == "" &&
+		len(activeOMSPlatformOrders(arpLookup)) == 0 {
+		update.OMSAccount = "dps"
+		update.OMSWarehouseCode = firstNonEmpty(purchaseWarehouse.OMSCode, dpsWarehouse, update.OMSWarehouseCode)
+		update.OMSSyncStatus = "waiting_sync"
+		update.OMSSyncMessage = "等待 DPS 手动建领星出库单"
+		if err := s.store.SaveParcelWatch(ctx, s.shopKey, task.OrderNo, update); err != nil {
 			return task, err
 		}
+		_ = s.store.EnsureWarehouseLedgerJob(ctx, s.shopKey, task.OrderNo, task.WarehouseAddressCode, task.ExpressChannelCode, task.PlaceRequestID, task.DeliveryNo)
+		return s.store.LatestFulfillmentTask(ctx, s.shopKey, task.OrderNo)
+	}
+	expected, opposite, account := chooseOMSLookups(preferredAccount, dpsLookup, arpLookup)
+	if purchaseWarehouse.OK() {
+		warehouse = purchaseWarehouse.OMSCode
+		update.OMSAccount = purchaseWarehouse.Account
+		update.OMSWarehouseCode = purchaseWarehouse.OMSCode
+	} else if account == "arp" {
+		warehouse = firstNonEmpty(firstOMSWarehouse(arpLookup), "ARP")
+		update.OMSWarehouseCode = warehouse
 	}
 	startedAt := task.CreatedAt
 	if startedAt.IsZero() {
 		startedAt = task.UpdatedAt
 	}
 	decision := decideSHEINOMSPlatformOrder(expected, opposite, warehouse, startedAt, time.Now(), platformStatus)
+	if decision.State == "pending" && purchaseWarehouse.OK() {
+		if assignErr := s.assignPendingOMSPlatformOrder(ctx, task, purchase, purchaseWarehouse, expected); assignErr != nil {
+			decision.Message = "领星待处理，仓库物流自动分配失败，等待后台重试：" + assignErr.Error()
+		} else {
+			refreshed, refreshErr := s.xlwms.QueryPlatformOrder(ctx, purchaseWarehouse.Account, task.OrderNo)
+			if refreshErr == nil && len(activeOMSPlatformOrders(refreshed)) == 1 {
+				expected = refreshed
+				decision = decideSHEINOMSPlatformOrder(expected, opposite, purchaseWarehouse.OMSCode, startedAt, time.Now(), platformStatus)
+			}
+			if decision.State == "pending" {
+				decision.Message = "领星仓库物流已自动分配，等待状态推进"
+			}
+		}
+	}
 	applySHEINOMSDecision(&update, decision)
 	if decision.Target.OMSOrderNo != "" {
-		update.OMSAccount = firstNonEmpty(expected.Account, account)
+		update.OMSAccount = firstNonEmpty(purchaseWarehouse.Account, expected.Account, account)
+		update.OMSWarehouseCode = firstNonEmpty(purchaseWarehouse.OMSCode, decision.Target.SendWarehouseCode, update.OMSWarehouseCode)
 	}
 	if err := s.store.SaveParcelWatch(ctx, s.shopKey, task.OrderNo, update); err != nil {
 		return task, err
@@ -204,6 +253,7 @@ func applyLingxingParcelWarehouseDecision(update *shein.ParcelWatchUpdate, parce
 	update.OutboundStatus = parcel.Status
 	update.OutboundStatusName = firstNonEmpty(parcel.StatusName, lingxingOutboundStatusName(*parcel.Status))
 	update.LabelAttached = parcel.LabelAttached || update.LabelAttached
+	update.OMSOrderNo = firstNonEmpty(update.OMSOrderNo, parcel.OutboundOrderNo)
 	update.OMSStatusCode = parcel.Status
 	update.OMSStatusKey = lingxingOutboundStatusKey(*parcel.Status)
 	update.OMSStatusText = firstNonEmpty(parcel.StatusName, lingxingOutboundStatusName(*parcel.Status))
@@ -213,7 +263,7 @@ func applyLingxingParcelWarehouseDecision(update *shein.ParcelWatchUpdate, parce
 		update.OMSSyncMessage = "领星出库单已创建，等待仓库处理"
 		return true
 	case 2:
-		update.OMSSyncStatus = "verified"
+		update.OMSSyncStatus = "waiting_sync"
 		update.OMSSyncMessage = "领星仓库处理中"
 		return true
 	case 3:
@@ -265,6 +315,71 @@ func (s *Server) sheinPlatformFulfillmentStatus(ctx context.Context, shopKey, or
 		return strings.TrimSpace(normalized)
 	}
 	return shein.NormalizeOrderStatus(orderStatusFromMap(detail))
+}
+
+func (s *Server) purchasedWarehouseForTask(ctx context.Context, task shein.FulfillmentTask) (shein.LabelPurchaseRecord, shein.PurchasedWarehouse) {
+	if s.store == nil {
+		return shein.LabelPurchaseRecord{}, shein.ResolvePurchasedWarehouse(task.WarehouseAddressCode, nil)
+	}
+	record, err := s.store.LatestLabelPurchase(ctx, s.shopKey, task.OrderNo)
+	if err != nil {
+		return shein.LabelPurchaseRecord{}, shein.ResolvePurchasedWarehouse(task.WarehouseAddressCode, nil)
+	}
+	return record, record.ResolvedWarehouse()
+}
+
+func (s *Server) assignPendingOMSPlatformOrder(
+	ctx context.Context,
+	task shein.FulfillmentTask,
+	purchase shein.LabelPurchaseRecord,
+	warehouse shein.PurchasedWarehouse,
+	lookup xlwms.PlatformOrderLookup,
+) error {
+	if s.xlwms == nil {
+		return errors.New("领星查询服务未配置")
+	}
+	if !warehouse.OK() {
+		return errors.New("买面单记录没有可用的发货仓库")
+	}
+	if strings.TrimSpace(purchase.DeliveryNo) == "" && strings.TrimSpace(task.DeliveryNo) == "" && strings.TrimSpace(task.WaybillNo) == "" {
+		return errors.New("买面单记录尚未确认运单号")
+	}
+	if len(lookup.Orders) != 1 {
+		return errors.New("领星未找到唯一的同号平台订单")
+	}
+	order := lookup.Orders[0]
+	if order.Status != 0 {
+		return errors.New("领星平台订单已不在待处理状态")
+	}
+	if code := strings.TrimSpace(order.SendWarehouseCode); code != "" && !strings.EqualFold(code, warehouse.OMSCode) {
+		return errors.New("领星已有不同的发货仓库")
+	}
+	preview, err := s.xlwms.PreviewWarehouseAssignment(ctx, warehouse.Account, task.OrderNo)
+	if err != nil {
+		return err
+	}
+	if !preview.Ready || len(preview.Routes) != 1 || len(preview.Unresolved) != 0 {
+		reason := "无法根据已购面单匹配实际仓库"
+		if len(preview.Unresolved) > 0 && strings.TrimSpace(preview.Unresolved[0].Reason) != "" {
+			reason = strings.TrimSpace(preview.Unresolved[0].Reason)
+		}
+		return errors.New(reason)
+	}
+	if !strings.EqualFold(strings.TrimSpace(preview.Routes[0].WarehouseCode), warehouse.OMSCode) {
+		return errors.New("分仓预览与买单仓库不一致")
+	}
+	result, err := s.xlwms.AssignWarehouse(ctx, warehouse.Account, task.OrderNo, xlwms.AutoMatchCarrier)
+	if err != nil {
+		return err
+	}
+	if result.Total != 1 || result.Success != 1 || result.Failed != 0 {
+		message := "领星未确认仓库分配结果"
+		if len(result.Failures) > 0 && strings.TrimSpace(result.Failures[0].Error) != "" {
+			message = strings.TrimSpace(result.Failures[0].Error)
+		}
+		return errors.New(message)
+	}
+	return nil
 }
 
 func sheinPlatformAlreadyFulfilledDecision(platformStatus string) (sheinOMSDecision, bool) {
@@ -353,7 +468,6 @@ func decideSHEINOMSPlatformOrder(expected, opposite xlwms.PlatformOrderLookup, e
 	case 2:
 		decision.State = "processing"
 		decision.Message = "领星仓库处理中"
-		decision.Verified = true
 	case 3:
 		decision.State = "shipped"
 		decision.Message = "领星已发货"
@@ -373,6 +487,50 @@ func decideSHEINOMSPlatformOrder(expected, opposite xlwms.PlatformOrderLookup, e
 		return sheinOMSDecision{State: "manual_required", ManualRequired: true, Target: target, Message: "领星返回未知平台订单状态"}
 	}
 	return decision
+}
+
+func activeOMSPlatformOrders(lookup xlwms.PlatformOrderLookup) []xlwms.PlatformOrder {
+	orders := make([]xlwms.PlatformOrder, 0, len(lookup.Orders))
+	for _, order := range lookup.Orders {
+		if order.Status == 4 {
+			continue
+		}
+		orders = append(orders, order)
+	}
+	return orders
+}
+
+func isReliableOMSWarehouseCode(code string) bool {
+	return shein.OMSAccountForResolvedWarehouse(code) != ""
+}
+
+func firstOMSWarehouse(lookup xlwms.PlatformOrderLookup) string {
+	for _, order := range lookup.Orders {
+		if warehouse := strings.TrimSpace(order.SendWarehouseCode); warehouse != "" {
+			return warehouse
+		}
+	}
+	return ""
+}
+
+func chooseOMSLookups(preferred string, dpsLookup, arpLookup xlwms.PlatformOrderLookup) (xlwms.PlatformOrderLookup, xlwms.PlatformOrderLookup, string) {
+	preferred = strings.ToLower(strings.TrimSpace(preferred))
+	dpsActive := len(activeOMSPlatformOrders(dpsLookup))
+	arpActive := len(activeOMSPlatformOrders(arpLookup))
+	switch {
+	case preferred == "arp" && arpActive > 0:
+		return arpLookup, dpsLookup, "arp"
+	case preferred == "dps" && dpsActive > 0:
+		return dpsLookup, arpLookup, "dps"
+	case arpActive > 0 && dpsActive == 0:
+		return arpLookup, dpsLookup, "arp"
+	case dpsActive > 0 && arpActive == 0:
+		return dpsLookup, arpLookup, "dps"
+	case preferred == "arp":
+		return arpLookup, dpsLookup, "arp"
+	default:
+		return dpsLookup, arpLookup, "dps"
+	}
 }
 
 func firstCanceledOMSOrder(lookup xlwms.PlatformOrderLookup) xlwms.PlatformOrder {
@@ -410,14 +568,18 @@ func (s *Server) syncFulfillmentAudits(ctx context.Context) error {
 		if strings.TrimSpace(task.OrderNo) == "" {
 			continue
 		}
-		warehouse := firstNonEmpty(task.OMSWarehouseCode, shein.ResolvedDPSWarehouseCode(task.WarehouseAddressCode, ""))
-		status := firstNonEmpty(task.OMSStatusKey, task.OMSSyncStatus, "pending_pickup")
+		_, purchased := s.purchasedWarehouseForTask(ctx, task)
+		warehouse := firstNonEmpty(purchased.OMSCode, task.OMSWarehouseCode, shein.ResolvedOMSWarehouseCode(task.WarehouseAddressCode, ""))
+		if !isReliableOMSWarehouseCode(warehouse) {
+			warehouse = ""
+		}
+		status := sheinFulfillmentAuditPlatformStatus(task)
 		orders = append(orders, xlwms.FulfillmentAuditSnapshotOrder{
 			PlatformOrderNo:    task.OrderNo,
 			PlatformStatus:     status,
-			PlatformStatusCode: task.OMSStatusCode,
+			PlatformStatusCode: sheinFulfillmentAuditPlatformStatusCode(task),
 			PlatformShippingAt: task.OMSQueriedAt,
-			WarehouseKey:       firstNonEmpty(task.OMSAccount, shein.OMSAccountForWarehouse(task.WarehouseAddressCode, warehouse)),
+			WarehouseKey:       firstNonEmpty(purchased.OMSCode, purchased.Account, task.OMSAccount, shein.OMSAccountForWarehouse(task.WarehouseAddressCode, warehouse)),
 			WarehouseCode:      warehouse,
 			TrackingNumber:     firstNonEmpty(task.WaybillNo, task.DeliveryNo),
 		})
@@ -425,6 +587,28 @@ func (s *Server) syncFulfillmentAudits(ctx context.Context) error {
 	return s.xlwms.SyncFulfillmentAudits(ctx, xlwms.FulfillmentAuditSnapshot{
 		Platform: "shein", ShopCode: s.shopKey, ShopName: s.shopName, Orders: orders,
 	})
+}
+
+func sheinFulfillmentAuditPlatformStatus(task shein.FulfillmentTask) string {
+	if shein.OrderFulfilledOnPlatform(task.OMSStatusKey) {
+		return "pending_pickup"
+	}
+	switch strings.TrimSpace(task.OMSStatusKey) {
+	case "processing", "shipped", "delivered", "outbound", "canceled", "exception", "pending", "awaiting_platform_label":
+		return "pending_pickup"
+	default:
+		return firstNonEmpty(task.OMSStatusKey, "pending_pickup")
+	}
+}
+
+func sheinFulfillmentAuditPlatformStatusCode(task shein.FulfillmentTask) *int {
+	if shein.OrderFulfilledOnPlatform(task.OMSStatusKey) {
+		return nil
+	}
+	if task.OMSStatusCode != nil && *task.OMSStatusCode >= 0 && *task.OMSStatusCode <= 3 {
+		return nil
+	}
+	return task.OMSStatusCode
 }
 
 func (s *Server) listOMSPlatformOrders(writer http.ResponseWriter, request *http.Request) {

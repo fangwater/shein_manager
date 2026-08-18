@@ -160,6 +160,10 @@ func (s *Server) fulfillmentTasks(writer http.ResponseWriter, request *http.Requ
 		s.internalError(writer, "list fulfillment tasks", err)
 		return
 	}
+	if err := s.store.AttachOrderFulfillmentStates(ctx, shopKey, tasks); err != nil {
+		s.internalError(writer, "attach SHEIN order fulfillment states", err)
+		return
+	}
 	s.attachLingxingParcelStatusToTasks(ctx, shopKey, tasks)
 	writeJSON(writer, http.StatusOK, response{Success: true, Data: tasks})
 }
@@ -232,6 +236,12 @@ func (s *Server) operationHandler(operation string) http.Handler {
 			}
 			if !recorded {
 				s.logger.Info("SHEIN legacy quote has no price snapshot", "shop", shopKey)
+			}
+		}
+		if operation == "print-express-info" {
+			if err := s.rejectUnprintableSHEINLabel(ctx, shopKey, payload.Data); err != nil {
+				writeJSON(writer, http.StatusConflict, response{Success: false, Error: err.Error()})
+				return
 			}
 		}
 		started := time.Now()
@@ -341,6 +351,61 @@ func decodeJSON(writer http.ResponseWriter, request *http.Request, target any) b
 		return false
 	}
 	return true
+}
+
+func (s *Server) rejectUnprintableSHEINLabel(ctx context.Context, shopKey string, data map[string]any) error {
+	if s.store == nil {
+		return nil
+	}
+	deliveryNo, orderNo, _ := fulfillmentLabelIdentifiers(data)
+	task, err := sheinFulfillmentTaskForLabel(ctx, s.store, shopKey, orderNo, deliveryNo)
+	if err != nil {
+		if errors.Is(err, shein.ErrFulfillmentTaskNotFound) {
+			return nil
+		}
+		return err
+	}
+	if shein.LabelPrintable(task) {
+		return nil
+	}
+	return errors.New("SHEIN 已揽收或已签收，面单不能再打印")
+}
+
+func sheinFulfillmentTaskForLabel(ctx context.Context, store *shein.Store, shopKey, orderNo, deliveryNo string) (shein.FulfillmentTask, error) {
+	orderNo = strings.TrimSpace(orderNo)
+	if orderNo != "" {
+		task, err := store.LatestFulfillmentTask(ctx, shopKey, orderNo)
+		if err == nil {
+			return labeledTaskWithOrderState(ctx, store, shopKey, task)
+		}
+		if !errors.Is(err, shein.ErrFulfillmentTaskNotFound) {
+			return shein.FulfillmentTask{}, err
+		}
+	}
+	if strings.TrimSpace(deliveryNo) == "" {
+		return shein.FulfillmentTask{}, shein.ErrFulfillmentTaskNotFound
+	}
+	tasks, err := store.ListFulfillmentTasks(ctx, shopKey, 200)
+	if err != nil {
+		return shein.FulfillmentTask{}, err
+	}
+	if err := store.AttachOrderFulfillmentStates(ctx, shopKey, tasks); err != nil {
+		return shein.FulfillmentTask{}, err
+	}
+	for _, task := range tasks {
+		if strings.TrimSpace(task.DeliveryNo) == strings.TrimSpace(deliveryNo) {
+			return task, nil
+		}
+	}
+	return shein.FulfillmentTask{}, shein.ErrFulfillmentTaskNotFound
+}
+
+func labeledTaskWithOrderState(ctx context.Context, store *shein.Store, shopKey string, task shein.FulfillmentTask) (shein.FulfillmentTask, error) {
+	loaded := []shein.FulfillmentTask{task}
+	if err := store.AttachOrderFulfillmentStates(ctx, shopKey, loaded); err != nil {
+		return shein.FulfillmentTask{}, err
+	}
+	return loaded[0], nil
 }
 
 func (s *Server) writeAPIError(writer http.ResponseWriter, err error) {

@@ -79,8 +79,17 @@ func TestOrderFulfilledOnPlatformArchivesShippedAndDelivered(t *testing.T) {
 	if !OrderFulfilledOnPlatform("5") || !OrderFulfilledOnPlatform("delivered") || !OrderFulfilledOnPlatform("4") {
 		t.Fatal("SHEIN shipped/delivered statuses must count as already fulfilled")
 	}
-	if OrderFulfilledOnPlatform("1") || OrderFulfilledOnPlatform("2") || OrderFulfilledOnPlatform("6") {
+	if OrderFulfilledOnPlatform("1") || OrderFulfilledOnPlatform("2") || OrderFulfilledOnPlatform("6") || OrderFulfilledOnPlatform("7") {
 		t.Fatal("open or refunded SHEIN statuses must not auto-archive warehouse watch")
+	}
+	if NormalizeOrderStatus("7") != "pending_pickup" {
+		t.Fatal("SHEIN status 7 is pending pickup, not shipped")
+	}
+	if LabelPrintable(FulfillmentTask{OrderStatusNormalized: "delivered"}) {
+		t.Fatal("delivered SHEIN orders must not stay printable")
+	}
+	if !LabelPrintable(FulfillmentTask{OrderStatusNormalized: "pending_shipping"}) {
+		t.Fatal("open SHEIN orders must stay printable")
 	}
 }
 

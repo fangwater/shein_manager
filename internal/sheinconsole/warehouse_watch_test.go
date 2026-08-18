@@ -16,8 +16,8 @@ func TestApplyLingxingParcelWarehouseDecisionUsesOutboundStatus(t *testing.T) {
 	}) {
 		t.Fatal("labeled warehouse-processing parcel must complete warehouse detection")
 	}
-	if update.OMSSyncStatus != "verified" || update.OMSStatusCode == nil || *update.OMSStatusCode != 2 {
-		t.Fatalf("update = %#v", update)
+	if update.OMSSyncStatus != "waiting_sync" || update.OMSStatusCode == nil || *update.OMSStatusCode != 2 || update.OMSStatusKey != "processing" {
+		t.Fatalf("warehouse-processing parcel must stay in status 2 until outbound: %#v", update)
 	}
 	canceled := 4
 	update = shein.ParcelWatchUpdate{}
@@ -25,6 +25,47 @@ func TestApplyLingxingParcelWarehouseDecisionUsesOutboundStatus(t *testing.T) {
 		OutboundOrderNo: "OBS-CANCELED", Status: &canceled, StatusName: "已取消",
 	}) || update.OMSSyncStatus != "manual_required" {
 		t.Fatalf("canceled parcel = %#v", update)
+	}
+}
+
+func TestDPSManualParcelsDoNotUseOMSPlatformLeak(t *testing.T) {
+	if shein.RequiresManualParcelCreate("beauty-hangers-home", "WH2604283535967233", "DPSNY002") == false {
+		t.Fatal("Beauty Hangers DPS orders must stay on the manual parcel path")
+	}
+	if shein.RequiresManualParcelCreate("beauty-hangers-home", "WH2607084039788546", "ARP") {
+		t.Fatal("ARP orders must still use the OMS platform-order path")
+	}
+}
+
+func TestAssignPendingOMSPlatformOrderUsesPurchasedWarehouse(t *testing.T) {
+	server := &Server{xlwms: nil}
+	err := server.assignPendingOMSPlatformOrder(nil, shein.FulfillmentTask{OrderNo: "GSU-1", DeliveryNo: "GU-1"}, shein.LabelPurchaseRecord{DeliveryNo: "GU-1"}, shein.PurchasedWarehouse{OMSCode: "HYTX30", Account: "arp"}, xlwms.PlatformOrderLookup{
+		Orders: []xlwms.PlatformOrder{{OMSOrderNo: "SO-1", Status: 0}},
+	})
+	if err == nil || err.Error() != "领星查询服务未配置" {
+		t.Fatalf("missing XLWMS must fail assignment: %v", err)
+	}
+	if err := (&Server{}).assignPendingOMSPlatformOrder(nil, shein.FulfillmentTask{OrderNo: "GSU-1"}, shein.LabelPurchaseRecord{}, shein.PurchasedWarehouse{}, xlwms.PlatformOrderLookup{}); err == nil {
+		t.Fatal("empty purchase warehouse must not assign")
+	}
+}
+
+func TestChooseOMSLookupsPrefersActiveARPWhenDPSHasNoPlatformOrder(t *testing.T) {
+	dps := xlwms.PlatformOrderLookup{Account: "dps"}
+	arp := xlwms.PlatformOrderLookup{
+		Account: "arp",
+		Orders: []xlwms.PlatformOrder{{
+			OMSOrderNo: "SO389260818000031", Status: 0, StatusKey: "pending", StatusText: "待处理",
+		}},
+	}
+	expected, opposite, account := chooseOMSLookups("dps", dps, arp)
+	if account != "arp" || expected.Account != "arp" || opposite.Account != "dps" || expected.Orders[0].OMSOrderNo != "SO389260818000031" {
+		t.Fatalf("ARP platform order was not preferred: account=%s expected=%#v opposite=%#v", account, expected, opposite)
+	}
+	if len(activeOMSPlatformOrders(xlwms.PlatformOrderLookup{
+		Orders: []xlwms.PlatformOrder{{Status: 4}, {Status: 0}},
+	})) != 1 {
+		t.Fatal("canceled OMS orders must not count as active")
 	}
 }
 
@@ -38,7 +79,7 @@ func TestDecideSHEINOMSPlatformOrderMatchesTemuWarehouseRules(t *testing.T) {
 		}},
 	}
 	decision := decideSHEINOMSPlatformOrder(processing, xlwms.PlatformOrderLookup{Account: "arp"}, "DPSNY002", now.Add(-time.Minute), now, "")
-	if !decision.Verified || decision.State != "processing" || decision.Target.OMSOrderNo != "OMS-1" {
+	if decision.Verified || decision.ManualRequired || decision.State != "processing" || decision.Target.OMSOrderNo != "OMS-1" {
 		t.Fatalf("processing decision = %#v", decision)
 	}
 

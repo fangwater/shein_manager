@@ -104,9 +104,26 @@ parcel status; once an active outbound has the label, the order leaves the
 enters 自动发货账本 and 领星订单状态. A background watcher queries the
 bought-label OMS account and the opposite account, records warehouse status
 0/1/2/3, and syncs the same snapshot into XLWMS `fulfillment-audits`.
-If SHEIN has already shipped or delivered the order and there is no active
-Lingxing outbound, the watcher archives the row itself instead of waiting for
-a missing platform order or marking it as a leak. A second “补传面单” button calls SHEIN
+Warehouse-processing parcels stay in OMS status 2 until Lingxing marks them
+shipped. Beauty Hangers DPS parcels are judged by the Lingxing outbound, not
+the OMS platform-order search, so a warehouse-processing `OBS` number is never
+marked as a leak just because DPS has no matching `SO` platform order.
+If SHEIN stored a DPS warehouse code but ARP already has an active platform
+order, the watcher follows the ARP OMS status instead of waiting for a
+manual DPS parcel.
+OMS warehouse assignment uses the bought-label record the same way Temu
+does: `shein_label_purchase_choices` plus same-price quote siblings. When
+SHEIN stores a colliding DPS address ID but the purchase snapshot also
+quoted the same channel and price on an ARP warehouse, the watcher assigns
+that ARP OMS warehouse (`HYTX30` / `ARPCA01`) through XLWMS
+`routing-preview` and `warehouse-assignments` with `_AUTO_MATCH_`. Status 0
+pending ARP orders therefore leave 待处理 after the same automatic
+warehouse match Temu uses.
+If SHEIN has already shipped or delivered the order and there is no
+active Lingxing outbound, the watcher archives the row itself instead of
+waiting for a missing platform order or marking it as a leak. Collected or
+delivered SHEIN orders leave the processing queue, the 待补传 card, and the
+parcel-create panel; they cannot reprint or complementary-upload a label. A second “补传面单” button calls SHEIN
 `print-express-info` for a fresh `filePdfUrl` and uploads it through XLWMS
 `POST /outbound/tracking-label-update` (`updateTrackNoAndLabel`). Custom-channel
 warehouse-processing and label-exception parcels can use that button; draft,

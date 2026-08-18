@@ -712,23 +712,37 @@ function taskKey(task) {
 }
 
 function parcelNeedsComplementaryUpload(task) {
-  return Boolean(task) && !task.parcel_complete;
+  return Boolean(task) && task.label_printable !== false && (!task.parcel_complete || Number(task.outbound_status) === 2 || Number(task.outbound_status) === 7);
+}
+
+function sheinOrderAlreadyCollected(task) {
+  const status = String((task && (task.order_status_normalized || task.order_status || task.oms_status_key)) || "");
+  return ["4", "5", "shipped", "delivered"].includes(status) || task && task.label_printable === false;
 }
 
 function canCreateManualParcel(task) {
   return shopRequiresManualParcelCreate() && isDPSFulfillmentWarehouse(task && task.warehouse_address_code) &&
     (task && (task.status === "label_ready" || task.status === "ready")) &&
-    parcelNeedsComplementaryUpload(task);
+    parcelNeedsComplementaryUpload(task) && !sheinOrderAlreadyCollected(task);
+}
+
+function canStartManualParcel(task) {
+  return canCreateManualParcel(task) && !task.parcel_complete;
+}
+
+function canComplementaryUploadLabel(task) {
+  return canCreateManualParcel(task) && (Number(task && task.outbound_status) === 2 || Number(task && task.outbound_status) === 7);
 }
 
 function taskMatchesFilter(task, filter) {
   const status = task && task.status;
+  if (sheinOrderAlreadyCollected(task) && filter !== "failed") return false;
   if (filter === "placed") return status === "placed";
   if (filter === "checking") return ["checking", "confirming", "ready"].includes(status);
   if (filter === "label_ready") return status === "label_ready" && !task.parcel_complete;
-  if (filter === "parcel") return canCreateManualParcel(task);
+  if (filter === "parcel") return canComplementaryUploadLabel(task) || canStartManualParcel(task);
   if (filter === "failed") return status === "failed";
-  if (task && task.parcel_complete) return false;
+  if (task && task.parcel_complete && Number(task.outbound_status) !== 2 && Number(task.outbound_status) !== 7) return false;
   return status !== "failed";
 }
 
@@ -772,9 +786,10 @@ function renderTasks() {
     const deliveryNo = task.delivery_no || "等待履约编号";
     const canCheck = Boolean(task.place_request_id || task.delivery_no);
     const platformLabel = Number(task.order_place_type) === 1 && task.order_no && task.package_no;
-    const canPrint = Boolean(platformLabel || (task.status === "ready" || task.status === "label_ready") &&
+    const canPrint = !sheinOrderAlreadyCollected(task) && Boolean(platformLabel || (task.status === "ready" || task.status === "label_ready") &&
       (task.delivery_no || task.order_no && task.package_no));
-    const canCreateParcel = canCreateManualParcel(task);
+    const canCreateParcel = canStartManualParcel(task);
+    const canUploadLabel = canComplementaryUploadLabel(task);
     const failureTitle = task.failure_reason ? ' title="' + escapeHTML(task.failure_reason) + '"' : "";
     const key = taskKey(task);
     const selected = key && key === state.selectedTaskKey;
@@ -793,7 +808,8 @@ function renderTasks() {
       "</td><td><div class=\"action-row\"><button class=\"table-action\" data-check-task=\"" + index +
       "\" " + (canCheck ? "" : "disabled") + ">查询结果</button><button class=\"table-action primary\" data-label-task=\"" + index +
       "\" " + (canPrint ? "" : "disabled") + ">获取面单</button>" +
-      (canCreateParcel ? '<button class="table-action" data-parcel-task="' + index + '">手动建单</button><button class="table-action" data-upload-label-task="' + index + '">补传面单</button>' : "") +
+      (canCreateParcel ? '<button class="table-action" data-parcel-task="' + index + '">手动建单</button>' : "") +
+      (canUploadLabel ? '<button class="table-action" data-upload-label-task="' + index + '">补传面单</button>' : "") +
       "</div></td></tr>";
   }).join("");
   const placed = state.tasks.filter(function (task) { return task.status === "placed"; }).length;
@@ -801,7 +817,7 @@ function renderTasks() {
     return ["checking", "confirming", "ready"].includes(task.status);
   }).length;
   const ready = state.tasks.filter(function (task) { return taskMatchesFilter(task, "label_ready"); }).length;
-  const parcelReady = state.tasks.filter(function (task) { return canCreateManualParcel(task); }).length;
+  const parcelReady = state.tasks.filter(function (task) { return taskMatchesFilter(task, "parcel"); }).length;
   const processing = state.tasks.filter(function (task) { return taskMatchesFilter(task, "processing"); }).length;
   byId("nav-processing-count").textContent = String(processing);
   byId("nav-label-count").textContent = String(processing);
@@ -912,7 +928,7 @@ async function loadXLWMSParcelDraft(orderNo, button) {
   const task = selectedProcessingTask();
   orderNo = orderNo || (task || {}).order_no || "";
   if (!orderNo || !shopRequiresManualParcelCreate() ||
-      (task && task.order_no === orderNo && !isDPSFulfillmentWarehouse(task.warehouse_address_code))) {
+      (task && task.order_no === orderNo && (sheinOrderAlreadyCollected(task) || !canCreateManualParcel(task)))) {
     renderXLWMSParcelDraft(null);
     return;
   }
@@ -1023,6 +1039,7 @@ async function uploadXLWMSParcelLabel(button) {
 
 function taskStatusLabel(task) {
   if (task && typeof task === "object") {
+    if (sheinOrderAlreadyCollected(task)) return "SHEIN 已揽收";
     if (task.parcel_complete) return "领星已建单";
     task = task.status;
   }
@@ -1057,6 +1074,10 @@ async function checkTask(index, button) {
 async function fetchLabel(index, button) {
   const task = state.tasks[index];
   if (!task) return;
+  if (sheinOrderAlreadyCollected(task)) {
+    toast("订单 " + task.order_no + " 已揽收或已签收，SHEIN 不能再打印面单", true);
+    return;
+  }
   if (!window.confirm("确认向 SHEIN 获取订单 " + task.order_no + " 的面单？")) return;
   await busy(button, async function () {
     try {
@@ -1303,8 +1324,16 @@ function autoStatusClass(status) {
   return "pending";
 }
 
+function omsDisplayedStatus(item) {
+  if (item && item.outbound_order_no) return item.outbound_status;
+  return item ? item.oms_status_code : null;
+}
+
 function omsSyncLabel(item) {
   const sync = item && item.oms_sync_status;
+  const outboundStatus = omsDisplayedStatus(item);
+  if (Number(outboundStatus) === 2) return "领星仓库处理中";
+  if (Number(outboundStatus) === 3 || sync === "verified") return "领星已出库";
   return {
     querying: "正在查询领星",
     waiting_sync: "等待领星确认",
@@ -1404,7 +1433,8 @@ function renderLedgerJobs() {
       '</td><td>' + escapeHTML(formatTaskTime(job.oms_queried_at || job.updated_at)) + "</td></tr>";
   }).join("");
   const processing = jobs.filter(function (job) {
-    return ["queued", "running", "waiting_confirmation", "waiting_sync", "querying"].includes(job.oms_sync_status || job.status);
+    const outboundStatus = omsDisplayedStatus(job);
+    return Number(outboundStatus) === 2 || ["queued", "running", "waiting_confirmation", "waiting_sync", "querying"].includes(job.oms_sync_status || job.status);
   }).length;
   byId("metric-ledger-total").textContent = String(jobs.length);
   byId("metric-ledger-processing").textContent = String(processing);
@@ -1412,7 +1442,8 @@ function renderLedgerJobs() {
     return job.status === "failed" || job.oms_sync_status === "manual_required";
   }).length);
   byId("metric-ledger-completed").textContent = String(jobs.filter(function (job) {
-    return job.oms_sync_status === "verified" || (job.status === "completed" && job.parcel_complete);
+    const outboundStatus = omsDisplayedStatus(job);
+    return job.oms_sync_status === "verified" || Number(outboundStatus) === 3;
   }).length);
   byId("nav-ledger-count").textContent = String(jobs.length);
 }

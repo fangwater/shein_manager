@@ -3,6 +3,7 @@ package xlwms
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -77,6 +78,35 @@ func TestClientUsesPublicManagerContract(t *testing.T) {
 	}
 	<-requests
 	<-requests
+}
+
+func TestAssignWarehousePostsTemuStyleConfirmation(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.Method != http.MethodPost || request.URL.Path != "/platform-orders/warehouse-assignments" {
+			t.Fatalf("request = %s %s", request.Method, request.URL.Path)
+		}
+		if request.Header.Get("X-OMS-Account") != "arp" {
+			t.Fatalf("X-OMS-Account = %q", request.Header.Get("X-OMS-Account"))
+		}
+		var payload map[string]any
+		if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+			t.Fatal(err)
+		}
+		if fmt.Sprint(payload["confirmation"]) != "CONFIRM_AND_APPROVE" || fmt.Sprint(payload["logistics_carrier"]) != AutoMatchCarrier {
+			t.Fatalf("payload = %#v", payload)
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write([]byte(`{"success":true,"data":{"account":"arp","total":1,"success":1,"failed":0,"warehouse_code":"HYTX30","warehouse_codes":["HYTX30"]}}`))
+	}))
+	defer server.Close()
+	client, err := NewClient(server.URL, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := client.AssignWarehouse(context.Background(), "arp", "GSU-1", AutoMatchCarrier)
+	if err != nil || result.Success != 1 || result.WarehouseCode != "HYTX30" {
+		t.Fatalf("AssignWarehouse = %#v, %v", result, err)
+	}
 }
 
 func TestQueryInventoryForShopSendsShopIdentity(t *testing.T) {

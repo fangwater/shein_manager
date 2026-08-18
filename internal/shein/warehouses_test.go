@@ -50,6 +50,12 @@ func TestOMSAccountForWarehouseUsesOperatedOwnership(t *testing.T) {
 	if got := OMSAccountForWarehouse("WH2604283535967233", "DPSNY002（美东）"); got != "dps" {
 		t.Fatalf("DPS account = %q", got)
 	}
+	if got := ResolvedOMSWarehouseCode("WH2607084039788546", ""); got != "HYTX30" {
+		t.Fatalf("ARP east OMS warehouse = %q", got)
+	}
+	if got := ResolvedOMSWarehouseCode("WH2608123417047040", "ARP-美西仓"); got != "ARPCA01" {
+		t.Fatalf("ARP west OMS warehouse = %q", got)
+	}
 	if got := OMSAccountForWarehouse("WH2607084039788546", "ARP仓-美东"); got != "arp" {
 		t.Fatalf("ARP account = %q", got)
 	}
@@ -58,6 +64,25 @@ func TestOMSAccountForWarehouseUsesOperatedOwnership(t *testing.T) {
 	}
 	if OppositeOMSAccount("dps") != "arp" || OppositeOMSAccount("ARP") != "dps" {
 		t.Fatal("opposite OMS account mapping is wrong")
+	}
+}
+
+func TestResolvePurchasedWarehousePrefersSamePriceARPFromBuyLabel(t *testing.T) {
+	west := ResolvePurchasedWarehouse("WH2603303477748739", []string{"WH2608123417047040", "WH2603303477748739"})
+	if !west.OK() || west.Account != "arp" || west.OMSCode != "ARPCA01" {
+		t.Fatalf("same-price west ARP buy must map to ARPCA01: %#v", west)
+	}
+	east := ResolvePurchasedWarehouse("WH2604283535967233", []string{"WH2607084039788546"})
+	if !east.OK() || east.Account != "arp" || east.OMSCode != "HYTX30" {
+		t.Fatalf("same-price east ARP buy must map to HYTX30: %#v", east)
+	}
+	dpsOnly := ResolvePurchasedWarehouse("WH2604283535967233", []string{"WH2604283535967233"})
+	if !dpsOnly.OK() || dpsOnly.Account != "dps" || dpsOnly.OMSCode != "DPSNY002" {
+		t.Fatalf("DPS-only buy must stay DPS: %#v", dpsOnly)
+	}
+	directARP := ResolvePurchasedWarehouse("WH2607084039788546", nil)
+	if !directARP.OK() || directARP.OMSCode != "HYTX30" {
+		t.Fatalf("direct ARP address must map without siblings: %#v", directARP)
 	}
 }
 

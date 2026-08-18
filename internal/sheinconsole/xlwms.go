@@ -227,6 +227,12 @@ func (s *Server) xlwmsParcelDraft(writer http.ResponseWriter, request *http.Requ
 		s.internalError(writer, "load fulfillment task for XLWMS parcel draft", err)
 		return
 	}
+	loaded := []shein.FulfillmentTask{task}
+	if err := s.store.AttachOrderFulfillmentStates(ctx, shopKey, loaded); err != nil {
+		s.internalError(writer, "attach SHEIN order state for XLWMS parcel draft", err)
+		return
+	}
+	task = loaded[0]
 	draft := parcelDraftFromTask(shopKey, s.shopName, task)
 	if !draft.Required {
 		writeJSON(writer, http.StatusOK, response{Success: true, Data: draft})
@@ -286,6 +292,16 @@ func (s *Server) createXLWMSParcel(writer http.ResponseWriter, request *http.Req
 	}
 	if task.Status != "label_ready" && task.Status != "ready" {
 		writeJSON(writer, http.StatusConflict, response{Success: false, Error: "当前订单尚未到面单阶段，不能手动建单"})
+		return
+	}
+	loaded := []shein.FulfillmentTask{task}
+	if err := s.store.AttachOrderFulfillmentStates(ctx, shopKey, loaded); err != nil {
+		s.internalError(writer, "attach SHEIN order state for XLWMS parcel create", err)
+		return
+	}
+	task = loaded[0]
+	if !shein.LabelPrintable(task) {
+		writeJSON(writer, http.StatusConflict, response{Success: false, Error: "SHEIN 已揽收或已签收，不能再补建领星出库单"})
 		return
 	}
 	order, err := parcelCreateOrder(shopKey, s.shopName, orderNo, task, payload)
@@ -373,6 +389,16 @@ func (s *Server) uploadXLWMSParcelLabel(writer http.ResponseWriter, request *htt
 			return
 		}
 		s.internalError(writer, "load fulfillment task for XLWMS label upload", err)
+		return
+	}
+	loaded := []shein.FulfillmentTask{task}
+	if err := s.store.AttachOrderFulfillmentStates(ctx, shopKey, loaded); err != nil {
+		s.internalError(writer, "attach SHEIN order state for XLWMS label upload", err)
+		return
+	}
+	task = loaded[0]
+	if !shein.LabelPrintable(task) {
+		writeJSON(writer, http.StatusConflict, response{Success: false, Error: "SHEIN 已揽收或已签收，面单不能再打印"})
 		return
 	}
 	if !shein.RequiresManualParcelCreate(shopKey, task.WarehouseAddressCode, "") {
@@ -468,6 +494,14 @@ func (s *Server) sheinLabelURL(ctx context.Context, shopKey string, task shein.F
 	data, err := printExpressRequest(task)
 	if err != nil {
 		return "", err
+	}
+	loaded := []shein.FulfillmentTask{task}
+	if err := s.store.AttachOrderFulfillmentStates(ctx, shopKey, loaded); err != nil {
+		return "", err
+	}
+	task = loaded[0]
+	if !shein.LabelPrintable(task) {
+		return "", errors.New("SHEIN 已揽收或已签收，面单不能再打印")
 	}
 	result, err := shein.NewClient(credentials, s.requestTimeout).Call(ctx, "print-express-info", data)
 	if err != nil {
@@ -1108,7 +1142,7 @@ func finalizeParcelDraft(draft *xlwmsParcelDraft) {
 
 func parcelDraftFromTask(shopKey, shopName string, task shein.FulfillmentTask) xlwmsParcelDraft {
 	warehouse := shein.ResolvedDPSWarehouseCode(task.WarehouseAddressCode, "")
-	required := shein.RequiresManualParcelCreate(shopKey, task.WarehouseAddressCode, "")
+	required := shein.RequiresManualParcelCreate(shopKey, task.WarehouseAddressCode, "") && shein.LabelPrintable(task)
 	draft := xlwmsParcelDraft{
 		Required:       required,
 		Warehouse:      warehouse,

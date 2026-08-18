@@ -235,28 +235,26 @@
         </section>
 
         <section class="view" id="view-oms-statuses">
-          <div class="page-head"><div><h1>领星订单状态</h1><p>领星建单后自动进入这里，后台查询仓库状态；也可以按单号实时复核</p></div><button class="secondary-button" id="refresh-oms-statuses" type="button"><svg><use href="#i-refresh"/></svg>刷新状态</button></div>
+          <div class="page-head"><div><h1>领星订单状态</h1><p>按领星平台订单状态查看自动发货核验与归档结果；也可以按单号实时复核</p></div><button class="secondary-button" id="refresh-oms-statuses" type="button"><svg><use href="#i-refresh"/></svg>刷新状态</button></div>
           <div class="oms-status-tabs" role="tablist" aria-label="领星订单状态">
-            <button class="active" type="button" role="tab" aria-selected="true" data-oms-status="all"><span>全部</span><strong>已建单</strong><b id="metric-oms-status-all">0</b></button>
-            <button type="button" role="tab" aria-selected="false" data-oms-status="0"><span>状态 0</span><strong>待处理</strong><b id="metric-oms-status-0">0</b></button>
+            <button class="active" type="button" role="tab" aria-selected="true" data-oms-status="0"><span>状态 0</span><strong>待处理</strong><b id="metric-oms-status-0">0</b></button>
+            <button type="button" role="tab" aria-selected="false" data-oms-status="1"><span>状态 1</span><strong>待获取平台面单</strong><b id="metric-oms-status-1">0</b></button>
             <button type="button" role="tab" aria-selected="false" data-oms-status="2"><span>状态 2</span><strong>处理中</strong><b id="metric-oms-status-2">0</b></button>
             <button type="button" role="tab" aria-selected="false" data-oms-status="3"><span>状态 3</span><strong>已发货</strong><b id="metric-oms-status-3">0</b></button>
-            <button type="button" role="tab" aria-selected="false" data-oms-status="missing"><span>已建单</span><strong>领星无匹配</strong><b id="metric-oms-status-missing">0</b></button>
+            <button type="button" role="tab" aria-selected="false" data-oms-status="missing"><span>SHEIN 已发货</span><strong>领星无匹配</strong><b id="metric-oms-status-missing">0</b></button>
           </div>
           <form class="oms-query-bar" id="oms-order-form">
             <label><span>SHEIN 平台订单号</span><input id="oms-order-number" type="search" autocomplete="off" placeholder="输入订单号复核"></label>
             <label><span>领星账户</span><select id="oms-account"><option value="all">全部账户</option></select></label>
             <button class="primary-button" id="query-oms-order" type="submit"><svg><use href="#i-search"/></svg>查询订单</button>
           </form>
-          <div class="status-band">
-            <div><small>当前列表</small><strong class="compact" id="metric-oms-order">尚未同步</strong></div>
-            <div><small>命中记录</small><strong id="metric-oms-matches">0</strong></div>
-            <div><small>已查询账户</small><strong id="metric-oms-accounts">0</strong></div>
-            <div><small>查询时间</small><strong class="compact" id="metric-oms-time">尚未查询</strong></div>
+          <div class="toolbar">
+            <div class="oms-status-heading"><strong id="oms-status-heading">状态 0 · 待处理</strong><small id="oms-status-caption">后台正在自动分配仓库与物流</small></div>
+            <span class="table-note" id="oms-status-total">共 0 条</span>
           </div>
-          <div class="table-shell oms-lookup-table is-empty">
-            <table><thead><tr><th>平台订单</th><th>领星订单</th><th>账户</th><th>仓库状态</th><th>发货仓</th><th>跟踪号</th><th>归档结果</th><th>最近查询</th></tr></thead><tbody id="oms-status-rows"></tbody></table>
-            <div class="empty" id="oms-status-empty"><svg><use href="#i-orders"/></svg><strong>还没有进入仓库检测的订单</strong><span>领星建单并带上面单后，会自动出现在这里</span></div>
+          <div class="table-shell oms-status-table is-empty">
+            <table><thead><tr><th>平台订单</th><th>领星订单</th><th>账户</th><th>领星状态</th><th>仓库校验</th><th>跟踪号</th><th>归档结果</th><th>最近查询</th></tr></thead><tbody id="oms-status-rows"></tbody></table>
+            <div class="empty" id="oms-status-empty"><svg><use href="#i-orders"/></svg><strong>当前状态没有订单</strong><span>后台核验到对应领星状态后会显示在这里</span></div>
           </div>
         </section>
 
@@ -366,7 +364,7 @@
   </aside>
   <button class="drawer-backdrop" id="drawer-backdrop" aria-label="关闭结果"></button>
   <div class="toast" id="toast" hidden></div>
-  <script src="./assets/app.js?v=20260818-6" defer></script>
-  <script src="./assets/xlwms.js?v=20260818-6" defer></script>
+  <script src="./assets/app.js?v=20260818-11" defer></script>
+  <script src="./assets/xlwms.js?v=20260818-11" defer></script>
 </body>
 </html>

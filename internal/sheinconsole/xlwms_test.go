@@ -245,6 +245,13 @@ func TestParcelDraftFromTaskRequiresBeautyHangersDPSOnly(t *testing.T) {
 	if otherShop.Required {
 		t.Fatalf("unconfigured shop inherited the DPS rule: %#v", otherShop)
 	}
+	delivered := parcelDraftFromTask("beauty-hangers-home", "Beauty Hangers home", shein.FulfillmentTask{
+		OrderNo: "GSU1RW64S000VTQ", WarehouseAddressCode: "WH2603303477748739",
+		OrderStatus: "5", OrderStatusNormalized: "delivered",
+	})
+	if delivered.Required || delivered.Ready {
+		t.Fatalf("delivered SHEIN orders must leave complementary upload: %#v", delivered)
+	}
 }
 
 func TestFinalizeParcelDraftMarksMissingFields(t *testing.T) {

@@ -587,22 +587,29 @@ button:disabled {
   background: #fff;
 }
 
-.oms-lookup-table table {
+.oms-lookup-table table,
+.oms-status-table table {
   min-width: 1120px;
 }
 
 .oms-lookup-table th:first-child,
-.oms-lookup-table th:nth-child(2) {
+.oms-lookup-table th:nth-child(2),
+.oms-status-table th:first-child,
+.oms-status-table th:nth-child(2) {
   width: 175px;
 }
 
 .oms-lookup-table th:nth-child(3),
-.oms-lookup-table th:nth-child(4) {
+.oms-lookup-table th:nth-child(4),
+.oms-status-table th:nth-child(3),
+.oms-status-table th:nth-child(4) {
   width: 90px;
 }
 
 .oms-lookup-table th:nth-child(5),
-.oms-lookup-table th:nth-child(6) {
+.oms-lookup-table th:nth-child(6),
+.oms-status-table th:nth-child(5),
+.oms-status-table th:nth-child(6) {
   width: 135px;
 }
 

@@ -131,6 +131,128 @@ func (client *Client) SyncFulfillmentAudits(ctx context.Context, snapshot Fulfil
 	return client.do(ctx, http.MethodPost, "/fulfillment-audits/sync", body, "", snapshot.Platform, snapshot.ShopCode, &result)
 }
 
+const (
+	AutoMatchCarrier = "_AUTO_MATCH_"
+	OtherCarrier     = "other"
+)
+
+type WarehouseAssignmentRoute struct {
+	PlatformOrderNo     string `json:"platform_order_no"`
+	PlatformWarehouseID string `json:"platform_warehouse_id"`
+	PlatformWarehouse   string `json:"platform_warehouse_name"`
+	WarehouseCode       string `json:"warehouse_code"`
+	WarehouseName       string `json:"warehouse_name"`
+}
+
+type WarehouseAssignmentFailure struct {
+	PlatformOrderNo string `json:"platform_order_no"`
+	Error           string `json:"error"`
+}
+
+type WarehouseAssignmentCarrier struct {
+	Value string `json:"value"`
+	Label string `json:"label"`
+}
+
+type WarehouseAssignmentUnresolved struct {
+	PlatformOrderNo string `json:"platform_order_no"`
+	Reason          string `json:"reason"`
+}
+
+type WarehouseAssignmentPreview struct {
+	Ready       bool                            `json:"ready"`
+	Routes      []WarehouseAssignmentRoute      `json:"routes"`
+	Unresolved  []WarehouseAssignmentUnresolved `json:"unresolved"`
+	ChannelCode string                          `json:"channel_code"`
+	ChannelName string                          `json:"channel_name"`
+	Carriers    []WarehouseAssignmentCarrier    `json:"carriers"`
+	QueriedAt   time.Time                       `json:"queried_at"`
+}
+
+type WarehouseAssignmentResult struct {
+	Account          string                       `json:"account"`
+	Total            int                          `json:"total"`
+	Success          int                          `json:"success"`
+	Failed           int                          `json:"failed"`
+	Failures         []WarehouseAssignmentFailure `json:"failures"`
+	Routes           []WarehouseAssignmentRoute   `json:"routes"`
+	WarehouseCode    string                       `json:"warehouse_code"`
+	WarehouseCodes   []string                     `json:"warehouse_codes"`
+	ChannelCode      string                       `json:"channel_code"`
+	LogisticsCarrier string                       `json:"logistics_carrier"`
+	CompletedAt      time.Time                    `json:"completed_at"`
+}
+
+func (client *Client) PreviewWarehouseAssignment(ctx context.Context, account, platformOrderNo string) (WarehouseAssignmentPreview, error) {
+	account, platformOrderNo, err := validateWarehouseAssignmentTarget(account, platformOrderNo)
+	if err != nil {
+		return WarehouseAssignmentPreview{}, err
+	}
+	body, err := json.Marshal(map[string]any{"platform_order_nos": []string{platformOrderNo}})
+	if err != nil {
+		return WarehouseAssignmentPreview{}, err
+	}
+	var result WarehouseAssignmentPreview
+	if err := client.do(ctx, http.MethodPost, "/platform-orders/routing-preview", body, account, "", "", &result); err != nil {
+		return WarehouseAssignmentPreview{}, err
+	}
+	if result.Routes == nil {
+		result.Routes = []WarehouseAssignmentRoute{}
+	}
+	if result.Unresolved == nil {
+		result.Unresolved = []WarehouseAssignmentUnresolved{}
+	}
+	if result.Carriers == nil {
+		result.Carriers = []WarehouseAssignmentCarrier{}
+	}
+	return result, nil
+}
+
+func (client *Client) AssignWarehouse(ctx context.Context, account, platformOrderNo, logisticsCarrier string) (WarehouseAssignmentResult, error) {
+	account, platformOrderNo, err := validateWarehouseAssignmentTarget(account, platformOrderNo)
+	if err != nil {
+		return WarehouseAssignmentResult{}, err
+	}
+	logisticsCarrier = strings.TrimSpace(logisticsCarrier)
+	if logisticsCarrier != AutoMatchCarrier && logisticsCarrier != OtherCarrier {
+		return WarehouseAssignmentResult{}, errors.New("logistics carrier must be automatic matching or Other")
+	}
+	body, err := json.Marshal(map[string]any{
+		"platform_order_nos": []string{platformOrderNo},
+		"logistics_carrier":  logisticsCarrier,
+		"confirmation":       "CONFIRM_AND_APPROVE",
+	})
+	if err != nil {
+		return WarehouseAssignmentResult{}, err
+	}
+	var result WarehouseAssignmentResult
+	if err := client.do(ctx, http.MethodPost, "/platform-orders/warehouse-assignments", body, account, "", "", &result); err != nil {
+		return WarehouseAssignmentResult{}, err
+	}
+	if result.Failures == nil {
+		result.Failures = []WarehouseAssignmentFailure{}
+	}
+	if result.Routes == nil {
+		result.Routes = []WarehouseAssignmentRoute{}
+	}
+	if result.WarehouseCodes == nil {
+		result.WarehouseCodes = []string{}
+	}
+	return result, nil
+}
+
+func validateWarehouseAssignmentTarget(account, platformOrderNo string) (string, string, error) {
+	account = strings.TrimSpace(account)
+	platformOrderNo = strings.TrimSpace(platformOrderNo)
+	if account == "" {
+		return "", "", errors.New("OMS account is required")
+	}
+	if platformOrderNo == "" {
+		return "", "", errors.New("platform order number is required")
+	}
+	return account, platformOrderNo, nil
+}
+
 func (client *Client) QueryPlatformOrder(ctx context.Context, account, platformOrderNo string) (PlatformOrderLookup, error) {
 	account = strings.TrimSpace(account)
 	platformOrderNo = strings.TrimSpace(platformOrderNo)

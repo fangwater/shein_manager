@@ -22,6 +22,8 @@ func TestConsoleUsesSharedTemuShell(t *testing.T) {
 		`data-oms-status="2"`,
 		"按领星平台订单状态查看自动发货核验与归档结果",
 		`id="view-inventory-thresholds"`,
+		`id="view-warehouses"`,
+		`id="carrier-policy-grid"`,
 		`id="warehouse-check"`,
 		`src="./assets/xlwms.js`,
 	} {
@@ -169,7 +171,7 @@ func TestProcessingViewExposesManualParcelCreateForDPS(t *testing.T) {
 		`orders/" + encodeURIComponent(orderNo) + "/xlwms-parcel"`,
 		`orders/" + encodeURIComponent(orderNo) + "/xlwms-parcel-label"`,
 		"Upload_Shipping_Label",
-		`toast(outboundNo ? "领星手动建单已提交 · " + outboundNo : "领星手动建单已提交")`,
+		`toast(outboundNo ? "领星出库单已补建 · " + outboundNo : "领星出库单已补建")`,
 		"function omsWarehouseCell",
 		"byId(\"upload-xlwms-label\").disabled = !draft.can_upload_label",
 		"sales_platform: byId(\"parcel-sales-platform\").value.trim()",
@@ -277,6 +279,39 @@ func TestFulfillmentConsoleKeepsPGWarehousesUnselectable(t *testing.T) {
 	} {
 		if !strings.Contains(source, required) {
 			t.Fatalf("fulfillment console does not contain %q", required)
+		}
+	}
+}
+
+func TestCarrierPolicyConsoleUsesWarehousePriority(t *testing.T) {
+	index, err := webFiles.ReadFile("web/index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	html := string(index)
+	for _, required := range []string{
+		`data-view="warehouses"`,
+		"仓库快递优先级",
+		`id="carrier-policy-grid"`,
+	} {
+		if !strings.Contains(html, required) {
+			t.Fatalf("carrier policy console does not contain %q", required)
+		}
+	}
+	script, err := webFiles.ReadFile("web/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := string(script)
+	for _, required := range []string{
+		"function loadCarrierPolicies",
+		"function saveCarrierPolicies",
+		"function isChannelSelectable",
+		"carrier-policies/",
+		"快递策略尚未加载",
+	} {
+		if !strings.Contains(source, required) {
+			t.Fatalf("carrier policy console does not contain %q", required)
 		}
 	}
 }

@@ -94,10 +94,13 @@ This is the Top 3 detail table. It contains one to three rows for each
 3. Candidates are comparable only when they use the selected channel's
    currency and include `performanceCost`. Ranking is by fee, then
    `expressChannelCode` for deterministic ties.
-4. The automatic worker selects the lowest comparable price across the
-   available warehouses; ties are deterministic. Manual purchases preserve the
-   operator's choice. The purchase header is written before the SHEIN
-   online-order call; candidates and the header are committed atomically.
+4. The automatic worker first drops UNIUNI, non-whitelist, and shop-disabled
+   carriers for the quoted OMS warehouse. Among remaining quotes it selects the
+   lowest live price; same-price ties prefer ARP over DPS. ARP East defaults
+   UNIUNI and SwiftX to disabled. Manual purchases preserve the operator's
+   choice only when that channel is still allowed. The purchase header is
+   written before the SHEIN online-order call; candidates and the header are
+   committed atomically.
 5. A new Go quote must have a valid snapshot or ordering is blocked. Historical
    `preRequestId` values created before this feature remain orderable but do
    not create fabricated analysis rows. Historical data is not backfilled.

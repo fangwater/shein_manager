@@ -160,3 +160,28 @@ func TestShippingQuoteFromChannels(t *testing.T) {
 		t.Fatalf("unexpected express id: %#v", quote.Candidates[0].ExpressID)
 	}
 }
+
+func TestShippingQuoteFromChannelsSkipsDisabledPolicyChannels(t *testing.T) {
+	request := map[string]any{"orderNo": "ORDER-1", "warehouseAddressCode": "WH2604283535967233"}
+	result := map[string]any{"info": map[string]any{
+		"preRequestId": "QUOTE-1",
+		"channelInfoList": []any{
+			map[string]any{
+				"expressChannelCode": "GOFO-D2D250718-Na", "expressShortName": "GOFO",
+				"performanceCost": 9.1, "currencyCode": "USD",
+				"availableStatus": "0", "unavailableReason": "GOFO 店铺策略已在 DPS002 仓库禁用",
+			},
+			map[string]any{
+				"expressChannelCode": "UPS-GROUND", "expressShortName": "UPS",
+				"performanceCost": 10.2, "currencyCode": "USD",
+			},
+		},
+	}}
+	quote, ok := shippingQuoteFromChannels(request, result)
+	if !ok {
+		t.Fatal("shippingQuoteFromChannels should keep the enabled channel")
+	}
+	if len(quote.Candidates) != 1 || quote.Candidates[0].ExpressChannelCode != "UPS-GROUND" {
+		t.Fatalf("disabled policy channel was stored: %#v", quote.Candidates)
+	}
+}

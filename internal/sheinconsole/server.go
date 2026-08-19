@@ -17,6 +17,8 @@ import (
 
 	"shein-api-manager/internal/shein"
 	"shein-api-manager/internal/xlwms"
+
+	"github.com/jackc/pgx/v5"
 )
 
 //go:embed web/*
@@ -84,6 +86,8 @@ func (server *Server) routes() http.Handler {
 	mux.Handle("POST /api/inventory-thresholds/defaults/reset", http.HandlerFunc(server.resetInventoryThresholdDefaults))
 	mux.Handle("PATCH /api/inventory-thresholds/{warehouseSKU}", http.HandlerFunc(server.updateSKUInventoryThreshold))
 	mux.Handle("POST /api/inventory-thresholds/{warehouseSKU}/reset", http.HandlerFunc(server.resetSKUInventoryThreshold))
+	mux.Handle("GET /api/carrier-policies", http.HandlerFunc(server.listCarrierPolicies))
+	mux.Handle("PUT /api/carrier-policies/{warehouseKey}", http.HandlerFunc(server.updateCarrierPolicies))
 	mux.Handle("GET /api/auto-fulfillment/jobs", http.HandlerFunc(server.autoFulfillmentJobs))
 	mux.Handle("POST /api/auto-fulfillment/run", http.HandlerFunc(server.runAutoFulfillment))
 	mux.Handle("GET /api/auto-fulfillment/batches/latest", http.HandlerFunc(server.latestAutoFulfillmentBatch))
@@ -224,6 +228,11 @@ func (s *Server) operationHandler(operation string) http.Handler {
 			return
 		}
 		if operation == "place-express-order" {
+			if err := s.rejectDisabledCarrierPurchase(ctx, shopKey, payload.Data); err != nil {
+				_ = s.store.FailOperation(context.WithoutCancel(ctx), shopKey, operation, idempotencyKey, operationErrorSummary(err))
+				writeJSON(writer, http.StatusConflict, response{Success: false, Error: err.Error()})
+				return
+			}
 			recorded, snapshotErr := s.store.ReserveLabelPurchaseChoice(
 				ctx, shopKey, firstString(payload.Data, "preRequestId"),
 				firstString(payload.Data, "expressChannelCode"), idempotencyKey,
@@ -255,6 +264,10 @@ func (s *Server) operationHandler(operation string) http.Handler {
 			return
 		}
 		if operation == "order-mapping-channels" {
+			if err := s.applyCarrierPoliciesToChannelResult(ctx, shopKey, payload.Data, result); err != nil {
+				s.internalError(writer, "apply carrier policies", err)
+				return
+			}
 			if err := s.saveShippingQuote(shopKey, payload.Data, result); err != nil {
 				s.internalError(writer, "save shipping quote", err)
 				return
@@ -351,6 +364,89 @@ func decodeJSON(writer http.ResponseWriter, request *http.Request, target any) b
 		return false
 	}
 	return true
+}
+
+func (s *Server) listCarrierPolicies(writer http.ResponseWriter, request *http.Request) {
+	shopKey, err := s.requestedShopKey(request, request.URL.Query().Get("shop_key"))
+	if err != nil {
+		writeJSON(writer, http.StatusBadRequest, response{Success: false, Error: err.Error()})
+		return
+	}
+	ctx, cancel := context.WithTimeout(request.Context(), s.requestTimeout)
+	defer cancel()
+	items, err := s.store.ListMergedCarrierPolicies(ctx, shopKey)
+	if err != nil {
+		s.internalError(writer, "list carrier policies", err)
+		return
+	}
+	writeJSON(writer, http.StatusOK, response{Success: true, Data: items})
+}
+
+func (s *Server) updateCarrierPolicies(writer http.ResponseWriter, request *http.Request) {
+	shopKey, err := s.requestedShopKey(request, "")
+	if err != nil {
+		writeJSON(writer, http.StatusBadRequest, response{Success: false, Error: err.Error()})
+		return
+	}
+	var input struct {
+		Carriers []shein.CarrierPolicy `json:"carriers"`
+	}
+	if !decodeJSON(writer, request, &input) {
+		return
+	}
+	ctx, cancel := context.WithTimeout(request.Context(), s.requestTimeout)
+	defer cancel()
+	item, err := s.store.UpdateCarrierPolicies(ctx, shopKey, request.PathValue("warehouseKey"), input.Carriers)
+	if err != nil {
+		writeJSON(writer, http.StatusBadRequest, response{Success: false, Error: err.Error()})
+		return
+	}
+	writeJSON(writer, http.StatusOK, response{Success: true, Data: item})
+}
+
+func (s *Server) applyCarrierPoliciesToChannelResult(ctx context.Context, shopKey string, requestData, result map[string]any) error {
+	groups, err := s.store.ListMergedCarrierPolicies(ctx, shopKey)
+	if err != nil {
+		return err
+	}
+	warehouseCode := firstString(requestData, "warehouseAddressCode", "warehouseCode")
+	warehouseName := firstString(requestData, "warehouseName", "warehouseAddressName", "warehouseDesc")
+	if warehouseCode == "" {
+		warehouseCode = firstString(firstObject(result["info"]), "warehouseAddressCode", "warehouseCode")
+	}
+	if warehouseName == "" {
+		warehouseName = firstString(firstObject(result["info"]), "warehouseName", "warehouseAddressName", "warehouseDesc")
+	}
+	policies := shein.PoliciesByWarehouse(groups)[shein.PolicyWarehouseKey(warehouseCode, warehouseName)]
+	shein.ApplyCarrierPoliciesToChannels(result, warehouseCode, warehouseName, policies)
+	return nil
+}
+
+func (s *Server) rejectDisabledCarrierPurchase(ctx context.Context, shopKey string, data map[string]any) error {
+	preRequestID := firstString(data, "preRequestId")
+	channelCode := firstString(data, "expressChannelCode")
+	if preRequestID == "" || channelCode == "" {
+		return nil
+	}
+	warehouseCode, err := s.store.ShippingQuoteWarehouse(ctx, shopKey, preRequestID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	groups, err := s.store.ListMergedCarrierPolicies(ctx, shopKey)
+	if err != nil {
+		return err
+	}
+	reason := shein.ChannelUnavailableReason(
+		channelCode, "", "", warehouseCode, "",
+		shein.PoliciesByWarehouse(groups)[shein.PolicyWarehouseKey(warehouseCode, "")],
+	)
+	if reason != "" {
+		return errors.New(reason)
+	}
+	return nil
 }
 
 func (s *Server) rejectUnprintableSHEINLabel(ctx context.Context, shopKey string, data map[string]any) error {

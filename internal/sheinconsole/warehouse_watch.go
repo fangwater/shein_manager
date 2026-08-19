@@ -189,8 +189,34 @@ func (s *Server) refreshWarehouseWatch(ctx context.Context, task shein.Fulfillme
 		len(activeOMSPlatformOrders(arpLookup)) == 0 {
 		update.OMSAccount = "dps"
 		update.OMSWarehouseCode = firstNonEmpty(purchaseWarehouse.OMSCode, dpsWarehouse, update.OMSWarehouseCode)
+		created, createErr := s.ensureAutomaticDPSParcel(ctx, s.shopKey, task)
+		if createErr != nil {
+			update.OMSSyncStatus = "waiting_sync"
+			update.OMSSyncMessage = "DPS 自动建单失败，等待重试：" + createErr.Error()
+			if err := s.store.SaveParcelWatch(ctx, s.shopKey, task.OrderNo, update); err != nil {
+				return task, err
+			}
+			_ = s.store.EnsureWarehouseLedgerJob(ctx, s.shopKey, task.OrderNo, task.WarehouseAddressCode, task.ExpressChannelCode, task.PlaceRequestID, task.DeliveryNo)
+			return task, createErr
+		}
+		parcel = created
+		if strings.TrimSpace(parcel.OutboundOrderNo) != "" {
+			task.OutboundOrderNo = parcel.OutboundOrderNo
+			task.OutboundStatus = parcel.Status
+			task.OutboundStatusName = parcel.StatusName
+			task.LabelAttached = parcel.LabelAttached
+			task.ParcelComplete = lingxingParcelCompletesManualCreate(parcel)
+			warehouse = firstNonEmpty(dpsWarehouse, warehouse)
+		}
+		if applyLingxingParcelWarehouseDecision(&update, parcel) {
+			if err := s.store.SaveParcelWatch(ctx, s.shopKey, task.OrderNo, update); err != nil {
+				return task, err
+			}
+			_ = s.store.EnsureWarehouseLedgerJob(ctx, s.shopKey, task.OrderNo, task.WarehouseAddressCode, task.ExpressChannelCode, task.PlaceRequestID, task.DeliveryNo)
+			return s.store.LatestFulfillmentTask(ctx, s.shopKey, task.OrderNo)
+		}
 		update.OMSSyncStatus = "waiting_sync"
-		update.OMSSyncMessage = "等待 DPS 手动建领星出库单"
+		update.OMSSyncMessage = "等待 DPS 自动建领星出库单"
 		if err := s.store.SaveParcelWatch(ctx, s.shopKey, task.OrderNo, update); err != nil {
 			return task, err
 		}

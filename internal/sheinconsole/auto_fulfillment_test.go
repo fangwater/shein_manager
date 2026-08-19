@@ -106,3 +106,70 @@ func TestLowestQuotedChannelRejectsMixedCurrencies(t *testing.T) {
 		t.Fatal("mixed-currency quote was accepted")
 	}
 }
+
+func TestSelectAutomaticQuotedChannelPicksLowestPrice(t *testing.T) {
+	quotes := []quotedChannel{
+		{
+			Quote:     shein.ShippingQuote{WarehouseAddressCode: "WH2607084039788546"},
+			Candidate: shein.ShippingQuoteCandidate{ExpressChannelCode: "SPEEDX-US", ExpressShortName: "SpeedX", PerformanceCost: "10.00", CurrencyCode: "USD"},
+			Priority:  3,
+		},
+		{
+			Quote:     shein.ShippingQuote{WarehouseAddressCode: "WH2607084039788546"},
+			Candidate: shein.ShippingQuoteCandidate{ExpressChannelCode: "GOFO-D2D250718-Na", ExpressShortName: "GOFO", PerformanceCost: "10.40", CurrencyCode: "USD"},
+			Priority:  1,
+		},
+	}
+	selected, reason, err := selectAutomaticQuotedChannel(quotes)
+	if err != nil {
+		t.Fatalf("selectAutomaticQuotedChannel returned error: %v", err)
+	}
+	if selected.Candidate.ExpressChannelCode != "SPEEDX-US" {
+		t.Fatalf("expected cheapest SPEEDX, got %#v", selected)
+	}
+	if reason != "选择最低运费 SPEEDX / ARP_EAST" {
+		t.Fatalf("unexpected selection reason: %q", reason)
+	}
+}
+
+func TestSelectAutomaticQuotedChannelPrefersARPWhenPricesTie(t *testing.T) {
+	quotes := []quotedChannel{
+		{
+			Quote:     shein.ShippingQuote{WarehouseAddressCode: "WH2604283535967233"},
+			Candidate: shein.ShippingQuoteCandidate{ExpressChannelCode: "GOFO-DPS", PerformanceCost: "10.00", CurrencyCode: "USD"},
+		},
+		{
+			Quote:     shein.ShippingQuote{WarehouseAddressCode: "WH2607084039788546"},
+			Candidate: shein.ShippingQuoteCandidate{ExpressChannelCode: "GOFO-ARP", PerformanceCost: "10.00", CurrencyCode: "USD"},
+		},
+	}
+	selected, reason, err := selectAutomaticQuotedChannel(quotes)
+	if err != nil {
+		t.Fatalf("selectAutomaticQuotedChannel returned error: %v", err)
+	}
+	if selected.Quote.WarehouseAddressCode != "WH2607084039788546" {
+		t.Fatalf("same price must prefer ARP, got %#v", selected)
+	}
+	if reason != "选择最低运费 GOFO / ARP_EAST" {
+		t.Fatalf("unexpected selection reason: %q", reason)
+	}
+}
+
+func TestCompleteAutomaticWarehouseHandoffCreatesDPSParcelOnly(t *testing.T) {
+	server := &Server{}
+	if err := server.completeAutomaticWarehouseHandoff(nil, autoQueueRef{ShopKey: "beauty-hangers-home", OrderNo: "GSU-ARP-1"}, shein.AutoFulfillmentJob{
+		WarehouseAddressCode: "WH2607084039788546",
+	}); err != nil {
+		t.Fatalf("ARP handoff must wait for automatic warehouse assignment: %v", err)
+	}
+	if err := server.completeAutomaticWarehouseHandoff(nil, autoQueueRef{ShopKey: "beauty-hangers-home", OrderNo: "GSU-DPS-1"}, shein.AutoFulfillmentJob{
+		WarehouseAddressCode: "WH2604283535967233",
+	}); err == nil || err.Error() != "领星查询服务未配置" {
+		t.Fatalf("DPS handoff must create a Lingxing parcel after the label: %v", err)
+	}
+	if err := server.completeAutomaticWarehouseHandoff(nil, autoQueueRef{ShopKey: "other-shop", OrderNo: "GSU-DPS-2"}, shein.AutoFulfillmentJob{
+		WarehouseAddressCode: "WH2604283535967233",
+	}); err != nil {
+		t.Fatalf("unconfigured shops must not auto-create DPS parcels: %v", err)
+	}
+}

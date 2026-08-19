@@ -26,6 +26,8 @@ this envelope:
 | `POST /api/order/list` | `POST /open-api/order/order-list` |
 | `POST /api/order/detail` | `POST /open-api/order/order-detail` |
 | `POST /api/order/export-address` | `POST /open-api/order/export-address` |
+| `GET /api/carrier-policies` | Shop-scoped OMS warehouse carrier enablement and priority |
+| `PUT /api/carrier-policies/{warehouseKey}` | Replace one warehouse's carrier policies |
 | `POST /api/shipping/warehouses` | `POST /open-api/gsp/available-shipping-warehouse` |
 | `POST /api/shipping/channels` | `POST /open-api/gsp/order-mapping-channels` |
 | `POST /api/shipping/place` | `POST /open-api/gsp/place-express-order` |
@@ -48,7 +50,12 @@ channel quote, and online label purchase. A successful purchase closes the
 dialog, leaves the pending queue, and opens the shared 自动处理中 view instead
 of a raw OpenAPI drawer. Only operated DPS/ARP warehouses remain selectable
 for platform labels; PG and other platform-listed warehouses stay visible as
-unavailable and cannot be quoted. `export-address` with `handleType=2` is only
+unavailable and cannot be quoted. Each shop configures carrier enablement and
+priority per OMS warehouse (`DPS002`, `ARP_EAST`, `DPS004`, `ARP_WEST`).
+Automatic selection picks the lowest live price and, on a tie, prefers ARP
+over DPS. There is no Temu-style USD 0.50 priority band and no DPS clearance
+preference. A disabled or non-whitelist carrier cannot be selected manually
+or automatically. ARP East defaults UNIUNI and SwiftX to disabled. `export-address` with `handleType=2` is only
 used for merchant self-ship orders that cannot buy a platform label.
 
 The selected shop is sent in `X-Shein-Shop` and kept in session storage. The
@@ -84,14 +91,18 @@ these public, no-store fulfillment queries:
 The order query returns only fulfillment verification fields. Raw XLWMS order
 objects and customer details are not passed through.
 
-Beauty Hangers Home (`beauty-hangers-home`) is hardcoded to require a manual
-Lingxing parcel after a DPS label is generated. Other shops do not inherit this
-rule. The processing page prefill uses the latest fulfillment task, the stored
-order snapshot, live `export-address` with `handleType=1`, and queue SKU
-mappings. SHEIN express channel codes are not Lingxing warehouse channels; the
-form defaults `logisticsChannel` to `Upload_Shipping_Label`. Create downloads
-the current SHEIN `filePdfUrl` and attaches it as Lingxing `label.fileData` /
-`fileList` `bizCode=1`. Creating again first cancels the latest active
+Beauty Hangers Home (`beauty-hangers-home`) automatically creates a Lingxing
+parcel after a DPS label is generated, then waits for warehouse assignment.
+ARP labels skip parcel create and wait for OMS platform-order auto-assign.
+Other shops do not inherit the DPS parcel rule. The automatic worker and the
+warehouse watcher both reuse the same create path: download the current SHEIN
+`filePdfUrl`, attach it as Lingxing `label.fileData` / `fileList` `bizCode=1`,
+and submit `Upload_Shipping_Label`. The processing page still prefills a
+recovery form from the latest fulfillment task, the stored order snapshot,
+live `export-address` with `handleType=1`, and queue SKU mappings so operators
+can rebuild a failed outbound. SHEIN express channel codes are not Lingxing
+warehouse channels; the form defaults `logisticsChannel` to
+`Upload_Shipping_Label`. Creating again first cancels the latest active
 Lingxing parcel, then waits for `selectBizStatus` or detail `status=4` so a
 truncated receiver or wrong store can be rebuilt on a new outbound number.
 Lookup prefers `thirdOrderNoList` and falls back to `referOrderNoList`, because
@@ -109,8 +120,8 @@ shipped. Beauty Hangers DPS parcels are judged by the Lingxing outbound, not
 the OMS platform-order search, so a warehouse-processing `OBS` number is never
 marked as a leak just because DPS has no matching `SO` platform order.
 If SHEIN stored a DPS warehouse code but ARP already has an active platform
-order, the watcher follows the ARP OMS status instead of waiting for a
-manual DPS parcel.
+order, the watcher follows the ARP OMS status instead of creating a DPS
+parcel.
 OMS warehouse assignment uses the bought-label record the same way Temu
 does: `shein_label_purchase_choices` plus same-price quote siblings. When
 SHEIN stores a colliding DPS address ID but the purchase snapshot also

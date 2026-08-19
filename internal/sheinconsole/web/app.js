@@ -31,7 +31,8 @@ const state = {
   inventoryThresholdPage: 1,
   inventoryThresholdSearchTimer: 0,
   parcelDraft: null,
-  parcelDraftOrderNo: ""
+  parcelDraftOrderNo: "",
+  carrierPolicies: []
 };
 
 function escapeHTML(value) {
@@ -504,6 +505,7 @@ function selectView(name) {
     ledger: "自动发货账本",
     labels: "自动处理中",
     "inventory-thresholds": "库存安全线",
+    warehouses: "仓库快递",
     tools: "物流工具"
   };
   document.querySelectorAll(".nav-button").forEach(function (button) {
@@ -522,6 +524,7 @@ function selectView(name) {
   if (name === "labels") loadTasks();
   if (name === "oms-statuses" && typeof loadOMSPlatformOrders === "function") loadOMSPlatformOrders();
   if (name === "inventory-thresholds") loadInventoryThresholds();
+  if (name === "warehouses") loadCarrierPolicies();
 }
 
 function inventoryThresholdSource(item) {
@@ -590,6 +593,109 @@ function renderInventoryThresholds() {
   byId("inventory-threshold-empty").hidden = state.inventoryThresholds.length > 0;
   byId("inventory-threshold-total").textContent = "共 " + Number(state.inventoryThresholdMeta.total || 0) + " 个 SKU";
   renderInventoryThresholdPager();
+}
+
+const policyWarehouses = [
+  { key: "DPS002", name: "DPS002", region: "美东" },
+  { key: "ARP_EAST", name: "ARP美东", region: "美东" },
+  { key: "DPS004", name: "DPS004", region: "美西" },
+  { key: "ARP_WEST", name: "ARP美西", region: "美西" }
+];
+
+function carrierPolicyGroup(warehouseKey) {
+  return state.carrierPolicies.find(function (group) { return group.warehouse_key === warehouseKey; });
+}
+
+function renderCarrierPolicies() {
+  const container = byId("carrier-policy-grid");
+  const selectedShop = state.shops.find(function (shop) { return shop.code === state.shopKey; });
+  byId("carrier-policy-shop").textContent = selectedShop ? display(selectedShop.name, state.shopKey) : state.shopKey;
+  container.innerHTML = policyWarehouses.map(function (warehouse) {
+    const group = carrierPolicyGroup(warehouse.key) || { warehouse_key: warehouse.key, carriers: [] };
+    const carriers = (group.carriers || []).slice().sort(function (left, right) { return left.priority - right.priority; });
+    const enabledCount = carriers.filter(function (carrier) { return carrier.enabled; }).length;
+    return '<section class="carrier-policy-card"><header><div><small>' + escapeHTML(warehouse.region) +
+      '</small><strong>' + escapeHTML(warehouse.name) + '</strong></div><span>' + enabledCount + " / " +
+      carriers.length + ' 启用</span><button class="secondary-button carrier-policy-save" data-save-carriers="' +
+      escapeHTML(warehouse.key) + '"><svg><use href="#i-check"/></svg>保存</button></header><div class="carrier-policy-list">' +
+      carriers.map(function (carrier, index) {
+        return '<div class="carrier-policy-item ' + (carrier.enabled ? "" : "disabled") + '"><b>' + (index + 1) +
+          '</b><div><strong>' + escapeHTML(carrier.carrier_code) + '</strong><small>' +
+          (carrier.enabled ? "第 " + (index + 1) + " 优先" : "已禁用") +
+          '</small></div><div class="carrier-policy-order"><button class="icon-button" data-policy-move="up" data-policy-warehouse="' +
+          escapeHTML(warehouse.key) + '" data-policy-carrier="' + escapeHTML(carrier.carrier_code) + '" ' +
+          (index === 0 ? "disabled" : "") + ' title="上移 ' + escapeHTML(carrier.carrier_code) +
+          '" aria-label="上移 ' + escapeHTML(carrier.carrier_code) +
+          '"><svg><use href="#i-arrow-up"/></svg></button><button class="icon-button" data-policy-move="down" data-policy-warehouse="' +
+          escapeHTML(warehouse.key) + '" data-policy-carrier="' + escapeHTML(carrier.carrier_code) + '" ' +
+          (index === carriers.length - 1 ? "disabled" : "") + ' title="下移 ' + escapeHTML(carrier.carrier_code) +
+          '" aria-label="下移 ' + escapeHTML(carrier.carrier_code) +
+          '"><svg><use href="#i-arrow-down"/></svg></button></div><label class="policy-switch" title="' +
+          (carrier.enabled ? "禁用 " : "启用 ") + escapeHTML(carrier.carrier_code) +
+          '"><input type="checkbox" data-policy-enabled="' + escapeHTML(carrier.carrier_code) +
+          '" data-policy-warehouse="' + escapeHTML(warehouse.key) + '" ' + (carrier.enabled ? "checked" : "") +
+          ' aria-label="' + (carrier.enabled ? "允许 " : "禁用 ") + escapeHTML(carrier.carrier_code) +
+          '"><span></span></label></div>';
+      }).join("") + "</div></section>";
+  }).join("");
+}
+
+function moveCarrierPolicy(warehouseKey, carrierCode, direction) {
+  const group = carrierPolicyGroup(warehouseKey);
+  if (!group) return;
+  const carriers = group.carriers.slice().sort(function (left, right) { return left.priority - right.priority; });
+  const index = carriers.findIndex(function (carrier) { return carrier.carrier_code === carrierCode; });
+  const target = direction === "up" ? index - 1 : index + 1;
+  if (index < 0 || target < 0 || target >= carriers.length) return;
+  const swapped = carriers[index];
+  carriers[index] = carriers[target];
+  carriers[target] = swapped;
+  carriers.forEach(function (carrier, priority) { carrier.priority = priority + 1; });
+  group.carriers = carriers;
+  renderCarrierPolicies();
+}
+
+function setCarrierEnabled(warehouseKey, carrierCode, enabled) {
+  const group = carrierPolicyGroup(warehouseKey);
+  const carrier = group && group.carriers.find(function (item) { return item.carrier_code === carrierCode; });
+  if (!carrier) return;
+  carrier.enabled = enabled;
+  renderCarrierPolicies();
+}
+
+async function saveCarrierPolicies(warehouseKey, button) {
+  const group = carrierPolicyGroup(warehouseKey);
+  if (!group) {
+    toast("快递策略尚未加载", true);
+    return;
+  }
+  await busy(button, async function () {
+    try {
+      const payload = await request("carrier-policies/" + encodeURIComponent(warehouseKey), {
+        method: "PUT",
+        body: JSON.stringify({ carriers: group.carriers })
+      });
+      const index = state.carrierPolicies.findIndex(function (item) { return item.warehouse_key === warehouseKey; });
+      if (index >= 0) state.carrierPolicies[index] = payload.data;
+      else state.carrierPolicies.push(payload.data);
+      toast(warehouseKey + " 快递策略已保存");
+      renderCarrierPolicies();
+    } catch (error) {
+      toast(error.message, true);
+    }
+  });
+}
+
+async function loadCarrierPolicies(button) {
+  await busy(button || null, async function () {
+    try {
+      const payload = await request("carrier-policies");
+      state.carrierPolicies = Array.isArray(payload.data) ? payload.data : [];
+      renderCarrierPolicies();
+    } catch (error) {
+      toast(error.message, true);
+    }
+  });
 }
 
 async function loadInventoryThresholds(button) {
@@ -814,7 +920,7 @@ function renderTasks() {
       "</td><td><div class=\"action-row\"><button class=\"table-action\" data-check-task=\"" + index +
       "\" " + (canCheck ? "" : "disabled") + ">查询结果</button><button class=\"table-action primary\" data-label-task=\"" + index +
       "\" " + (canPrint ? "" : "disabled") + ">获取面单</button>" +
-      (canCreateParcel ? '<button class="table-action" data-parcel-task="' + index + '">手动建单</button>' : "") +
+      (canCreateParcel ? '<button class="table-action" data-parcel-task="' + index + '">补建出库单</button>' : "") +
       (canUploadLabel ? '<button class="table-action" data-upload-label-task="' + index + '">补传面单</button>' : "") +
       "</div></td></tr>";
   }).join("");
@@ -845,9 +951,9 @@ function renderTasks() {
     const emptyCopy = {
       placed: ["没有下单已提交的订单", "购单成功后会显示在这里"],
       checking: ["没有处理中 / 可打印的订单", "后台确认物流后会显示在这里"],
-      label_ready: ["没有面单已就绪的订单", "SHEIN 面单已生成、但还没在领星建好出库单的订单会显示在这里"],
-      parcel: ["没有待补传的 DPS 订单", "还没建领星出库单，或出库单还缺面单 / 面单异常的 DPS 订单会出现在这里"],
-      processing: ["没有正在处理的面单", "订单提交购单后会进入这里；领星已建单并带上面单后会离开处理中"]
+      label_ready: ["没有面单已就绪的订单", "SHEIN 面单已生成、但领星出库单还没建好的 DPS 订单会显示在这里"],
+      parcel: ["没有待补传的 DPS 订单", "自动建单失败、还缺面单，或面单异常的 DPS 订单会出现在这里，可在这里补建或补传"],
+      processing: ["没有正在处理的面单", "订单提交购单后会进入这里；DPS 自动建单贴面单、ARP 等待自动分仓后会离开处理中"]
     }[state.taskFilter || "processing"] || ["没有正在处理的面单", "订单提交购单后会进入这里，不再显示在待发货队列"];
     empty.querySelector("strong").textContent = query ? "没有匹配的处理中订单" : emptyCopy[0];
     empty.querySelector("span").textContent = query ? "换一个订单号或状态筛选再试" : emptyCopy[1];
@@ -918,14 +1024,14 @@ function renderXLWMSParcelDraft(draft) {
   if (!required) return;
   fillXLWMSParcelForm(draft);
   const missing = (draft.missing_fields || []).join("、");
-  byId("parcel-create-copy").textContent = draft.reason || "当前店铺发往 DPS 仓时，先建领星小包出库单；建单时会带上 SHEIN 面单";
+  byId("parcel-create-copy").textContent = draft.reason || "当前店铺发往 DPS 仓时，买完面单后会自动建领星出库单并贴上 SHEIN 面单；这里只用于失败后补建或补传";
   const sheinChannel = display(draft.channel_hint, "");
   const uploadHint = display(draft.upload_hint, "");
   byId("parcel-create-hint").textContent = missing
-    ? "还缺：" + missing + "。可直接在表单里补齐后再建单。"
+    ? "还缺：" + missing + "。可直接在表单里补齐后再补建。"
     : (uploadHint || (sheinChannel && sheinChannel !== "-"
-      ? "SHEIN 渠道 " + sheinChannel + " 不能直接建单，已改用领星 Upload_Shipping_Label。先建单，建单时会带上 SHEIN 面单。"
-      : "已按收件地址预填。先点手动建单；建单时会带上 SHEIN 面单。"));
+      ? "SHEIN 渠道 " + sheinChannel + " 不能直接建单，已改用领星 Upload_Shipping_Label。自动建单失败时可在这里补建，建单时会带上 SHEIN 面单。"
+      : "已按收件地址预填。自动建单失败时再点补建；建单时会带上 SHEIN 面单。"));
   byId("create-xlwms-parcel").disabled = false;
   byId("upload-xlwms-label").disabled = !draft.can_upload_label;
 }
@@ -970,7 +1076,7 @@ async function submitXLWMSParcel(button) {
   const existing = display((state.parcelDraft || {}).outbound_order_no, "");
   const confirmText = existing && existing !== "-"
     ? "订单 " + orderNo + " 已有出库单 " + existing + "。确认取消后按当前收件人和店铺重新建单？"
-    : "确认向领星提交订单 " + orderNo + " 的手动建单？建单时会带上当前 SHEIN 面单。";
+    : "确认向领星补建订单 " + orderNo + " 的出库单？建单时会带上当前 SHEIN 面单。";
   if (!window.confirm(confirmText)) return;
   await busy(button, async function () {
     try {
@@ -1001,7 +1107,7 @@ async function submitXLWMSParcel(button) {
         ? "已建单 " + outboundNo + "。面单已随建单提交，需要覆盖时再点补传。"
         : "已提交领星小包建单。");
       byId("upload-xlwms-label").disabled = !data.can_upload_label;
-      toast(outboundNo ? "领星手动建单已提交 · " + outboundNo : "领星手动建单已提交");
+      toast(outboundNo ? "领星出库单已补建 · " + outboundNo : "领星出库单已补建");
       loadXLWMSParcelDraft(orderNo);
       loadTasks();
       loadJobQueue("all");
@@ -1307,6 +1413,7 @@ function jobStepLabel(step) {
     place_order: "在线下单",
     check_order: "等待下单结果",
     print_label: "获取面单",
+    create_parcel: "自动建领星出库单",
     completed: "自动发货完成",
     failed: "自动发货停止"
   }[step] || display(step);
@@ -1727,6 +1834,17 @@ function channelList(payload) {
   return listFromInfo(infoOf(payload), ["channelInfoList", "channels", "channelList", "list"]);
 }
 
+function channelPolicyReason(channel) {
+  return String(channel && (channel.unavailableReason || channel.reason) || "");
+}
+
+function isChannelSelectable(channel) {
+  const reason = channelPolicyReason(channel);
+  const status = channel && channel.availableStatus;
+  if (status != null && Number(status) === 0) return false;
+  return !/已禁用|白名单/.test(reason);
+}
+
 function renderChannels(channels) {
   state.channel = null;
   byId("channel-choices").innerHTML = channels.map(function (channel, index) {
@@ -1735,9 +1853,12 @@ function renderChannels(channels) {
     const cost = channel.performanceCost != null ? channel.performanceCost : channel.shippingFee;
     const currency = channel.currencyCode || channel.currency || "";
     const time = channel.deliveryTime || channel.performanceTime || channel.estimatedTime || "";
-    return '<label class="choice"><input type="radio" name="channel" value="' + escapeHTML(code) +
-      '" data-channel-index="' + index + '"><span><strong>' + escapeHTML(name) + '</strong><small>' +
-      escapeHTML(code + (time ? " · " + time : "")) + '</small>' +
+    const selectable = isChannelSelectable(channel);
+    const reason = channelPolicyReason(channel);
+    return '<label class="choice ' + (selectable ? "" : "disabled") + '"><input type="radio" name="channel" value="' +
+      escapeHTML(code) + '" data-channel-index="' + index + '" ' + (selectable ? "" : "disabled") +
+      '><span><strong>' + escapeHTML(name) + '</strong><small>' +
+      escapeHTML((selectable ? code : reason || code) + (time ? " · " + time : "")) + '</small>' +
       (cost != null ? '<span class="price">' + escapeHTML(display(cost) + " " + currency) + '</span>' : "") +
       '</span></label>';
   }).join("") || '<div class="empty-inline">选择发货仓后查询物流渠道</div>';
@@ -1948,6 +2069,19 @@ byId("task-status-filters").addEventListener("click", function (event) {
 byId("refresh-inventory-thresholds").addEventListener("click", function (event) {
   loadInventoryThresholds(event.currentTarget);
 });
+byId("refresh-carrier-policies").addEventListener("click", function (event) {
+  loadCarrierPolicies(event.currentTarget);
+});
+byId("carrier-policy-grid").addEventListener("click", function (event) {
+  const move = event.target.closest("[data-policy-move]");
+  const save = event.target.closest("[data-save-carriers]");
+  if (move) moveCarrierPolicy(move.dataset.policyWarehouse, move.dataset.policyCarrier, move.dataset.policyMove);
+  if (save) saveCarrierPolicies(save.dataset.saveCarriers, save);
+});
+byId("carrier-policy-grid").addEventListener("change", function (event) {
+  const input = event.target.closest("[data-policy-enabled]");
+  if (input) setCarrierEnabled(input.dataset.policyWarehouse, input.dataset.policyEnabled, input.checked);
+});
 byId("inventory-threshold-search").addEventListener("input", function () {
   state.inventoryThresholdPage = 1;
   window.clearTimeout(state.inventoryThresholdSearchTimer);
@@ -2078,7 +2212,8 @@ byId("warehouse-choices").addEventListener("change", function (event) {
 });
 byId("channel-choices").addEventListener("change", function (event) {
   if (!event.target.matches("[data-channel-index]")) return;
-  state.channel = renderChannels.current[Number(event.target.dataset.channelIndex)] || null;
+  const selected = renderChannels.current[Number(event.target.dataset.channelIndex)] || null;
+  state.channel = selected && isChannelSelectable(selected) ? selected : null;
   document.querySelectorAll("#channel-choices .choice").forEach(function (choice) {
     choice.classList.toggle("selected", choice.contains(event.target));
   });

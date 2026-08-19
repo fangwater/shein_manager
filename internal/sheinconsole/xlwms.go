@@ -146,25 +146,25 @@ type xlwmsParcelDraftProduct struct {
 const lingxingPlatformLabelChannel = "Upload_Shipping_Label"
 
 type xlwmsParcelDraft struct {
-	Required         bool                      `json:"required"`
-	Reason           string                    `json:"reason,omitempty"`
-	Warehouse        string                    `json:"warehouse,omitempty"`
-	WarehouseHint    string                    `json:"warehouse_hint,omitempty"`
-	OrderNo          string                    `json:"order_no,omitempty"`
-	SalesPlatform    string                    `json:"sales_platform,omitempty"`
-	StoreName        string                    `json:"store_name,omitempty"`
-	ChannelCode      string                    `json:"channel_code,omitempty"`
-	ChannelHint      string                    `json:"channel_hint,omitempty"`
-	TrackingNumber   string                    `json:"tracking_number,omitempty"`
-	Receiver         string                    `json:"receiver"`
-	Phone            string                    `json:"phone"`
-	CountryRegionCode string                   `json:"country_region_code"`
-	ProvinceCode     string                    `json:"province_code"`
-	ProvinceName     string                    `json:"province_name"`
-	CityName         string                    `json:"city_name"`
-	PostCode         string                    `json:"post_code"`
-	AddressOne       string                    `json:"address_one"`
-	AddressTwo       string                    `json:"address_two,omitempty"`
+	Required           bool                      `json:"required"`
+	Reason             string                    `json:"reason,omitempty"`
+	Warehouse          string                    `json:"warehouse,omitempty"`
+	WarehouseHint      string                    `json:"warehouse_hint,omitempty"`
+	OrderNo            string                    `json:"order_no,omitempty"`
+	SalesPlatform      string                    `json:"sales_platform,omitempty"`
+	StoreName          string                    `json:"store_name,omitempty"`
+	ChannelCode        string                    `json:"channel_code,omitempty"`
+	ChannelHint        string                    `json:"channel_hint,omitempty"`
+	TrackingNumber     string                    `json:"tracking_number,omitempty"`
+	Receiver           string                    `json:"receiver"`
+	Phone              string                    `json:"phone"`
+	CountryRegionCode  string                    `json:"country_region_code"`
+	ProvinceCode       string                    `json:"province_code"`
+	ProvinceName       string                    `json:"province_name"`
+	CityName           string                    `json:"city_name"`
+	PostCode           string                    `json:"post_code"`
+	AddressOne         string                    `json:"address_one"`
+	AddressTwo         string                    `json:"address_two,omitempty"`
 	Products           []xlwmsParcelDraftProduct `json:"products"`
 	MissingFields      []string                  `json:"missing_fields"`
 	Ready              bool                      `json:"ready"`
@@ -177,23 +177,23 @@ type xlwmsParcelDraft struct {
 }
 
 type xlwmsParcelCreateRequest struct {
-	Warehouse      string `json:"warehouse"`
-	PlatformOrderNo string `json:"platform_order_no"`
-	ThirdOrderNo   string `json:"third_order_no"`
-	SalesPlatform  string `json:"sales_platform"`
-	StoreName      string `json:"store_name"`
-	ChannelCode    string `json:"channel_code"`
-	TrackingNumber string `json:"tracking_number"`
-	Receiver       string `json:"receiver"`
-	Phone          string `json:"phone"`
-	CountryRegionCode string `json:"country_region_code"`
-	ProvinceCode   string `json:"province_code"`
-	ProvinceName   string `json:"province_name"`
-	CityName       string `json:"city_name"`
-	PostCode       string `json:"post_code"`
-	AddressOne     string `json:"address_one"`
-	AddressTwo     string `json:"address_two"`
-	Products       []xlwmsParcelDraftProduct `json:"products"`
+	Warehouse         string                    `json:"warehouse"`
+	PlatformOrderNo   string                    `json:"platform_order_no"`
+	ThirdOrderNo      string                    `json:"third_order_no"`
+	SalesPlatform     string                    `json:"sales_platform"`
+	StoreName         string                    `json:"store_name"`
+	ChannelCode       string                    `json:"channel_code"`
+	TrackingNumber    string                    `json:"tracking_number"`
+	Receiver          string                    `json:"receiver"`
+	Phone             string                    `json:"phone"`
+	CountryRegionCode string                    `json:"country_region_code"`
+	ProvinceCode      string                    `json:"province_code"`
+	ProvinceName      string                    `json:"province_name"`
+	CityName          string                    `json:"city_name"`
+	PostCode          string                    `json:"post_code"`
+	AddressOne        string                    `json:"address_one"`
+	AddressTwo        string                    `json:"address_two"`
+	Products          []xlwmsParcelDraftProduct `json:"products"`
 }
 
 type xlwmsParcelLabelUploadRequest struct {
@@ -287,11 +287,11 @@ func (s *Server) createXLWMSParcel(writer http.ResponseWriter, request *http.Req
 		return
 	}
 	if !shein.RequiresManualParcelCreate(shopKey, task.WarehouseAddressCode, "") {
-		writeJSON(writer, http.StatusConflict, response{Success: false, Error: "当前发货仓不需要手动建单"})
+		writeJSON(writer, http.StatusConflict, response{Success: false, Error: "当前发货仓不需要 DPS 出库单"})
 		return
 	}
 	if task.Status != "label_ready" && task.Status != "ready" {
-		writeJSON(writer, http.StatusConflict, response{Success: false, Error: "当前订单尚未到面单阶段，不能手动建单"})
+		writeJSON(writer, http.StatusConflict, response{Success: false, Error: "当前订单尚未到面单阶段，不能建领星出库单"})
 		return
 	}
 	loaded := []shein.FulfillmentTask{task}
@@ -304,60 +304,30 @@ func (s *Server) createXLWMSParcel(writer http.ResponseWriter, request *http.Req
 		writeJSON(writer, http.StatusConflict, response{Success: false, Error: "SHEIN 已揽收或已签收，不能再补建领星出库单"})
 		return
 	}
-	order, err := parcelCreateOrder(shopKey, s.shopName, orderNo, task, payload)
+	parcel, err := s.createLingxingParcel(ctx, shopKey, orderNo, task, payload)
 	if err != nil {
-		writeJSON(writer, http.StatusBadRequest, response{Success: false, Error: err.Error()})
-		return
-	}
-	warehouse := strings.ToUpper(strings.TrimSpace(payload.Warehouse))
-	if err := s.cancelExistingLingxingParcel(ctx, warehouse, orderNo); err != nil {
 		if s.logger != nil {
-			s.logger.Warn("XLWMS parcel cancel before create failed", "shop", shopKey, "warehouse", warehouse, "error", err.Error())
+			s.logger.Warn("XLWMS parcel create failed", "shop", shopKey, "error", sanitizedError(err))
 		}
-		writeJSON(writer, http.StatusConflict, response{Success: false, Error: err.Error()})
-		return
-	}
-	if err := s.attachSheinLabelToParcelOrder(ctx, shopKey, orderNo, task, order); err != nil {
-		if s.logger != nil {
-			s.logger.Warn("XLWMS parcel label attach failed", "shop", shopKey, "warehouse", warehouse, "error", sanitizedError(err))
+		if strings.Contains(err.Error(), "不完整") || strings.Contains(err.Error(), "必须与 DPS") || strings.Contains(err.Error(), "不能为空") {
+			writeJSON(writer, http.StatusBadRequest, response{Success: false, Error: err.Error()})
+			return
+		}
+		if strings.Contains(err.Error(), "已出库") || strings.Contains(err.Error(), "取消") {
+			writeJSON(writer, http.StatusConflict, response{Success: false, Error: err.Error()})
+			return
 		}
 		writeJSON(writer, http.StatusBadGateway, response{Success: false, Error: err.Error()})
 		return
 	}
-	result, err := s.xlwms.CreateParcel(ctx, warehouse, []any{order})
-	if err != nil {
-		if s.logger != nil {
-			s.logger.Warn("XLWMS parcel create failed", "shop", shopKey, "warehouse", warehouse, "error", err.Error())
-		}
-		writeXLWMSError(writer, err)
-		return
-	}
-	if message := parcelCreateFailure(result); message != "" {
-		if s.logger != nil {
-			s.logger.Warn("XLWMS parcel create rejected", "shop", shopKey, "warehouse", warehouse, "error", message)
-		}
-		writeJSON(writer, http.StatusBadGateway, response{Success: false, Error: message})
-		return
-	}
-	outboundOrderNo := firstLingxingOutboundOrderNo(result)
-	if outboundOrderNo == "" {
-		writeJSON(writer, http.StatusBadGateway, response{Success: false, Error: "领星建单成功但未返回出库单号，请刷新后再试，不要立刻补传"})
-		return
-	}
-	parcel, _ := s.lookupLingxingParcel(ctx, warehouse, orderNo)
-	if strings.TrimSpace(parcel.OutboundOrderNo) == "" {
-		parcel.OutboundOrderNo = outboundOrderNo
-	}
-	if err := s.recordParcelWatch(ctx, shopKey, orderNo, warehouse, parcel); err != nil && s.logger != nil {
-		s.logger.Warn("record SHEIN parcel watch after create failed", "shop", shopKey, "error", sanitizedError(err))
-	}
 	writer.Header().Set("Cache-Control", "no-store")
 	writeJSON(writer, http.StatusOK, response{Success: true, Data: map[string]any{
-		"parcel":             result,
-		"outbound_order_no":  outboundOrderNo,
-		"outbound_status":    parcel.Status,
-		"can_upload_label":   lingxingParcelAllowsLabelUpdate(parcel),
-		"upload_hint":        firstNonEmpty(lingxingLabelUploadHint(parcel), "出库单已创建并已带上 SHEIN 面单。进入仓库处理中后如需覆盖再补传。"),
+		"outbound_order_no":    parcel.OutboundOrderNo,
+		"outbound_status":      parcel.Status,
+		"outbound_status_name": firstNonEmpty(parcel.StatusName, ""),
+		"label_attached":       parcel.LabelAttached,
+		"can_upload_label":     lingxingParcelAllowsLabelUpdate(parcel),
+		"upload_hint":          firstNonEmpty(lingxingLabelUploadHint(parcel), "出库单已创建并已带上 SHEIN 面单。进入仓库处理中后如需覆盖再补传。"),
 	}})
 }
 
@@ -402,7 +372,7 @@ func (s *Server) uploadXLWMSParcelLabel(writer http.ResponseWriter, request *htt
 		return
 	}
 	if !shein.RequiresManualParcelCreate(shopKey, task.WarehouseAddressCode, "") {
-		writeJSON(writer, http.StatusConflict, response{Success: false, Error: "当前发货仓不需要手动上传面单"})
+		writeJSON(writer, http.StatusConflict, response{Success: false, Error: "当前发货仓不需要补传 DPS 面单"})
 		return
 	}
 	if task.Status != "label_ready" && task.Status != "ready" {
@@ -549,6 +519,130 @@ func (s *Server) lookupLingxingParcel(ctx context.Context, warehouse, orderNo st
 		return lingxingParcelStatus{}, err
 	}
 	return lingxingParcelStatusFromResult(result), nil
+}
+
+func (s *Server) ensureAutomaticDPSParcel(ctx context.Context, shopKey string, task shein.FulfillmentTask) (lingxingParcelStatus, error) {
+	if s.xlwms == nil {
+		return lingxingParcelStatus{}, errors.New("领星查询服务未配置")
+	}
+	if !shein.RequiresManualParcelCreate(shopKey, task.WarehouseAddressCode, "") {
+		return lingxingParcelStatus{}, nil
+	}
+	loaded := []shein.FulfillmentTask{task}
+	if s.store != nil {
+		if err := s.store.AttachOrderFulfillmentStates(ctx, shopKey, loaded); err != nil {
+			return lingxingParcelStatus{}, err
+		}
+		task = loaded[0]
+	}
+	if !shein.LabelPrintable(task) {
+		return lingxingParcelStatus{}, errors.New("SHEIN 已揽收或已签收，不能再建领星出库单")
+	}
+	warehouse := shein.ResolvedDPSWarehouseCode(task.WarehouseAddressCode, "")
+	if warehouse == "" {
+		return lingxingParcelStatus{}, errors.New("DPS 发货仓无法识别")
+	}
+	parcel, err := s.lookupLingxingParcel(ctx, warehouse, task.OrderNo)
+	if err != nil {
+		return lingxingParcelStatus{}, err
+	}
+	if strings.TrimSpace(parcel.OutboundOrderNo) != "" {
+		if parcel.LabelAttached || lingxingParcelCompletesManualCreate(parcel) {
+			return parcel, nil
+		}
+		if lingxingParcelAllowsLabelUpdate(parcel) {
+			if _, err := s.uploadLingxingParcelLabel(ctx, shopKey, task.OrderNo, warehouse, task, task.WaybillNo, json.RawMessage(`{}`)); err != nil {
+				return parcel, err
+			}
+			return s.lookupLingxingParcel(ctx, warehouse, task.OrderNo)
+		}
+		if parcel.Status == nil || *parcel.Status != 0 {
+			return parcel, errors.New(lingxingLabelUploadHint(parcel))
+		}
+	}
+	draft, err := s.loadAutomaticParcelDraft(ctx, shopKey, task)
+	if err != nil {
+		return parcel, err
+	}
+	return s.createLingxingParcel(ctx, shopKey, task.OrderNo, task, parcelCreateRequestFromDraft(draft))
+}
+
+func (s *Server) loadAutomaticParcelDraft(ctx context.Context, shopKey string, task shein.FulfillmentTask) (xlwmsParcelDraft, error) {
+	draft := parcelDraftFromTask(shopKey, s.shopName, task)
+	draft.Required = true
+	if s.store != nil {
+		detail, err := s.store.OrderDetail(ctx, shopKey, task.OrderNo)
+		if err != nil && !errors.Is(err, shein.ErrOrderNotFound) {
+			return draft, err
+		}
+		applyOrderDetailToParcelDraft(&draft, detail)
+	}
+	if address, err := s.exportAddressForParcel(ctx, shopKey, task.OrderNo); err != nil {
+		draft.MissingFields = appendUnique(draft.MissingFields, "收件地址")
+	} else {
+		applyAddressToParcelDraft(&draft, address)
+	}
+	applyMappedProductsToParcelDraft(ctx, s.store, shopKey, &draft, task.OrderNo)
+	finalizeParcelDraft(&draft)
+	if len(draft.MissingFields) > 0 {
+		return draft, errors.New("DPS 自动建单缺少：" + strings.Join(draft.MissingFields, "、"))
+	}
+	return draft, nil
+}
+
+func parcelCreateRequestFromDraft(draft xlwmsParcelDraft) xlwmsParcelCreateRequest {
+	return xlwmsParcelCreateRequest{
+		Warehouse:         draft.Warehouse,
+		PlatformOrderNo:   draft.OrderNo,
+		ThirdOrderNo:      draft.OrderNo,
+		SalesPlatform:     draft.SalesPlatform,
+		StoreName:         draft.StoreName,
+		ChannelCode:       draft.ChannelCode,
+		TrackingNumber:    draft.TrackingNumber,
+		Receiver:          draft.Receiver,
+		Phone:             draft.Phone,
+		CountryRegionCode: draft.CountryRegionCode,
+		ProvinceCode:      draft.ProvinceCode,
+		ProvinceName:      draft.ProvinceName,
+		CityName:          draft.CityName,
+		PostCode:          draft.PostCode,
+		AddressOne:        draft.AddressOne,
+		AddressTwo:        draft.AddressTwo,
+		Products:          draft.Products,
+	}
+}
+
+func (s *Server) createLingxingParcel(ctx context.Context, shopKey, orderNo string, task shein.FulfillmentTask, payload xlwmsParcelCreateRequest) (lingxingParcelStatus, error) {
+	order, err := parcelCreateOrder(shopKey, s.shopName, orderNo, task, payload)
+	if err != nil {
+		return lingxingParcelStatus{}, err
+	}
+	warehouse := strings.ToUpper(strings.TrimSpace(payload.Warehouse))
+	if err := s.cancelExistingLingxingParcel(ctx, warehouse, orderNo); err != nil {
+		return lingxingParcelStatus{}, err
+	}
+	if err := s.attachSheinLabelToParcelOrder(ctx, shopKey, orderNo, task, order); err != nil {
+		return lingxingParcelStatus{}, err
+	}
+	result, err := s.xlwms.CreateParcel(ctx, warehouse, []any{order})
+	if err != nil {
+		return lingxingParcelStatus{}, err
+	}
+	if message := parcelCreateFailure(result); message != "" {
+		return lingxingParcelStatus{}, errors.New(message)
+	}
+	outboundOrderNo := firstLingxingOutboundOrderNo(result)
+	if outboundOrderNo == "" {
+		return lingxingParcelStatus{}, errors.New("领星建单成功但未返回出库单号，请刷新后再试")
+	}
+	parcel, _ := s.lookupLingxingParcel(ctx, warehouse, orderNo)
+	if strings.TrimSpace(parcel.OutboundOrderNo) == "" {
+		parcel.OutboundOrderNo = outboundOrderNo
+	}
+	if err := s.recordParcelWatch(ctx, shopKey, orderNo, warehouse, parcel); err != nil && s.logger != nil {
+		s.logger.Warn("record SHEIN parcel watch after create failed", "shop", shopKey, "error", sanitizedError(err))
+	}
+	return parcel, nil
 }
 
 func (s *Server) attachSheinLabelToParcelOrder(ctx context.Context, shopKey, orderNo string, task shein.FulfillmentTask, order map[string]any) error {
@@ -763,7 +857,7 @@ func applyLingxingParcelStatusToDraft(ctx context.Context, client *xlwms.Client,
 func applyLingxingParcelToDraft(draft *xlwmsParcelDraft, parcel lingxingParcelStatus) {
 	if draft == nil || strings.TrimSpace(parcel.OutboundOrderNo) == "" {
 		if draft != nil && draft.UploadHint == "" {
-			draft.UploadHint = "还没有领星出库单。先点手动建单；建单时会带上 SHEIN 面单。"
+			draft.UploadHint = "还没有领星出库单。买完面单后会自动建单贴面单；失败后再点补建。"
 		}
 		return
 	}
@@ -861,7 +955,7 @@ func lingxingParcelAllowsLabelUpdate(parcel lingxingParcelStatus) bool {
 
 func lingxingLabelUploadHint(parcel lingxingParcelStatus) string {
 	if strings.TrimSpace(parcel.OutboundOrderNo) == "" {
-		return "还没有领星出库单。先点手动建单；建单时会带上 SHEIN 面单。"
+		return "还没有领星出库单。买完面单后会自动建单贴面单；失败后再点补建。"
 	}
 	statusName := firstNonEmpty(parcel.StatusName, "未知状态")
 	if parcel.Status != nil && *parcel.Status == 0 {
@@ -999,7 +1093,7 @@ func parcelCreateOrder(shopKey, shopName, orderNo string, task shein.Fulfillment
 		strings.TrimSpace(payload.CountryRegionCode) == "" || strings.TrimSpace(payload.ProvinceName) == "" ||
 		strings.TrimSpace(payload.CityName) == "" || strings.TrimSpace(payload.PostCode) == "" ||
 		strings.TrimSpace(payload.ChannelCode) == "" || len(products) == 0 {
-		return nil, errors.New("手动建单字段不完整")
+		return nil, errors.New("建单字段不完整")
 	}
 	platformOrderNo := firstNonEmpty(strings.TrimSpace(payload.PlatformOrderNo), orderNo)
 	salesPlatform := firstNonEmpty(strings.TrimSpace(payload.SalesPlatform), "SHEIN")
@@ -1159,8 +1253,8 @@ func parcelDraftFromTask(shopKey, shopName string, task shein.FulfillmentTask) x
 		MissingFields:  []string{},
 	}
 	if required {
-		draft.Reason = "当前 SHEIN 店铺发往 DPS 仓时，先在领星建小包出库单；建单时会带上 SHEIN 面单"
-		draft.UploadHint = "还没有领星出库单。先点手动建单；建单时会带上 SHEIN 面单。"
+		draft.Reason = "当前 SHEIN 店铺发往 DPS 仓时，买完面单后会自动建领星出库单并贴上 SHEIN 面单；这里只用于失败后补建或补传"
+		draft.UploadHint = "还没有领星出库单。买完面单后会自动建单贴面单；失败后再点补建。"
 	}
 	if required && warehouse == "" {
 		draft.MissingFields = append(draft.MissingFields, "建单仓库")

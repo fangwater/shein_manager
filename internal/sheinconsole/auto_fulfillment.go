@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"sort"
 	"strconv"
@@ -35,6 +36,7 @@ type autoRunRequest struct {
 type quotedChannel struct {
 	Quote     shein.ShippingQuote
 	Candidate shein.ShippingQuoteCandidate
+	Priority  int
 }
 
 func (s *Server) startAutoWorkers() {
@@ -534,6 +536,11 @@ func (s *Server) executeAutoFulfillment(ctx context.Context, ref autoQueueRef) e
 	if err := s.setAutomaticStep(ctx, ref, "quote_channels"); err != nil {
 		return err
 	}
+	policyGroups, err := s.store.ListMergedCarrierPolicies(ctx, ref.ShopKey)
+	if err != nil {
+		return err
+	}
+	policiesByWarehouse := shein.PoliciesByWarehouse(policyGroups)
 	quotes := make([]quotedChannel, 0)
 	for _, warehouse := range warehouses {
 		warehouseCode := scalarString(warehouse, "warehouseAddressCode", "warehouseCode")
@@ -546,20 +553,29 @@ func (s *Server) executeAutoFulfillment(ctx context.Context, ref autoQueueRef) e
 		if err != nil {
 			return err
 		}
+		policies := policiesByWarehouse[shein.PolicyWarehouseKey(warehouseCode, warehouseName)]
+		shein.ApplyCarrierPoliciesToChannels(result, warehouseCode, warehouseName, policies)
 		quote, ok := shippingQuoteFromChannels(data, result)
 		if !ok {
-			return errors.New("物流渠道响应缺少有效报价")
+			continue
 		}
 		if err := s.store.SaveShippingQuote(ctx, ref.ShopKey, quote); err != nil {
 			return err
 		}
 		for _, candidate := range quote.Candidates {
-			if candidate.PerformanceCost != "" {
-				quotes = append(quotes, quotedChannel{Quote: quote, Candidate: candidate})
+			if candidate.PerformanceCost == "" {
+				continue
 			}
+			quotes = append(quotes, quotedChannel{
+				Quote:     quote,
+				Candidate: candidate,
+				Priority: shein.ConfiguredCarrierPriority(
+					policies, shein.CarrierCode(candidate.ExpressChannelCode, candidate.ExpressIDCode, candidate.ExpressShortName),
+				),
+			})
 		}
 	}
-	selected, err := lowestQuotedChannel(quotes)
+	selected, reason, err := selectAutomaticQuotedChannel(quotes)
 	if err != nil {
 		return err
 	}
@@ -581,7 +597,7 @@ func (s *Server) executeAutoFulfillment(ctx context.Context, ref autoQueueRef) e
 	placeKey := "shein-auto-place-" + hashRequest(placeData)[:32]
 	recorded, err := s.store.ReserveLabelPurchaseSelection(
 		ctx, ref.ShopKey, selected.Quote.PreRequestID, selected.Candidate.ExpressChannelCode,
-		placeKey, "automatic", "lowest_available_price",
+		placeKey, "automatic", reason,
 	)
 	if err != nil {
 		return err
@@ -704,23 +720,74 @@ func (s *Server) finishAutomaticOrder(ctx context.Context, client *shein.Client,
 		})
 		return nil
 	}
-	if check.Status == "label_ready" {
-		return s.store.SetAutoJobState(ctx, ref.ShopKey, ref.OrderNo, "completed", "completed", "", "")
+	if check.Status != "label_ready" {
+		if job.DeliveryNo == "" {
+			return errors.New("下单成功但未返回可打印的 deliveryNo")
+		}
+		if err := s.setAutomaticStep(ctx, ref, "print_label"); err != nil {
+			return err
+		}
+		labelData := map[string]any{"deliveryNo": job.DeliveryNo}
+		labelKey := "shein-auto-label-" + hashRequest(labelData)[:24] + "-" + strconv.Itoa(job.Attempts)
+		labelResult, err := s.callAutomaticOperation(ctx, client, ref.ShopKey, "print-express-info", labelData, labelKey)
+		if err != nil {
+			return err
+		}
+		s.persistFulfillmentState(ref.ShopKey, "print-express-info", labelData, labelResult)
 	}
-	if job.DeliveryNo == "" {
-		return errors.New("下单成功但未返回可打印的 deliveryNo")
-	}
-	if err := s.setAutomaticStep(ctx, ref, "print_label"); err != nil {
+	if err := s.completeAutomaticWarehouseHandoff(ctx, ref, job); err != nil {
 		return err
 	}
-	labelData := map[string]any{"deliveryNo": job.DeliveryNo}
-	labelKey := "shein-auto-label-" + hashRequest(labelData)[:24] + "-" + strconv.Itoa(job.Attempts)
-	labelResult, err := s.callAutomaticOperation(ctx, client, ref.ShopKey, "print-express-info", labelData, labelKey)
-	if err != nil {
-		return err
-	}
-	s.persistFulfillmentState(ref.ShopKey, "print-express-info", labelData, labelResult)
 	return s.store.SetAutoJobState(ctx, ref.ShopKey, ref.OrderNo, "completed", "completed", "", "")
+}
+
+func (s *Server) completeAutomaticWarehouseHandoff(ctx context.Context, ref autoQueueRef, job shein.AutoFulfillmentJob) error {
+	task := shein.FulfillmentTask{
+		OrderNo:              ref.OrderNo,
+		WarehouseAddressCode: job.WarehouseAddressCode,
+		ExpressChannelCode:   job.ExpressChannelCode,
+		PlaceRequestID:       job.PlaceRequestID,
+		DeliveryNo:           job.DeliveryNo,
+		WaybillNo:            job.DeliveryNo,
+		Status:               "label_ready",
+	}
+	if s.store != nil {
+		loaded, err := s.store.LatestFulfillmentTask(ctx, ref.ShopKey, ref.OrderNo)
+		if err != nil {
+			if !errors.Is(err, shein.ErrFulfillmentTaskNotFound) {
+				return err
+			}
+			if shein.RequiresManualParcelCreate(ref.ShopKey, job.WarehouseAddressCode, "") {
+				return errors.New("DPS 面单已购买，但未找到履约任务，无法自动建领星出库单")
+			}
+			return nil
+		}
+		task = loaded
+		if strings.TrimSpace(task.WarehouseAddressCode) == "" {
+			task.WarehouseAddressCode = job.WarehouseAddressCode
+		}
+		if strings.TrimSpace(task.ExpressChannelCode) == "" {
+			task.ExpressChannelCode = job.ExpressChannelCode
+		}
+		if strings.TrimSpace(task.DeliveryNo) == "" {
+			task.DeliveryNo = job.DeliveryNo
+		}
+		if strings.TrimSpace(task.PlaceRequestID) == "" {
+			task.PlaceRequestID = job.PlaceRequestID
+		}
+	}
+	if !shein.RequiresManualParcelCreate(ref.ShopKey, task.WarehouseAddressCode, "") {
+		return nil
+	}
+	if s.store != nil {
+		if err := s.setAutomaticStep(ctx, ref, "create_parcel"); err != nil {
+			return err
+		}
+	}
+	if _, err := s.ensureAutomaticDPSParcel(ctx, ref.ShopKey, task); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (s *Server) setAutomaticStep(ctx context.Context, ref autoQueueRef, step string) error {
@@ -833,36 +900,61 @@ func goodsIDsFromQueue(goods []shein.QueueGoods) []any {
 }
 
 func lowestQuotedChannel(quotes []quotedChannel) (quotedChannel, error) {
+	selected, _, err := selectAutomaticQuotedChannel(quotes)
+	return selected, err
+}
+
+func selectAutomaticQuotedChannel(quotes []quotedChannel) (quotedChannel, string, error) {
 	if len(quotes) == 0 {
-		return quotedChannel{}, errors.New("没有可用物流渠道报价")
+		return quotedChannel{}, "", errors.New("没有可用物流渠道报价")
 	}
 	currency := quotes[0].Candidate.CurrencyCode
 	for _, quote := range quotes {
 		if quote.Candidate.CurrencyCode != currency {
-			return quotedChannel{}, errors.New("物流报价币种不一致，需人工选择")
+			return quotedChannel{}, "", errors.New("物流报价币种不一致，需人工选择")
 		}
 	}
-	sort.SliceStable(quotes, func(left, right int) bool {
-		leftCost, leftErr := strconv.ParseFloat(quotes[left].Candidate.PerformanceCost, 64)
-		rightCost, rightErr := strconv.ParseFloat(quotes[right].Candidate.PerformanceCost, 64)
-		if leftErr != nil {
-			return false
-		}
-		if rightErr != nil {
-			return true
-		}
-		if leftCost != rightCost {
-			return leftCost < rightCost
-		}
-		if quotes[left].Quote.WarehouseAddressCode != quotes[right].Quote.WarehouseAddressCode {
-			return quotes[left].Quote.WarehouseAddressCode < quotes[right].Quote.WarehouseAddressCode
-		}
-		return quotes[left].Candidate.ExpressChannelCode < quotes[right].Candidate.ExpressChannelCode
+	items := append([]quotedChannel(nil), quotes...)
+	sort.SliceStable(items, func(left, right int) bool {
+		return betterQuotedChannel(items[left], items[right])
 	})
-	if _, err := strconv.ParseFloat(quotes[0].Candidate.PerformanceCost, 64); err != nil {
-		return quotedChannel{}, errors.New("物流报价缺少可比较价格")
+	if _, err := strconv.ParseFloat(items[0].Candidate.PerformanceCost, 64); err != nil {
+		return quotedChannel{}, "", errors.New("物流报价缺少可比较价格")
 	}
-	return quotes[0], nil
+	choice := items[0]
+	carrier := shein.CarrierCode(choice.Candidate.ExpressChannelCode, choice.Candidate.ExpressIDCode, choice.Candidate.ExpressShortName)
+	warehouseKey := shein.PolicyWarehouseKey(choice.Quote.WarehouseAddressCode, "")
+	if warehouseKey == "" {
+		warehouseKey = choice.Quote.WarehouseAddressCode
+	}
+	if carrier == "" {
+		carrier = choice.Candidate.ExpressChannelCode
+	}
+	reason := fmt.Sprintf("选择最低运费 %s / %s", carrier, warehouseKey)
+	return choice, reason, nil
+}
+
+func betterQuotedChannel(left, right quotedChannel) bool {
+	leftCost, leftErr := strconv.ParseFloat(left.Candidate.PerformanceCost, 64)
+	rightCost, rightErr := strconv.ParseFloat(right.Candidate.PerformanceCost, 64)
+	if leftErr != nil {
+		return false
+	}
+	if rightErr != nil {
+		return true
+	}
+	if leftCost != rightCost {
+		return leftCost < rightCost
+	}
+	leftARP := shein.IsARPPolicyWarehouse(shein.PolicyWarehouseKey(left.Quote.WarehouseAddressCode, ""))
+	rightARP := shein.IsARPPolicyWarehouse(shein.PolicyWarehouseKey(right.Quote.WarehouseAddressCode, ""))
+	if leftARP != rightARP {
+		return leftARP
+	}
+	if left.Quote.WarehouseAddressCode != right.Quote.WarehouseAddressCode {
+		return left.Quote.WarehouseAddressCode < right.Quote.WarehouseAddressCode
+	}
+	return left.Candidate.ExpressChannelCode < right.Candidate.ExpressChannelCode
 }
 
 func automaticError(err error) (string, string) {

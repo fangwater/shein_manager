@@ -6,7 +6,7 @@
   <meta name="description" content="SHEIN 店铺发货与面单管理">
   <title>SHEIN Fulfillment</title>
   <link rel="stylesheet" href="/temu/dashboard.css?v=20260814-shared">
-  <link rel="stylesheet" href="./assets/platform.css?v=20260818-1">
+  <link rel="stylesheet" href="./assets/platform.css?v=20260819-1">
 </head>
 <body>
   <svg class="svg-sprite" aria-hidden="true">
@@ -25,6 +25,9 @@
     <symbol id="i-warning" viewBox="0 0 24 24"><path d="M12 3 2 21h20L12 3zM12 9v5M12 18h.01"/></symbol>
     <symbol id="i-user" viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></symbol>
     <symbol id="i-ledger" viewBox="0 0 24 24"><path d="M5 3h14v18H5zM9 3v18M12 8h4M12 12h4M12 16h3"/></symbol>
+    <symbol id="i-warehouse" viewBox="0 0 24 24"><path d="M3 10 12 3l9 7v11H3zM8 21v-7h8v7"/></symbol>
+    <symbol id="i-arrow-up" viewBox="0 0 24 24"><path d="m6 15 6-6 6 6"/></symbol>
+    <symbol id="i-arrow-down" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
   </svg>
 
   <div class="app-shell">
@@ -42,6 +45,7 @@
         <button class="nav-button" data-view="ledger"><svg><use href="#i-ledger"/></svg><span>自动发货账本</span><b id="nav-ledger-count">0</b></button>
         <span id="nav-label-count" hidden>0</span>
         <button class="nav-button" data-view="inventory-thresholds"><svg><use href="#i-warning"/></svg><span>库存安全线</span></button>
+        <button class="nav-button" data-view="warehouses"><svg><use href="#i-warehouse"/></svg><span>仓库快递</span></button>
         <button class="nav-button" data-view="tools"><svg><use href="#i-tools"/></svg><span>物流工具</span></button>
       </nav>
       <div class="sidebar-foot"><a class="app-switch-link" href="/warehouse-console/"><svg><use href="#i-tools"/></svg><span>仓库运营中台</span></a><div class="sidebar-service"><span class="dot warning" id="service-dot"></span><span id="service-text">检查服务</span></div></div>
@@ -172,7 +176,7 @@
 
         <section class="view" id="view-labels">
           <div class="page-head">
-            <div><h1>自动处理中</h1><p>购买面单后，后台确认物流并等待面单就绪；订单不再显示在待发货队列</p></div>
+            <div><h1>自动处理中</h1><p>购买面单后，后台确认物流。ARP 等待自动分仓；DPS 会自动建领星出库单并贴面单，再等待分仓</p></div>
             <button class="secondary-button" id="refresh-tasks" type="button"><svg><use href="#i-refresh"/></svg>刷新</button>
           </div>
           <div class="status-band" id="task-status-filters" role="tablist" aria-label="处理中状态筛选">
@@ -194,7 +198,7 @@
           </div>
           <section class="parcel-create-panel" id="parcel-create-panel" hidden>
             <div class="page-head">
-              <div><h2>领星手动建单</h2><p id="parcel-create-copy">当前店铺发往 DPS 仓时，先建领星小包出库单；建单时会带上 SHEIN 面单</p></div>
+              <div><h2>领星出库单补救</h2><p id="parcel-create-copy">当前店铺发往 DPS 仓时，买完面单后会自动建领星出库单并贴上 SHEIN 面单；这里只用于失败后补建或补传</p></div>
               <button class="secondary-button" id="refresh-parcel-draft" type="button"><svg><use href="#i-refresh"/></svg>重新预填</button>
             </div>
             <form class="parcel-create-form" id="parcel-create-form">
@@ -215,9 +219,9 @@
               <label class="full"><span>地址二行</span><input id="parcel-address-two" autocomplete="off"></label>
               <label class="full"><span>商品明细</span><textarea id="parcel-products" required rows="3" placeholder="每行：仓库SKU 数量"></textarea></label>
               <div class="parcel-create-actions">
-                <small id="parcel-create-hint">选择一条面单已就绪的 DPS 订单后预填</small>
+                <small id="parcel-create-hint">选择一条自动建单失败或待补传的 DPS 订单后预填</small>
                 <button class="secondary-button" id="upload-xlwms-label" type="button">补传面单</button>
-                <button class="primary-button" id="create-xlwms-parcel" type="submit"><svg><use href="#i-label"/></svg>手动建单</button>
+                <button class="primary-button" id="create-xlwms-parcel" type="submit"><svg><use href="#i-label"/></svg>补建出库单</button>
               </div>
             </form>
           </section>
@@ -282,6 +286,15 @@
             <div class="empty" id="inventory-threshold-empty" hidden><svg><use href="#i-warning"/></svg><strong>没有可配置的 SKU</strong><span>仓库 SKU 同步后会显示在这里</span></div>
           </div>
           <div class="pager" id="inventory-threshold-pager" hidden></div>
+        </section>
+
+        <section class="view" id="view-warehouses">
+          <div class="page-head">
+            <div><h1>仓库快递</h1><p>当前店铺按 OMS 仓独立配置快递启用状态和优先级；禁用后自动发货和人工购单都不能再选</p></div>
+            <button class="secondary-button" id="refresh-carrier-policies" type="button"><svg><use href="#i-refresh"/></svg>刷新</button>
+          </div>
+          <div class="section-title carrier-policy-heading"><h2>仓库快递优先级</h2><span id="carrier-policy-shop"></span></div>
+          <div class="carrier-policy-grid" id="carrier-policy-grid"></div>
         </section>
 
         <section class="view" id="view-tools">
@@ -364,7 +377,7 @@
   </aside>
   <button class="drawer-backdrop" id="drawer-backdrop" aria-label="关闭结果"></button>
   <div class="toast" id="toast" hidden></div>
-  <script src="./assets/app.js?v=20260818-12" defer></script>
-  <script src="./assets/xlwms.js?v=20260818-12" defer></script>
+  <script src="./assets/app.js?v=20260819-2" defer></script>
+  <script src="./assets/xlwms.js?v=20260819-1" defer></script>
 </body>
 </html>

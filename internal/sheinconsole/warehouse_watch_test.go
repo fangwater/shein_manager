@@ -28,9 +28,9 @@ func TestApplyLingxingParcelWarehouseDecisionUsesOutboundStatus(t *testing.T) {
 	}
 }
 
-func TestDPSManualParcelsDoNotUseOMSPlatformLeak(t *testing.T) {
+func TestDPSParcelsDoNotUseOMSPlatformLeak(t *testing.T) {
 	if shein.RequiresManualParcelCreate("beauty-hangers-home", "WH2604283535967233", "DPSNY002") == false {
-		t.Fatal("Beauty Hangers DPS orders must stay on the manual parcel path")
+		t.Fatal("Beauty Hangers DPS orders must stay on the Lingxing parcel path")
 	}
 	if shein.RequiresManualParcelCreate("beauty-hangers-home", "WH2607084039788546", "ARP") {
 		t.Fatal("ARP orders must still use the OMS platform-order path")

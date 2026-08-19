@@ -9,6 +9,20 @@ import (
 	"shein-api-manager/internal/shein"
 )
 
+func TestRejectDisabledCarrierPurchaseUsesWarehousePolicy(t *testing.T) {
+	policies := shein.DefaultCarrierPolicies("DPS002")
+	policies[0].Enabled = false
+	reason := shein.ChannelUnavailableReason(
+		"GOFO-D2D250718-Na", "", "", "WH2604283535967233", "",
+		shein.PoliciesByWarehouse([]shein.WarehouseCarrierPolicies{{
+			WarehouseKey: "DPS002", Carriers: policies,
+		}})["DPS002"],
+	)
+	if reason != "GOFO 店铺策略已在 DPS002 仓库禁用" {
+		t.Fatalf("purchase of a disabled warehouse carrier must be rejected: %q", reason)
+	}
+}
+
 func TestRequiredConfirmationRecognizesJSONNumber(t *testing.T) {
 	confirmation, idempotent, err := requiredConfirmation("export-address", map[string]any{
 		"handleType": json.Number("2"),

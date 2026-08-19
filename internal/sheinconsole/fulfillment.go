@@ -62,6 +62,9 @@ func (s *Server) persistFulfillmentState(shopKey, operation string, requestData,
 func (s *Server) saveShippingQuote(shopKey string, requestData, result map[string]any) error {
 	quote, ok := shippingQuoteFromChannels(requestData, result)
 	if !ok {
+		if firstString(firstObject(result["info"]), "preRequestId") != "" {
+			return nil
+		}
 		return errors.New("SHEIN channel response does not contain a complete quote")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -172,7 +175,7 @@ func shippingQuoteFromChannels(requestData, result map[string]any) (shein.Shippi
 	}
 	for _, item := range objectItems(info["channelInfoList"]) {
 		channelCode := firstString(item, "expressChannelCode")
-		if channelCode == "" {
+		if channelCode == "" || channelPolicyBlocks(item) {
 			continue
 		}
 		cost, _ := decimalValue(item["performanceCost"])
@@ -190,6 +193,15 @@ func shippingQuoteFromChannels(requestData, result map[string]any) (shein.Shippi
 	ok := quote.PreRequestID != "" && quote.OrderNo != "" &&
 		quote.WarehouseAddressCode != "" && len(quote.Candidates) > 0
 	return quote, ok
+}
+
+func channelPolicyBlocks(channel map[string]any) bool {
+	reason := firstString(channel, "unavailableReason")
+	if reason == "" {
+		return false
+	}
+	status := firstString(channel, "availableStatus")
+	return status == "0" || strings.Contains(reason, "已禁用") || strings.Contains(reason, "白名单")
 }
 
 func objectItems(value any) []map[string]any {

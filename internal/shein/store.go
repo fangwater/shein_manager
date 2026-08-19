@@ -40,37 +40,37 @@ var (
 )
 
 type FulfillmentTask struct {
-	OrderNo              string    `json:"order_no"`
-	ExpressChannelCode   string    `json:"express_channel_code"`
-	WarehouseAddressCode string    `json:"warehouse_address_code"`
-	PlaceRequestID       string    `json:"place_request_id"`
-	DeliveryNo           string    `json:"delivery_no"`
-	PackageNo            string    `json:"package_no"`
-	WaybillNo            string    `json:"waybill_no"`
-	OrderPlaceType       *int      `json:"order_place_type,omitempty"`
-	HandleResult         *int      `json:"handle_result,omitempty"`
-	PrintStatus          *int      `json:"print_status,omitempty"`
-	Status               string    `json:"status"`
-	FailureReason        string    `json:"failure_reason,omitempty"`
-	CreatedAt            time.Time `json:"created_at"`
-	UpdatedAt            time.Time `json:"updated_at"`
-	OutboundOrderNo      string     `json:"outbound_order_no,omitempty"`
-	OutboundStatus       *int       `json:"outbound_status,omitempty"`
-	OutboundStatusName   string     `json:"outbound_status_name,omitempty"`
-	LabelAttached        bool       `json:"label_attached,omitempty"`
-	ParcelComplete       bool       `json:"parcel_complete,omitempty"`
-	OMSAccount           string     `json:"oms_account,omitempty"`
-	OMSOrderNo           string     `json:"oms_order_no,omitempty"`
-	OMSStatusCode        *int       `json:"oms_status_code,omitempty"`
-	OMSStatusKey         string     `json:"oms_status_key,omitempty"`
-	OMSStatusText        string     `json:"oms_status_text,omitempty"`
-	OMSWarehouseCode     string     `json:"oms_warehouse_code,omitempty"`
-	OMSSyncStatus        string     `json:"oms_sync_status,omitempty"`
-	OMSSyncMessage       string     `json:"oms_sync_message,omitempty"`
-	OMSQueriedAt         *time.Time `json:"oms_queried_at,omitempty"`
-	OrderStatus          string     `json:"order_status,omitempty"`
-	OrderStatusNormalized string    `json:"order_status_normalized,omitempty"`
-	LabelPrintable       bool       `json:"label_printable"`
+	OrderNo               string     `json:"order_no"`
+	ExpressChannelCode    string     `json:"express_channel_code"`
+	WarehouseAddressCode  string     `json:"warehouse_address_code"`
+	PlaceRequestID        string     `json:"place_request_id"`
+	DeliveryNo            string     `json:"delivery_no"`
+	PackageNo             string     `json:"package_no"`
+	WaybillNo             string     `json:"waybill_no"`
+	OrderPlaceType        *int       `json:"order_place_type,omitempty"`
+	HandleResult          *int       `json:"handle_result,omitempty"`
+	PrintStatus           *int       `json:"print_status,omitempty"`
+	Status                string     `json:"status"`
+	FailureReason         string     `json:"failure_reason,omitempty"`
+	CreatedAt             time.Time  `json:"created_at"`
+	UpdatedAt             time.Time  `json:"updated_at"`
+	OutboundOrderNo       string     `json:"outbound_order_no,omitempty"`
+	OutboundStatus        *int       `json:"outbound_status,omitempty"`
+	OutboundStatusName    string     `json:"outbound_status_name,omitempty"`
+	LabelAttached         bool       `json:"label_attached,omitempty"`
+	ParcelComplete        bool       `json:"parcel_complete,omitempty"`
+	OMSAccount            string     `json:"oms_account,omitempty"`
+	OMSOrderNo            string     `json:"oms_order_no,omitempty"`
+	OMSStatusCode         *int       `json:"oms_status_code,omitempty"`
+	OMSStatusKey          string     `json:"oms_status_key,omitempty"`
+	OMSStatusText         string     `json:"oms_status_text,omitempty"`
+	OMSWarehouseCode      string     `json:"oms_warehouse_code,omitempty"`
+	OMSSyncStatus         string     `json:"oms_sync_status,omitempty"`
+	OMSSyncMessage        string     `json:"oms_sync_message,omitempty"`
+	OMSQueriedAt          *time.Time `json:"oms_queried_at,omitempty"`
+	OrderStatus           string     `json:"order_status,omitempty"`
+	OrderStatusNormalized string     `json:"order_status_normalized,omitempty"`
+	LabelPrintable        bool       `json:"label_printable"`
 }
 
 var postgresSchemaPattern = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
@@ -331,6 +331,21 @@ func (s *Store) Migrate(ctx context.Context) error {
 			ADD COLUMN IF NOT EXISTS oms_queried_at timestamptz;
 		CREATE INDEX IF NOT EXISTS idx_shein_go_fulfillment_tasks_watch
 			ON shein_go_fulfillment_tasks (shop_key, oms_sync_status, outbound_order_no, updated_at DESC);
+
+		CREATE TABLE IF NOT EXISTS shein_go_carrier_policies (
+			shop_key text NOT NULL,
+			oms_warehouse_key text NOT NULL,
+			carrier_code text NOT NULL,
+			priority integer NOT NULL CHECK (priority > 0),
+			enabled boolean NOT NULL DEFAULT true,
+			updated_at timestamptz NOT NULL DEFAULT now(),
+			PRIMARY KEY (shop_key, oms_warehouse_key, carrier_code)
+		);
+		CREATE INDEX IF NOT EXISTS idx_shein_go_carrier_policies_lookup
+			ON shein_go_carrier_policies (shop_key, oms_warehouse_key, priority);
+		UPDATE shein_go_carrier_policies
+			SET enabled = false, updated_at = now()
+			WHERE oms_warehouse_key = 'ARP_EAST' AND carrier_code = 'SWIFTX' AND enabled;
 	`)
 	if err != nil {
 		return fmt.Errorf("migrate SHEIN Go tables: %w", err)
@@ -683,15 +698,15 @@ func (s *Store) ListOMSPlatformOrders(ctx context.Context, shopKey, status strin
 func (s *Store) CountOMSPlatformOrders(ctx context.Context, shopKey string) (map[string]int, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT
-			COUNT(*) FILTER (WHERE ` + omsPlatformOrderStatusMatch("0") + `) AS status_0,
-			COUNT(*) FILTER (WHERE ` + omsPlatformOrderStatusMatch("1") + `) AS status_1,
-			COUNT(*) FILTER (WHERE ` + omsPlatformOrderStatusMatch("2") + `) AS status_2,
-			COUNT(*) FILTER (WHERE ` + omsPlatformOrderStatusMatch("3") + `) AS status_3,
-			COUNT(*) FILTER (WHERE ` + omsPlatformOrderStatusMatch("missing") + `) AS missing,
-			COUNT(*) FILTER (WHERE ` + omsPlatformOrderStatusMatch("manual_required") + `) AS manual_required
+			COUNT(*) FILTER (WHERE `+omsPlatformOrderStatusMatch("0")+`) AS status_0,
+			COUNT(*) FILTER (WHERE `+omsPlatformOrderStatusMatch("1")+`) AS status_1,
+			COUNT(*) FILTER (WHERE `+omsPlatformOrderStatusMatch("2")+`) AS status_2,
+			COUNT(*) FILTER (WHERE `+omsPlatformOrderStatusMatch("3")+`) AS status_3,
+			COUNT(*) FILTER (WHERE `+omsPlatformOrderStatusMatch("missing")+`) AS missing,
+			COUNT(*) FILTER (WHERE `+omsPlatformOrderStatusMatch("manual_required")+`) AS manual_required
 		FROM shein_go_fulfillment_tasks
 		WHERE shop_key = $1
-			AND (` + omsPlatformOrderStatusMatch("all") + `)
+			AND (`+omsPlatformOrderStatusMatch("all")+`)
 	`, shopKey)
 	if err != nil {
 		return nil, fmt.Errorf("count SHEIN OMS platform orders: %w", err)

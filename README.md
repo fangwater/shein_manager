@@ -92,15 +92,17 @@ This is the Top 3 detail table. It contains one to three rows for each
    manual purchase keeps the candidates within the operator-selected quote and
    warehouse.
 3. Candidates are comparable only when they use the selected channel's
-   currency and include `performanceCost`. Ranking is by fee, then
-   `expressChannelCode` for deterministic ties.
+   currency and include `performanceCost`. Ranking is by fee, then ARP over
+   DPS on a tie, then `expressChannelCode`. This ranking only chooses which
+   label to buy. After purchase, outbound follows the bought warehouse.
 4. The automatic worker first drops UNIUNI, non-whitelist, and shop-disabled
    carriers for the quoted OMS warehouse. Among remaining quotes it selects the
    lowest live price; same-price ties prefer ARP over DPS. ARP East defaults
    UNIUNI and SwiftX to disabled. Manual purchases preserve the operator's
    choice only when that channel is still allowed. The purchase header is
    written before the SHEIN online-order call; candidates and the header are
-   committed atomically.
+   committed atomically. A later OMS or parcel step cannot change that
+   warehouse; a mismatch is manual.
 5. A new Go quote must have a valid snapshot or ordering is blocked. Historical
    `preRequestId` values created before this feature remain orderable but do
    not create fabricated analysis rows. Historical data is not backfilled.
@@ -139,11 +141,16 @@ used by the Temu service. Platform-logistics orders buy a SHEIN label the same
 way Temu buys a label: query warehouses, quote channels, then place the
 express order. Automatic fulfillment does not call `export-address` first.
 An order is eligible for automatic fulfillment only when it has exactly one
-goods line, uses integrated logistics, is not an authentication-warehouse
-order, is in a processable label state, has one exact `skuCode` mapping, and
-that mapping has a complete enabled warehouse package specification. Orders
-that do not meet every condition remain visible in the manual queue with a
-concrete reason. Merchant self-ship orders stay on the address-export path.
+goods line and quantity 1, uses integrated logistics, is not an
+authentication-warehouse order, is in a processable label state, has one
+exact `skuCode` mapping, and that mapping has a complete enabled warehouse
+package specification. Multiple SKUs or a single SKU with quantity greater
+than 1 stay in the manual queue, the same way Temu treats `multi_item`.
+Orders that do not meet every condition remain visible in the manual queue
+with a concrete reason. Merchant self-ship orders stay on the address-export
+path. SHEIN OpenAPI in this service has no Temu-style combined-shipment
+candidate endpoint (`bg.order.combinedshipment.list.get`); there is no
+console “可合并订单” view.
 
 Automatic fulfillment jobs are persisted in
 `shein_go_auto_fulfillment_jobs`. Each job records its current step, attempt,

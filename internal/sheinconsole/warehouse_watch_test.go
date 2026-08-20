@@ -50,22 +50,34 @@ func TestAssignPendingOMSPlatformOrderUsesPurchasedWarehouse(t *testing.T) {
 	}
 }
 
-func TestChooseOMSLookupsPrefersActiveARPWhenDPSHasNoPlatformOrder(t *testing.T) {
+func TestChooseOMSLookupsFollowsBoughtLabelAccount(t *testing.T) {
 	dps := xlwms.PlatformOrderLookup{Account: "dps"}
 	arp := xlwms.PlatformOrderLookup{
 		Account: "arp",
 		Orders: []xlwms.PlatformOrder{{
-			OMSOrderNo: "SO389260818000031", Status: 0, StatusKey: "pending", StatusText: "待处理",
+			OMSOrderNo: "SO389260818000031", Status: 2, StatusKey: "processing", StatusText: "处理中",
 		}},
 	}
 	expected, opposite, account := chooseOMSLookups("dps", dps, arp)
-	if account != "arp" || expected.Account != "arp" || opposite.Account != "dps" || expected.Orders[0].OMSOrderNo != "SO389260818000031" {
-		t.Fatalf("ARP platform order was not preferred: account=%s expected=%#v opposite=%#v", account, expected, opposite)
+	if account != "dps" || expected.Account != "dps" || opposite.Account != "arp" {
+		t.Fatalf("DPS label must keep DPS as expected account: account=%s expected=%#v opposite=%#v", account, expected, opposite)
+	}
+	expected, opposite, account = chooseOMSLookups("arp", dps, arp)
+	if account != "arp" || expected.Account != "arp" || opposite.Account != "dps" {
+		t.Fatalf("ARP label must keep ARP as expected account: account=%s expected=%#v opposite=%#v", account, expected, opposite)
 	}
 	if len(activeOMSPlatformOrders(xlwms.PlatformOrderLookup{
 		Orders: []xlwms.PlatformOrder{{Status: 4}, {Status: 0}},
 	})) != 1 {
 		t.Fatal("canceled OMS orders must not count as active")
+	}
+	if omsLookupHasFulfillingOrders(xlwms.PlatformOrderLookup{
+		Orders: []xlwms.PlatformOrder{{Status: 0}},
+	}) {
+		t.Fatal("pending opposite orders must not count as fulfilling")
+	}
+	if !omsLookupHasFulfillingOrders(arp) {
+		t.Fatal("processing opposite orders must count as fulfilling")
 	}
 }
 
@@ -97,6 +109,17 @@ func TestDecideSHEINOMSPlatformOrderMatchesTemuWarehouseRules(t *testing.T) {
 	}, "DPSNY002", now, now, "")
 	if !collision.ManualRequired {
 		t.Fatalf("cross-account collision was accepted: %#v", collision)
+	}
+
+	mismatch := decideSHEINOMSPlatformOrder(xlwms.PlatformOrderLookup{
+		Account: "dps", Found: true, MatchCount: 1,
+		Orders: []xlwms.PlatformOrder{{
+			OMSOrderNo: "OMS-2", PlatformOrderNo: "GSU-2", Status: 2,
+			StatusKey: "processing", StatusText: "处理中", SendWarehouseCode: "HYTX30",
+		}},
+	}, xlwms.PlatformOrderLookup{Account: "arp"}, "DPSNY002", now, now, "")
+	if !mismatch.ManualRequired || mismatch.Message != "领星仓库不一致" {
+		t.Fatalf("label/OMS warehouse mismatch was accepted: %#v", mismatch)
 	}
 }
 

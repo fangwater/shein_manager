@@ -146,13 +146,6 @@ func (s *Server) refreshWarehouseWatch(ctx context.Context, task shein.Fulfillme
 		_ = s.store.SaveParcelWatch(ctx, s.shopKey, task.OrderNo, update)
 		return task, parcelErr
 	}
-	if applyLingxingParcelWarehouseDecision(&update, parcel) {
-		if err := s.store.SaveParcelWatch(ctx, s.shopKey, task.OrderNo, update); err != nil {
-			return task, err
-		}
-		_ = s.store.EnsureWarehouseLedgerJob(ctx, s.shopKey, task.OrderNo, task.WarehouseAddressCode, task.ExpressChannelCode, task.PlaceRequestID, task.DeliveryNo)
-		return s.store.LatestFulfillmentTask(ctx, s.shopKey, task.OrderNo)
-	}
 	platformStatus := s.sheinPlatformFulfillmentStatus(ctx, s.shopKey, task.OrderNo)
 	if decision, ok := sheinPlatformAlreadyFulfilledDecision(platformStatus); ok {
 		applySHEINOMSDecision(&update, decision)
@@ -183,10 +176,18 @@ func (s *Server) refreshWarehouseWatch(ctx context.Context, task shein.Fulfillme
 		_ = s.store.SaveParcelWatch(ctx, s.shopKey, task.OrderNo, update)
 		return task, err
 	}
+	expected, opposite, account := chooseOMSLookups(preferredAccount, dpsLookup, arpLookup)
+	if applyLingxingParcelWarehouseDecision(&update, parcel) && !omsLookupHasFulfillingOrders(opposite) {
+		if err := s.store.SaveParcelWatch(ctx, s.shopKey, task.OrderNo, update); err != nil {
+			return task, err
+		}
+		_ = s.store.EnsureWarehouseLedgerJob(ctx, s.shopKey, task.OrderNo, task.WarehouseAddressCode, task.ExpressChannelCode, task.PlaceRequestID, task.DeliveryNo)
+		return s.store.LatestFulfillmentTask(ctx, s.shopKey, task.OrderNo)
+	}
 	if purchaseWarehouse.Account != "arp" &&
 		shein.RequiresManualParcelCreate(s.shopKey, task.WarehouseAddressCode, warehouse) &&
 		strings.TrimSpace(firstNonEmpty(parcel.OutboundOrderNo, task.OutboundOrderNo)) == "" &&
-		len(activeOMSPlatformOrders(arpLookup)) == 0 {
+		!omsLookupHasFulfillingOrders(arpLookup) {
 		update.OMSAccount = "dps"
 		update.OMSWarehouseCode = firstNonEmpty(purchaseWarehouse.OMSCode, dpsWarehouse, update.OMSWarehouseCode)
 		created, createErr := s.ensureAutomaticDPSParcel(ctx, s.shopKey, task)
@@ -223,14 +224,10 @@ func (s *Server) refreshWarehouseWatch(ctx context.Context, task shein.Fulfillme
 		_ = s.store.EnsureWarehouseLedgerJob(ctx, s.shopKey, task.OrderNo, task.WarehouseAddressCode, task.ExpressChannelCode, task.PlaceRequestID, task.DeliveryNo)
 		return s.store.LatestFulfillmentTask(ctx, s.shopKey, task.OrderNo)
 	}
-	expected, opposite, account := chooseOMSLookups(preferredAccount, dpsLookup, arpLookup)
 	if purchaseWarehouse.OK() {
 		warehouse = purchaseWarehouse.OMSCode
 		update.OMSAccount = purchaseWarehouse.Account
 		update.OMSWarehouseCode = purchaseWarehouse.OMSCode
-	} else if account == "arp" {
-		warehouse = firstNonEmpty(firstOMSWarehouse(arpLookup), "ARP")
-		update.OMSWarehouseCode = warehouse
 	}
 	startedAt := task.CreatedAt
 	if startedAt.IsZero() {
@@ -345,11 +342,11 @@ func (s *Server) sheinPlatformFulfillmentStatus(ctx context.Context, shopKey, or
 
 func (s *Server) purchasedWarehouseForTask(ctx context.Context, task shein.FulfillmentTask) (shein.LabelPurchaseRecord, shein.PurchasedWarehouse) {
 	if s.store == nil {
-		return shein.LabelPurchaseRecord{}, shein.ResolvePurchasedWarehouse(task.WarehouseAddressCode, nil)
+		return shein.LabelPurchaseRecord{}, shein.ResolvePurchasedWarehouse(task.WarehouseAddressCode)
 	}
 	record, err := s.store.LatestLabelPurchase(ctx, s.shopKey, task.OrderNo)
 	if err != nil {
-		return shein.LabelPurchaseRecord{}, shein.ResolvePurchasedWarehouse(task.WarehouseAddressCode, nil)
+		return shein.LabelPurchaseRecord{}, shein.ResolvePurchasedWarehouse(task.WarehouseAddressCode)
 	}
 	return record, record.ResolvedWarehouse()
 }
@@ -530,33 +527,20 @@ func isReliableOMSWarehouseCode(code string) bool {
 	return shein.OMSAccountForResolvedWarehouse(code) != ""
 }
 
-func firstOMSWarehouse(lookup xlwms.PlatformOrderLookup) string {
+func omsLookupHasFulfillingOrders(lookup xlwms.PlatformOrderLookup) bool {
 	for _, order := range lookup.Orders {
-		if warehouse := strings.TrimSpace(order.SendWarehouseCode); warehouse != "" {
-			return warehouse
+		if order.Status == 2 || order.Status == 3 {
+			return true
 		}
 	}
-	return ""
+	return false
 }
 
 func chooseOMSLookups(preferred string, dpsLookup, arpLookup xlwms.PlatformOrderLookup) (xlwms.PlatformOrderLookup, xlwms.PlatformOrderLookup, string) {
-	preferred = strings.ToLower(strings.TrimSpace(preferred))
-	dpsActive := len(activeOMSPlatformOrders(dpsLookup))
-	arpActive := len(activeOMSPlatformOrders(arpLookup))
-	switch {
-	case preferred == "arp" && arpActive > 0:
+	if strings.ToLower(strings.TrimSpace(preferred)) == "arp" {
 		return arpLookup, dpsLookup, "arp"
-	case preferred == "dps" && dpsActive > 0:
-		return dpsLookup, arpLookup, "dps"
-	case arpActive > 0 && dpsActive == 0:
-		return arpLookup, dpsLookup, "arp"
-	case dpsActive > 0 && arpActive == 0:
-		return dpsLookup, arpLookup, "dps"
-	case preferred == "arp":
-		return arpLookup, dpsLookup, "arp"
-	default:
-		return dpsLookup, arpLookup, "dps"
 	}
+	return dpsLookup, arpLookup, "dps"
 }
 
 func firstCanceledOMSOrder(lookup xlwms.PlatformOrderLookup) xlwms.PlatformOrder {

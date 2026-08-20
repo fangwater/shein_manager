@@ -119,17 +119,17 @@ Warehouse-processing parcels stay in OMS status 2 until Lingxing marks them
 shipped. Beauty Hangers DPS parcels are judged by the Lingxing outbound, not
 the OMS platform-order search, so a warehouse-processing `OBS` number is never
 marked as a leak just because DPS has no matching `SO` platform order.
-If SHEIN stored a DPS warehouse code but ARP already has an active platform
-order, the watcher follows the ARP OMS status instead of creating a DPS
-parcel.
-OMS warehouse assignment uses the bought-label record the same way Temu
-does: `shein_label_purchase_choices` plus same-price quote siblings. When
-SHEIN stores a colliding DPS address ID but the purchase snapshot also
-quoted the same channel and price on an ARP warehouse, the watcher assigns
-that ARP OMS warehouse (`HYTX30` / `ARPCA01`) through XLWMS
-`routing-preview` and `warehouse-assignments` with `_AUTO_MATCH_`. Status 0
-pending ARP orders therefore leave 待处理 after the same automatic
-warehouse match Temu uses.
+Warehouse selection happens only before the label is purchased. After a
+label exists, outbound and OMS assignment follow that bought warehouse
+exactly, the same way Temu follows `shipment.OMSWarehouseKey`. Same-price
+ARP quotes are not used to rewrite a DPS label, and an active ARP platform
+order does not steal a DPS label. A warehouse mismatch or a processing /
+shipped order on the opposite account is sent to manual review.
+OMS warehouse assignment uses the bought-label warehouse from
+`shein_label_purchase_choices`. Status 0 pending orders on that same OMS
+account are assigned through XLWMS `routing-preview` and
+`warehouse-assignments` with `_AUTO_MATCH_`, and the preview must match the
+bought warehouse.
 If SHEIN has already shipped or delivered the order and there is no
 active Lingxing outbound, the watcher archives the row itself instead of
 waiting for a missing platform order or marking it as a leak. Collected or

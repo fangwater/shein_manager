@@ -294,7 +294,6 @@ type LabelPurchaseRecord struct {
 	SelectedPerformanceCost      string
 	SelectedCurrencyCode         string
 	DeliveryNo                   string
-	SamePriceWarehouseCodes      []string
 }
 
 func (s *Store) LatestLabelPurchase(ctx context.Context, shopKey, orderNo string) (LabelPurchaseRecord, error) {
@@ -322,37 +321,11 @@ func (s *Store) LatestLabelPurchase(ctx context.Context, shopKey, orderNo string
 	if err != nil {
 		return LabelPurchaseRecord{}, fmt.Errorf("load SHEIN label purchase: %w", err)
 	}
-	rows, err := s.pool.Query(ctx, `
-		SELECT DISTINCT quote.warehouse_address_code
-		FROM shein_go_shipping_quotes quote
-		JOIN shein_go_shipping_quote_candidates candidate USING (shop_key, pre_request_id)
-		WHERE quote.shop_key = $1 AND quote.order_no = $2
-			AND candidate.express_channel_code = $3
-			AND candidate.performance_cost IS NOT NULL
-			AND candidate.performance_cost = $4::numeric
-			AND candidate.currency_code = $5
-	`, shopKey, orderNo, record.SelectedExpressChannelCode, record.SelectedPerformanceCost, record.SelectedCurrencyCode)
-	if err != nil {
-		return LabelPurchaseRecord{}, fmt.Errorf("load SHEIN same-price purchase warehouses: %w", err)
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var warehouse string
-		if err := rows.Scan(&warehouse); err != nil {
-			return LabelPurchaseRecord{}, fmt.Errorf("scan SHEIN same-price purchase warehouse: %w", err)
-		}
-		if strings.TrimSpace(warehouse) != "" {
-			record.SamePriceWarehouseCodes = append(record.SamePriceWarehouseCodes, strings.TrimSpace(warehouse))
-		}
-	}
-	if err := rows.Err(); err != nil {
-		return LabelPurchaseRecord{}, fmt.Errorf("read SHEIN same-price purchase warehouses: %w", err)
-	}
 	return record, nil
 }
 
 func (record LabelPurchaseRecord) ResolvedWarehouse() PurchasedWarehouse {
-	return ResolvePurchasedWarehouse(record.SelectedWarehouseAddressCode, record.SamePriceWarehouseCodes)
+	return ResolvePurchasedWarehouse(record.SelectedWarehouseAddressCode)
 }
 
 func (s *Store) UpdateLabelPurchaseResult(ctx context.Context, shopKey, preRequestID, placeRequestID, deliveryNo string) error {

@@ -185,49 +185,17 @@ func (purchase PurchasedWarehouse) OK() bool {
 }
 
 // ResolvePurchasedWarehouse maps a bought-label SHEIN warehouse to the OMS
-// warehouse. Same-price quote/purchase siblings are part of the buy-label
-// record: when SHEIN stores a DPS address ID but the same purchased channel
-// and price also quoted an ARP warehouse, OMS assignment follows ARP.
-func ResolvePurchasedWarehouse(selected string, samePriceAddressCodes []string) PurchasedWarehouse {
+// warehouse. Outbound assignment follows the purchased label warehouse only;
+// same-price quotes are selection input before the buy and must not change
+// the warehouse after the label exists.
+func ResolvePurchasedWarehouse(selected string) PurchasedWarehouse {
 	selected = strings.TrimSpace(selected)
-	selectedOMS := ResolvedOMSWarehouseCode(selected, "")
-	selectedAccount := OMSAccountForResolvedWarehouse(selectedOMS)
-	arp := PurchasedWarehouse{}
-	dps := PurchasedWarehouse{}
-	consider := func(addressCode string) {
-		oms := ResolvedOMSWarehouseCode(addressCode, "")
-		account := OMSAccountForResolvedWarehouse(oms)
-		switch account {
-		case "arp":
-			if arp.OMSCode == "" {
-				arp = PurchasedWarehouse{AddressCode: strings.TrimSpace(addressCode), OMSCode: oms, Account: account}
-			}
-		case "dps":
-			if dps.OMSCode == "" {
-				dps = PurchasedWarehouse{AddressCode: strings.TrimSpace(addressCode), OMSCode: oms, Account: account}
-			}
-		}
+	oms := ResolvedOMSWarehouseCode(selected, "")
+	account := OMSAccountForResolvedWarehouse(oms)
+	if selected == "" || oms == "" || account == "" {
+		return PurchasedWarehouse{}
 	}
-	consider(selected)
-	for _, addressCode := range samePriceAddressCodes {
-		if strings.TrimSpace(addressCode) == "" || strings.EqualFold(strings.TrimSpace(addressCode), selected) {
-			continue
-		}
-		consider(addressCode)
-	}
-	if selectedAccount == "arp" {
-		return PurchasedWarehouse{AddressCode: selected, OMSCode: selectedOMS, Account: "arp"}
-	}
-	if selectedAccount == "dps" && arp.OMSCode == "" {
-		return PurchasedWarehouse{AddressCode: selected, OMSCode: selectedOMS, Account: "dps"}
-	}
-	if arp.OK() {
-		return arp
-	}
-	if dps.OK() {
-		return dps
-	}
-	return PurchasedWarehouse{}
+	return PurchasedWarehouse{AddressCode: selected, OMSCode: oms, Account: account}
 }
 
 func shopRequiresManualParcelCreate(shopKey string) bool {

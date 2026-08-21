@@ -49,6 +49,41 @@ func TestClassifyOrderQueueItemRoutesMultiItemToManual(t *testing.T) {
 	}
 }
 
+func TestClassifyOrderQueueItemRoutesSingleSKUQuantityGreaterThanOneToManual(t *testing.T) {
+	item := OrderQueueItem{
+		Detail: map[string]any{
+			"optionalLogisticsList": []any{float64(1)},
+			"printOrderStatus":      float64(1),
+			"orderGoodsInfoList": []any{map[string]any{
+				"skuCode": "SKU-CODE", "quantity": float64(2),
+			}},
+		},
+	}
+	item.Goods = queueGoods(item.Detail)
+	item.ItemCount = len(item.Goods)
+	classifyOrderQueueItem(&item, map[string]packageMapping{
+		"SKU-CODE": {
+			SheinSKU: "SKU-CODE", WarehouseSKU: "WH-1", WarehouseQty: "2", MappingCount: 1,
+			Spec: PackageSpec{LengthCM: "20", WidthCM: "15", HeightCM: "5", WeightKG: "0.3"},
+		},
+	})
+	if item.AutoEligible {
+		t.Fatalf("single SKU with quantity 2 must go to manual review: %#v", item)
+	}
+	if item.Goods[0].Quantity != 2 {
+		t.Fatalf("goods quantity = %d, want 2", item.Goods[0].Quantity)
+	}
+	found := false
+	for _, reason := range item.ManualReasons {
+		if reason == "多件订单需人工确认包裹" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("quantity>1 was not classified as multi-item: %#v", item.ManualReasons)
+	}
+}
+
 func TestOptionalLogisticsListControlsPlatformLabelPurchase(t *testing.T) {
 	integratedPending := map[string]any{
 		"optionalLogisticsList": []any{float64(1)},

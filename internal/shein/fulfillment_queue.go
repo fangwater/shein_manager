@@ -30,6 +30,7 @@ type QueueGoods struct {
 	SellerSKU         string `json:"seller_sku"`
 	GoodsSN           string `json:"goods_sn"`
 	Title             string `json:"title"`
+	Quantity          int    `json:"quantity"`
 	WarehouseSKU      string `json:"warehouse_sku,omitempty"`
 	WarehouseQuantity string `json:"warehouse_quantity,omitempty"`
 }
@@ -405,10 +406,31 @@ func queueGoods(detail map[string]any) []QueueGoods {
 		goods = append(goods, QueueGoods{
 			GoodsID: textValue(entry["goodsId"]), SKUCode: textValue(entry["skuCode"]),
 			SellerSKU: textValue(entry["sellerSku"]), GoodsSN: textValue(entry["goodsSn"]),
-			Title: textValue(entry["goodsTitle"]),
+			Title: textValue(entry["goodsTitle"]), Quantity: goodsQuantity(entry),
 		})
 	}
 	return goods
+}
+
+func goodsQuantity(entry map[string]any) int {
+	for _, key := range []string{"quantity", "goodsQuantity", "qty", "skuQuantity", "newGoodsNumber"} {
+		if parsed, err := strconv.Atoi(textValue(entry[key])); err == nil && parsed > 0 {
+			return parsed
+		}
+	}
+	return 1
+}
+
+func orderGoodsUnits(goods []QueueGoods) int {
+	total := 0
+	for _, item := range goods {
+		if item.Quantity > 0 {
+			total += item.Quantity
+			continue
+		}
+		total++
+	}
+	return total
 }
 
 func classifyOrderQueueItem(item *OrderQueueItem, mappings map[string]packageMapping) {
@@ -420,9 +442,10 @@ func classifyOrderQueueItem(item *OrderQueueItem, mappings map[string]packageMap
 			item.Goods[index].WarehouseQuantity = mapping.WarehouseQty
 		}
 	}
+	units := orderGoodsUnits(item.Goods)
 	if item.ItemCount == 0 {
 		reasons = append(reasons, "订单详情缺少商品明细")
-	} else if item.ItemCount > 1 {
+	} else if item.ItemCount > 1 || units > 1 {
 		reasons = append(reasons, "多件订单需人工确认包裹")
 	}
 	if !supportsIntegrated(item.Detail) {
@@ -434,7 +457,7 @@ func classifyOrderQueueItem(item *OrderQueueItem, mappings map[string]packageMap
 	if printStatus := textValue(item.Detail["printOrderStatus"]); printStatus != "" && printStatus != "1" {
 		reasons = append(reasons, "平台标记订单暂不可处理")
 	}
-	if item.ItemCount == 1 {
+	if item.ItemCount == 1 && units == 1 {
 		item.SheinSKU = item.Goods[0].SKUCode
 		mapping, ok := mappings[item.SheinSKU]
 		switch {

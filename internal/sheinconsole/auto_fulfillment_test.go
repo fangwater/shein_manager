@@ -1,7 +1,6 @@
 package sheinconsole
 
 import (
-	"encoding/json"
 	"testing"
 
 	"shein-api-manager/internal/shein"
@@ -95,57 +94,6 @@ func TestAvailableWarehousesKeepsOnlyOperatedWarehouses(t *testing.T) {
 	}}})
 	if len(warehouses) != 1 || scalarString(warehouses[0], "warehouseAddressCode") != "WH2604283535967233" {
 		t.Fatalf("automatic quoting must ignore PG and unavailable warehouses: %#v", warehouses)
-	}
-}
-
-func TestAutomaticInventoryWarehouseKeysExcludesZeroStockARPEast(t *testing.T) {
-	decision := json.RawMessage(`{
-		"complete":true,
-		"package_resolution":{"complete":true},
-		"records":[{"sku":"WH-SKU","requires_manual":false,"regions":[
-			{"warehouses":[
-				{"warehouse_key":"DPS002","active":true,"query_status":"succeeded","available_amount":8,"selectable":true},
-				{"warehouse_key":"ARP_EAST","active":true,"query_status":"succeeded","available_amount":0,"selectable":false}
-			]},
-			{"warehouses":[
-				{"warehouse_key":"DPS004","active":true,"query_status":"succeeded","available_amount":3,"selectable":true},
-				{"warehouse_key":"ARP_WEST","active":true,"query_status":"succeeded","available_amount":0,"selectable":false}
-			]}
-		]}]
-	}`)
-	eligible, err := automaticInventoryWarehouseKeys(decision, map[string]int{"WH-SKU": 1})
-	if err != nil {
-		t.Fatalf("automaticInventoryWarehouseKeys returned error: %v", err)
-	}
-	if !eligible["DPS002"] || !eligible["DPS004"] || eligible["ARP_EAST"] || eligible["ARP_WEST"] {
-		t.Fatalf("unexpected eligible warehouses: %#v", eligible)
-	}
-
-	warehouses := []map[string]any{
-		{"warehouseAddressCode": "WH2604283535967233", "warehouseName": "DPSNY002（美东）"},
-		{"warehouseAddressCode": "WH2607084039788546", "warehouseName": "ARP仓-美东"},
-	}
-	filtered := warehousesWithInventory(warehouses, eligible)
-	if len(filtered) != 1 || scalarString(filtered[0], "warehouseAddressCode") != "WH2604283535967233" {
-		t.Fatalf("zero-stock ARP east warehouse was not removed: %#v", filtered)
-	}
-}
-
-func TestAutomaticInventoryWarehouseKeysRejectsManualInventoryDecision(t *testing.T) {
-	decision := json.RawMessage(`{
-		"complete":true,
-		"package_resolution":{"complete":true},
-		"records":[{"sku":"VH-20pcs-Pink-45cm","requires_manual":true,
-			"reason":"美东和美西正品产品可用库存合计0，保留库存并转人工处理",
-			"regions":[{"warehouses":[
-				{"warehouse_key":"DPS002","active":true,"query_status":"succeeded","available_amount":0,"selectable":false},
-				{"warehouse_key":"ARP_EAST","active":true,"query_status":"succeeded","available_amount":0,"selectable":false}
-			]}]
-		}]
-	}`)
-	_, err := automaticInventoryWarehouseKeys(decision, map[string]int{"VH-20pcs-Pink-45cm": 1})
-	if err == nil || err.Error() != "美东和美西正品产品可用库存合计0，保留库存并转人工处理" {
-		t.Fatalf("manual inventory decision must block automatic fulfillment: %v", err)
 	}
 }
 

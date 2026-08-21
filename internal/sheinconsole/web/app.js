@@ -1415,6 +1415,7 @@ function jobStepLabel(step) {
     print_label: "获取面单",
     create_parcel: "自动建领星出库单",
     completed: "自动发货完成",
+    canceled: "任务已取消",
     failed: "自动发货停止"
   }[step] || display(step);
 }
@@ -1426,12 +1427,13 @@ function autoStatusLabel(status) {
     waiting_confirmation: "等待承运商",
     waiting_oms: "等待领星确认",
     failed: "异常",
+    canceled: "已取消",
     completed: "已完成"
   }[status] || display(status);
 }
 
 function autoStatusClass(status) {
-  if (status === "completed") return "good";
+  if (status === "completed" || status === "canceled") return "good";
   if (status === "failed" || status === "manual_required") return "error";
   if (status === "waiting_confirmation" || status === "waiting_oms" || status === "waiting_sync") return "info";
   return "pending";

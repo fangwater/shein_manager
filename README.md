@@ -86,12 +86,10 @@ This is the Top 3 detail table. It contains one to three rows for each
    quote tables keyed by `shop_key + preRequestId`. Customer data and raw API
    responses are not stored in this Go snapshot.
 2. SHEIN requires `warehouseAddressCode` before returning channel prices. The
-   automatic worker first queries live OMS inventory for the mapped warehouse
-   SKU and only quotes operated DPS/ARP warehouses that can cover the complete
-   order and pass the configured safety-stock rules. An incomplete inventory
-   response or a manual-review decision blocks automatic label purchase. PG,
-   out-of-stock, and other unavailable warehouses are not quoted. A manual
-   purchase keeps the candidates within the operator-selected quote and
+   automatic worker queries every operated DPS/ARP warehouse and ranks the
+   comparable channels across those recent quotes. PG and other
+   platform-listed warehouses are left unavailable and are not quoted. A
+   manual purchase keeps the candidates within the operator-selected quote and
    warehouse.
 3. Candidates are comparable only when they use the selected channel's
    currency and include `performanceCost`. Ranking is by fee, then ARP over

@@ -250,7 +250,7 @@ func (s *Server) refreshWarehouseWatch(ctx context.Context, task shein.Fulfillme
 	}
 	applySHEINOMSDecision(&update, decision)
 	if decision.Target.OMSOrderNo != "" {
-		update.OMSAccount = firstNonEmpty(purchaseWarehouse.Account, expected.Account, account)
+		update.OMSAccount = firstNonEmpty(decision.Account, purchaseWarehouse.Account, expected.Account, account)
 		update.OMSWarehouseCode = firstNonEmpty(purchaseWarehouse.OMSCode, decision.Target.SendWarehouseCode, update.OMSWarehouseCode)
 	}
 	if err := s.store.SaveParcelWatch(ctx, s.shopKey, task.OrderNo, update); err != nil {
@@ -265,6 +265,7 @@ type sheinOMSDecision struct {
 	Message        string
 	Verified       bool
 	ManualRequired bool
+	Account        string
 	Target         xlwms.PlatformOrder
 }
 
@@ -450,6 +451,16 @@ func applySHEINOMSDecision(update *shein.ParcelWatchUpdate, decision sheinOMSDec
 
 func decideSHEINOMSPlatformOrder(expected, opposite xlwms.PlatformOrderLookup, expectedWarehouse string, startedAt time.Time, now time.Time, platformStatus string) sheinOMSDecision {
 	expectedWarehouse = strings.TrimSpace(expectedWarehouse)
+	if len(expected.Orders) == 0 {
+		for _, order := range opposite.Orders {
+			if order.Status == 3 {
+				return sheinOMSDecision{
+					State: "shipped", Verified: true, Account: opposite.Account, Target: order,
+					Message: "领星非买单账户已发货，自动归档",
+				}
+			}
+		}
+	}
 	for _, order := range opposite.Orders {
 		if order.Status == 2 || order.Status == 3 {
 			return sheinOMSDecision{

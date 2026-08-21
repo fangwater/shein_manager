@@ -111,6 +111,15 @@ func TestDecideSHEINOMSPlatformOrderMatchesTemuWarehouseRules(t *testing.T) {
 		t.Fatalf("cross-account collision was accepted: %#v", collision)
 	}
 
+	oppositeShipped := decideSHEINOMSPlatformOrder(xlwms.PlatformOrderLookup{Account: "dps"}, xlwms.PlatformOrderLookup{
+		Account: "arp", Orders: []xlwms.PlatformOrder{{
+			OMSOrderNo: "SO-ARP", Status: 3, StatusKey: "shipped", StatusText: "已发货",
+		}},
+	}, "DPSNY002", now, now, "")
+	if !oppositeShipped.Verified || oppositeShipped.ManualRequired || oppositeShipped.Account != "arp" || oppositeShipped.Target.OMSOrderNo != "SO-ARP" {
+		t.Fatalf("shipped order in the opposite account was not archived: %#v", oppositeShipped)
+	}
+
 	mismatch := decideSHEINOMSPlatformOrder(xlwms.PlatformOrderLookup{
 		Account: "dps", Found: true, MatchCount: 1,
 		Orders: []xlwms.PlatformOrder{{

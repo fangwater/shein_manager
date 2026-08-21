@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"shein-api-manager/internal/shein"
@@ -34,6 +35,7 @@ type Server struct {
 	logger         *slog.Logger
 	xlwms          *xlwms.Client
 	autoQueue      chan autoQueueRef
+	orderSyncMu    sync.Mutex
 }
 
 type response struct {
@@ -63,6 +65,11 @@ func New(store *shein.Store, shopKey, shopName string, requestTimeout time.Durat
 
 func (server *Server) routes() http.Handler {
 	mux := http.NewServeMux()
+	server.registerRoutes(mux)
+	return securityHeaders(mux)
+}
+
+func (server *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /healthz", server.health)
 	mux.Handle("GET /", http.HandlerFunc(server.index))
 	mux.Handle("GET /assets/{name}", http.HandlerFunc(server.asset))
@@ -74,6 +81,12 @@ func (server *Server) routes() http.Handler {
 	mux.Handle("POST /api/order/list", server.operationHandler("order-list"))
 	mux.Handle("POST /api/order/detail", server.operationHandler("order-detail"))
 	mux.Handle("POST /api/order/export-address", server.operationHandler("export-address"))
+	mux.Handle("GET /api/orders", http.HandlerFunc(server.listOrders))
+	mux.Handle("GET /api/orders/history", http.HandlerFunc(server.listOrderHistory))
+	mux.Handle("GET /api/orders/{orderNo}/detail", http.HandlerFunc(server.getOrderDetail))
+	mux.Handle("GET /api/orders/{orderNo}", http.HandlerFunc(server.getOrder))
+	mux.Handle("POST /api/orders/sync", http.HandlerFunc(server.syncOrders))
+	mux.Handle("POST /api/orders/details/sync", http.HandlerFunc(server.syncOrderDetails))
 	mux.Handle("GET /api/fulfillment/orders", http.HandlerFunc(server.fulfillmentOrders))
 	mux.Handle("POST /api/fulfillment/orders/sync", http.HandlerFunc(server.syncFulfillmentOrders))
 	mux.Handle("POST /api/orders/{orderNo}/warehouse-preview", http.HandlerFunc(server.xlwmsWarehousePreview))
@@ -98,7 +111,6 @@ func (server *Server) routes() http.Handler {
 	mux.Handle("POST /api/shipping/check", server.operationHandler("check-express-order"))
 	mux.Handle("POST /api/shipping/label", server.operationHandler("print-express-info"))
 	mux.Handle("GET /api/shipping/track", http.HandlerFunc(server.logisticsTrack))
-	return securityHeaders(mux)
 }
 
 func (s *Server) health(writer http.ResponseWriter, _ *http.Request) {

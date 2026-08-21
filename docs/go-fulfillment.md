@@ -26,6 +26,12 @@ this envelope:
 | `POST /api/order/list` | `POST /open-api/order/order-list` |
 | `POST /api/order/detail` | `POST /open-api/order/order-detail` |
 | `POST /api/order/export-address` | `POST /open-api/order/export-address` |
+| `GET /api/orders` | Page through open orders stored in PostgreSQL; accepts `q`, `page`, and `page_size` |
+| `GET /api/orders/history` | Page through non-open orders stored in PostgreSQL |
+| `GET /api/orders/{orderNo}` | Read one stored order and its cached detail |
+| `GET /api/orders/{orderNo}/detail` | Refresh one order through SHEIN `order-detail`, persist it, and return it |
+| `POST /api/orders/sync` | Refresh the recent open-order snapshot and record sync status |
+| `POST /api/orders/details/sync?limit=10` | Refresh missing or stale open-order details, up to 30 at a time |
 | `GET /api/carrier-policies` | Shop-scoped OMS warehouse carrier enablement and priority |
 | `PUT /api/carrier-policies/{warehouseKey}` | Replace one warehouse's carrier policies |
 | `POST /api/shipping/warehouses` | `POST /open-api/gsp/available-shipping-warehouse` |
@@ -40,6 +46,11 @@ return tracking uses `returnOrderNo` by itself.
 
 The production prefix is `/shein`, so `/api/order/list` is publicly routed as
 `/shein/api/order/list`.
+
+The stored-order endpoints use the same response envelope and pagination
+metadata as the Temu Go service. List responses omit full detail payloads;
+single-order responses include the cached detail. SHEIN order numbers are
+exposed as `order_no` rather than Temu's `parent_order_sn`.
 
 ## Shop Fulfillment Console
 

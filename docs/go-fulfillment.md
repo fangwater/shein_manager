@@ -60,9 +60,12 @@ and for SHEIN platform-logistics orders go straight to warehouse selection,
 channel quote, and online label purchase. A successful purchase closes the
 dialog, leaves the pending queue, and opens the shared 自动处理中 view instead
 of a raw OpenAPI drawer. Only operated DPS/ARP warehouses remain selectable
-for platform labels; PG and other platform-listed warehouses stay visible as
-unavailable and cannot be quoted. Each shop configures carrier enablement and
-priority per OMS warehouse (`DPS002`, `ARP_EAST`, `DPS004`, `ARP_WEST`).
+for platform labels. Before automatic quoting, live XLWMS inventory must pass
+the shop safety-stock rules; out-of-stock warehouses are excluded, while an
+incomplete or manual-review inventory decision stops automatic fulfillment.
+PG and other platform-listed warehouses stay visible as unavailable and cannot
+be quoted. Each shop configures carrier enablement and priority per OMS
+warehouse (`DPS002`, `ARP_EAST`, `DPS004`, `ARP_WEST`).
 Automatic selection picks the lowest live price and, on a tie, prefers ARP
 over DPS. There is no Temu-style USD 0.50 priority band and no DPS clearance
 preference. A disabled or non-whitelist carrier cannot be selected manually

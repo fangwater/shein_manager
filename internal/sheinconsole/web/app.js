@@ -1408,6 +1408,7 @@ function jobStepLabel(step) {
     queued: "等待执行",
     validating: "校验订单",
     transition_order: "流转待发货",
+    query_inventory: "校验实时库存",
     query_warehouses: "查询可用仓",
     quote_channels: "匹配最低价物流",
     place_order: "在线下单",

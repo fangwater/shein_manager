@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"shein-api-manager/internal/shein"
+	"shein-api-manager/internal/xlwms"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -521,6 +522,29 @@ func (s *Server) executeAutoFulfillment(ctx context.Context, ref autoQueueRef) e
 	if shein.RequiresAddressTransition(order.Detail, order.OrderStatus) {
 		return errors.New("商家自发货订单不能走平台面单购买")
 	}
+	if s.xlwms == nil {
+		return errors.New("领星实时库存查询服务未配置")
+	}
+	quantities, missing := warehouseQuantities(*order)
+	if len(missing) > 0 || len(quantities) == 0 {
+		return errors.New("订单商品缺少仓库 SKU 映射")
+	}
+	if err := s.setAutomaticStep(ctx, ref, "query_inventory"); err != nil {
+		return err
+	}
+	inventoryItems := make([]xlwms.InventoryItem, 0, len(quantities))
+	for sku, quantity := range quantities {
+		inventoryItems = append(inventoryItems, xlwms.InventoryItem{WarehouseSKU: sku, Quantity: quantity})
+	}
+	sort.Slice(inventoryItems, func(i, j int) bool { return inventoryItems[i].WarehouseSKU < inventoryItems[j].WarehouseSKU })
+	inventoryDecision, err := s.xlwms.QueryInventoryForShop(ctx, "shein", ref.ShopKey, inventoryItems)
+	if err != nil {
+		return fmt.Errorf("领星实时库存查询失败: %w", err)
+	}
+	eligibleWarehouseKeys, err := automaticInventoryWarehouseKeys(inventoryDecision, quantities)
+	if err != nil {
+		return err
+	}
 
 	if err := s.setAutomaticStep(ctx, ref, "query_warehouses"); err != nil {
 		return err
@@ -530,8 +554,9 @@ func (s *Server) executeAutoFulfillment(ctx context.Context, ref autoQueueRef) e
 		return err
 	}
 	warehouses := availableWarehouses(warehouseResult)
+	warehouses = warehousesWithInventory(warehouses, eligibleWarehouseKeys)
 	if len(warehouses) == 0 {
-		return errors.New("订单没有可用发货仓")
+		return errors.New("SHEIN 可用发货仓均未通过领星实时库存校验")
 	}
 	if err := s.setAutomaticStep(ctx, ref, "quote_channels"); err != nil {
 		return err
@@ -836,6 +861,123 @@ func availableWarehouses(result map[string]any) []map[string]any {
 	sort.SliceStable(filtered, func(left, right int) bool {
 		return scalarString(filtered[left], "warehouseAddressCode") < scalarString(filtered[right], "warehouseAddressCode")
 	})
+	return filtered
+}
+
+type automaticInventoryDecision struct {
+	Complete          bool `json:"complete"`
+	PackageResolution struct {
+		Complete bool   `json:"complete"`
+		Error    string `json:"error"`
+	} `json:"package_resolution"`
+	Records []struct {
+		SKU            string `json:"sku"`
+		RequiresManual bool   `json:"requires_manual"`
+		Reason         string `json:"reason"`
+		Regions        []struct {
+			Warehouses []struct {
+				Key         string  `json:"warehouse_key"`
+				Active      bool    `json:"active"`
+				QueryStatus string  `json:"query_status"`
+				Available   float64 `json:"available_amount"`
+				Selectable  bool    `json:"selectable"`
+			} `json:"warehouses"`
+		} `json:"regions"`
+	} `json:"records"`
+}
+
+type automaticInventoryWarehouse struct {
+	Active      bool
+	QueryStatus string
+	Available   float64
+	Selectable  bool
+}
+
+func automaticInventoryWarehouseKeys(raw json.RawMessage, quantities map[string]int) (map[string]bool, error) {
+	var decision automaticInventoryDecision
+	if err := json.Unmarshal(raw, &decision); err != nil {
+		return nil, errors.New("领星实时库存响应无法解析")
+	}
+	if !decision.Complete {
+		return nil, errors.New("领星实时库存查询不完整")
+	}
+	if !decision.PackageResolution.Complete {
+		reason := strings.TrimSpace(decision.PackageResolution.Error)
+		if reason == "" {
+			reason = "仓库 SKU 包裹规格不完整"
+		}
+		return nil, errors.New(reason)
+	}
+	records := make(map[string]struct {
+		RequiresManual bool
+		Reason         string
+		Warehouses     map[string]automaticInventoryWarehouse
+	}, len(decision.Records))
+	for _, record := range decision.Records {
+		warehouses := make(map[string]automaticInventoryWarehouse)
+		for _, region := range record.Regions {
+			for _, warehouse := range region.Warehouses {
+				key := strings.ToUpper(strings.TrimSpace(warehouse.Key))
+				if key == "" {
+					continue
+				}
+				warehouses[key] = automaticInventoryWarehouse{
+					Active: warehouse.Active, QueryStatus: warehouse.QueryStatus,
+					Available: warehouse.Available, Selectable: warehouse.Selectable,
+				}
+			}
+		}
+		records[strings.TrimSpace(record.SKU)] = struct {
+			RequiresManual bool
+			Reason         string
+			Warehouses     map[string]automaticInventoryWarehouse
+		}{record.RequiresManual, record.Reason, warehouses}
+	}
+
+	var eligible map[string]bool
+	for sku, quantity := range quantities {
+		record, ok := records[strings.TrimSpace(sku)]
+		if !ok {
+			return nil, fmt.Errorf("领星实时库存缺少 SKU %s 的决策", sku)
+		}
+		if record.RequiresManual {
+			reason := strings.TrimSpace(record.Reason)
+			if reason == "" {
+				reason = fmt.Sprintf("SKU %s 库存规则要求转人工处理", sku)
+			}
+			return nil, errors.New(reason)
+		}
+		current := make(map[string]bool)
+		for key, warehouse := range record.Warehouses {
+			if warehouse.Active && warehouse.QueryStatus == "succeeded" && warehouse.Selectable && warehouse.Available >= float64(quantity) {
+				current[key] = true
+			}
+		}
+		if eligible == nil {
+			eligible = current
+			continue
+		}
+		for key := range eligible {
+			if !current[key] {
+				delete(eligible, key)
+			}
+		}
+	}
+	if len(eligible) == 0 {
+		return nil, errors.New("领星实时库存没有可覆盖订单的仓库")
+	}
+	return eligible, nil
+}
+
+func warehousesWithInventory(warehouses []map[string]any, eligible map[string]bool) []map[string]any {
+	filtered := make([]map[string]any, 0, len(warehouses))
+	for _, warehouse := range warehouses {
+		code := scalarString(warehouse, "warehouseAddressCode", "warehouseCode")
+		name := scalarString(warehouse, "warehouseName", "warehouseAddressName", "warehouseDesc")
+		if eligible[shein.PolicyWarehouseKey(code, name)] {
+			filtered = append(filtered, warehouse)
+		}
+	}
 	return filtered
 }
 

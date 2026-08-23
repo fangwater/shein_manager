@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -294,6 +295,71 @@ type LabelPurchaseRecord struct {
 	SelectedPerformanceCost      string
 	SelectedCurrencyCode         string
 	DeliveryNo                   string
+}
+
+type PurchasedLabelEvidence struct {
+	PlatformOrderNo  string    `json:"platform_order_no"`
+	OMSWarehouseKey  string    `json:"oms_warehouse_key"`
+	OMSWarehouseCode string    `json:"oms_warehouse_code"`
+	TrackingNumber   string    `json:"tracking_number"`
+	PurchasedAt      time.Time `json:"purchased_at"`
+}
+
+func (s *Store) PurchasedLabelEvidenceByOrderNos(ctx context.Context, shopKey string, orderNos []string) ([]PurchasedLabelEvidence, error) {
+	shopKey = strings.TrimSpace(shopKey)
+	if shopKey == "" {
+		return nil, errors.New("shop is required")
+	}
+	if len(orderNos) == 0 {
+		return []PurchasedLabelEvidence{}, nil
+	}
+	if len(orderNos) > 50 {
+		return nil, errors.New("at most 50 order numbers may be queried")
+	}
+	normalized := make([]string, 0, len(orderNos))
+	seen := make(map[string]struct{}, len(orderNos))
+	for _, orderNo := range orderNos {
+		orderNo = strings.ToUpper(strings.TrimSpace(orderNo))
+		if orderNo == "" || len(orderNo) > 100 {
+			return nil, errors.New("order number is invalid")
+		}
+		if _, exists := seen[orderNo]; exists {
+			continue
+		}
+		seen[orderNo] = struct{}{}
+		normalized = append(normalized, orderNo)
+	}
+	rows, err := s.pool.Query(ctx, `
+		SELECT DISTINCT ON (upper(order_no)) order_no,
+			selected_warehouse_address_code, delivery_no, purchased_at
+		FROM shein_label_purchase_choices
+		WHERE shop_key = $1 AND upper(order_no) = ANY($2) AND delivery_no <> ''
+		ORDER BY upper(order_no), purchased_at DESC
+	`, shopKey, normalized)
+	if err != nil {
+		return nil, fmt.Errorf("list SHEIN purchased-label evidence: %w", err)
+	}
+	defer rows.Close()
+	result := make([]PurchasedLabelEvidence, 0, len(normalized))
+	for rows.Next() {
+		var orderNo, warehouseAddressCode, trackingNumber string
+		var purchasedAt time.Time
+		if err := rows.Scan(&orderNo, &warehouseAddressCode, &trackingNumber, &purchasedAt); err != nil {
+			return nil, fmt.Errorf("scan SHEIN purchased-label evidence: %w", err)
+		}
+		warehouse := ResolvePurchasedWarehouse(warehouseAddressCode)
+		if !warehouse.OK() {
+			continue
+		}
+		result = append(result, PurchasedLabelEvidence{
+			PlatformOrderNo: strings.TrimSpace(orderNo), OMSWarehouseKey: warehouse.OMSCode,
+			OMSWarehouseCode: warehouse.OMSCode, TrackingNumber: strings.TrimSpace(trackingNumber), PurchasedAt: purchasedAt,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list SHEIN purchased-label evidence: %w", err)
+	}
+	return result, nil
 }
 
 func (s *Store) LatestLabelPurchase(ctx context.Context, shopKey, orderNo string) (LabelPurchaseRecord, error) {

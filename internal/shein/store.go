@@ -667,19 +667,19 @@ func (s *Store) ListWarehouseWatchTasks(ctx context.Context, shopKey string, lim
 			AND NOT (
 				COALESCE(oms_sync_status, '') = 'manual_required'
 				AND outbound_order_no = ''
-				AND warehouse_address_code NOT IN ('WH2604283535967233', 'WH2603303477748739', 'DPSNY002', 'DPSCA004')
+				AND NOT (warehouse_address_code = ANY($3))
 			)
 			AND (
 				outbound_order_no <> ''
 				OR COALESCE(oms_sync_status, '') <> ''
-				OR warehouse_address_code IN ('WH2604283535967233', 'WH2603303477748739', 'DPSNY002', 'DPSCA004')
+				OR warehouse_address_code = ANY($4)
 			)
 		ORDER BY
 			CASE WHEN oms_queried_at IS NULL THEN 0 ELSE 1 END,
 			oms_queried_at ASC NULLS FIRST,
 			updated_at DESC
 		LIMIT $2
-	`, shopKey, limit)
+	`, shopKey, limit, manualParcelWarehouseAddressCodes(), warehouseWatchAddressCodes())
 	if err != nil {
 		return nil, fmt.Errorf("list SHEIN warehouse watch tasks: %w", err)
 	}

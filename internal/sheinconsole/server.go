@@ -87,6 +87,7 @@ func (server *Server) registerRoutes(mux *http.ServeMux) {
 	mux.Handle("GET /api/orders/{orderNo}", http.HandlerFunc(server.getOrder))
 	mux.Handle("POST /api/orders/sync", http.HandlerFunc(server.syncOrders))
 	mux.Handle("POST /api/orders/details/sync", http.HandlerFunc(server.syncOrderDetails))
+	mux.Handle("POST /api/label-purchases/lookup", http.HandlerFunc(server.purchasedLabelLookup))
 	mux.Handle("GET /api/fulfillment/orders", http.HandlerFunc(server.fulfillmentOrders))
 	mux.Handle("POST /api/fulfillment/orders/sync", http.HandlerFunc(server.syncFulfillmentOrders))
 	mux.Handle("POST /api/orders/{orderNo}/warehouse-preview", http.HandlerFunc(server.xlwmsWarehousePreview))

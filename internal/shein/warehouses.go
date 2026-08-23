@@ -3,6 +3,7 @@ package shein
 import (
 	"fmt"
 	"regexp"
+	"sort"
 	"strings"
 )
 
@@ -46,6 +47,23 @@ var omsWarehouseAddressCodes = map[string]string{
 	"DPSCA004":           "DPSCA004",
 	"HYTX30":             "HYTX30",
 	"ARPCA01":            "ARPCA01",
+}
+
+func warehouseWatchAddressCodes() []string {
+	return sortedWarehouseAddressCodes(omsWarehouseAddressCodes)
+}
+
+func manualParcelWarehouseAddressCodes() []string {
+	return sortedWarehouseAddressCodes(dpsWarehouseAddressCodes)
+}
+
+func sortedWarehouseAddressCodes(mappings map[string]string) []string {
+	codes := make([]string, 0, len(mappings))
+	for code := range mappings {
+		codes = append(codes, code)
+	}
+	sort.Strings(codes)
+	return codes
 }
 
 var pgWarehouseAddressCodes = map[string]struct{}{

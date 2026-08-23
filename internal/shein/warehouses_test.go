@@ -2,6 +2,39 @@ package shein
 
 import "testing"
 
+func TestWarehouseWatchAddressCodesCoverAllOperatedOMSPaths(t *testing.T) {
+	watchCodes := stringSet(warehouseWatchAddressCodes())
+	for _, code := range []string{
+		"WH2604283535967233", "WH2603303477748739",
+		"WH2607084039788546", "WH2608123417047040",
+		"DPSNY002", "DPSCA004", "HYTX30", "ARPCA01",
+	} {
+		if !watchCodes[code] {
+			t.Fatalf("warehouse watcher is missing operated code %q", code)
+		}
+	}
+
+	manualParcelCodes := stringSet(manualParcelWarehouseAddressCodes())
+	for _, code := range []string{"WH2604283535967233", "WH2603303477748739", "DPSNY002", "DPSCA004"} {
+		if !manualParcelCodes[code] {
+			t.Fatalf("manual parcel retry is missing DPS code %q", code)
+		}
+	}
+	for _, code := range []string{"WH2607084039788546", "WH2608123417047040", "HYTX30", "ARPCA01"} {
+		if manualParcelCodes[code] {
+			t.Fatalf("ARP code %q must not enter the DPS parcel-create retry path", code)
+		}
+	}
+}
+
+func stringSet(values []string) map[string]bool {
+	result := make(map[string]bool, len(values))
+	for _, value := range values {
+		result[value] = true
+	}
+	return result
+}
+
 func TestIsAllowedShippingWarehouseAcceptsOperatedWarehouses(t *testing.T) {
 	cases := [][2]string{
 		{"DPSNY002", "DPS达派思-纽约"},

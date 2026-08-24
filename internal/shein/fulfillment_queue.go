@@ -71,19 +71,31 @@ type AutoFulfillmentJob struct {
 	ParcelComplete       bool       `json:"parcel_complete,omitempty"`
 }
 
+type InventoryCheck struct {
+	SourceDetailFetchedAt time.Time `json:"source_detail_fetched_at"`
+	Status                string    `json:"status"`
+	Categories            []string  `json:"categories"`
+	ReasonDetails         []string  `json:"reason_details"`
+	ErrorMessage          string    `json:"error_message,omitempty"`
+	CheckedAt             time.Time `json:"checked_at"`
+}
+
 type OrderQueueItem struct {
-	OrderNo       string              `json:"order_no"`
-	OrderStatus   string              `json:"order_status"`
-	ItemCount     int                 `json:"item_count"`
-	Goods         []QueueGoods        `json:"goods"`
-	Detail        map[string]any      `json:"detail"`
-	AutoEligible  bool                `json:"auto_eligible"`
-	ManualReasons []string            `json:"manual_reasons"`
-	SheinSKU      string              `json:"shein_sku,omitempty"`
-	WarehouseSKU  string              `json:"warehouse_sku,omitempty"`
-	PackageSpec   *PackageSpec        `json:"package_spec,omitempty"`
-	Job           *AutoFulfillmentJob `json:"auto_fulfillment,omitempty"`
-	LastSeenAt    time.Time           `json:"last_seen_at"`
+	OrderNo            string              `json:"order_no"`
+	OrderStatus        string              `json:"order_status"`
+	ItemCount          int                 `json:"item_count"`
+	Goods              []QueueGoods        `json:"goods"`
+	Detail             map[string]any      `json:"detail"`
+	AutoEligible       bool                `json:"auto_eligible"`
+	ManualReasons      []string            `json:"manual_reasons"`
+	SheinSKU           string              `json:"shein_sku,omitempty"`
+	WarehouseSKU       string              `json:"warehouse_sku,omitempty"`
+	PackageSpec        *PackageSpec        `json:"package_spec,omitempty"`
+	Job                *AutoFulfillmentJob `json:"auto_fulfillment,omitempty"`
+	InventoryCheck     *InventoryCheck     `json:"inventory_check,omitempty"`
+	LastSeenAt         time.Time           `json:"last_seen_at"`
+	DetailFetchedAt    time.Time           `json:"-"`
+	staticAutoEligible bool
 }
 
 type OrderSnapshot struct {
@@ -256,16 +268,20 @@ func (s *Store) ListPendingOrderNos(ctx context.Context, shopKey string) ([]stri
 func (s *Store) ListOrderQueue(ctx context.Context, shopKey, queue string) ([]OrderQueueItem, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT o.order_no, COALESCE(o.order_status, ''), o.detail_payload,
-			o.last_seen_at,
+			o.last_seen_at, o.detail_fetched_at,
 			j.id, j.order_no, j.status, j.current_step, j.attempts,
 			j.shein_sku, j.warehouse_sku, j.warehouse_address_code,
 			j.pre_request_id, j.express_channel_code,
 			COALESCE(j.performance_cost::text, ''), j.currency_code,
 			j.place_request_id, j.delivery_no, j.error_code, j.error_message,
-			j.created_at, j.updated_at, j.started_at, j.completed_at
+			j.created_at, j.updated_at, j.started_at, j.completed_at,
+			c.source_detail_fetched_at, c.status, c.categories, c.reason_details,
+			c.error_message, c.checked_at
 		FROM shein_orders o
 		LEFT JOIN shein_go_auto_fulfillment_jobs j
 			ON j.shop_key = o.shop_key AND j.order_no = o.order_no
+		LEFT JOIN shein_go_order_inventory_checks c
+			ON c.shop_key = o.shop_key AND c.order_no = o.order_no
 		WHERE o.shop_key = $1 AND o.order_status IN ('1', '2')
 		ORDER BY NULLIF(o.detail_payload->>'needDeliveryTime', '') NULLS LAST,
 			o.last_seen_at DESC
@@ -287,13 +303,20 @@ func (s *Store) ListOrderQueue(ctx context.Context, shopKey, queue string) ([]Or
 		var jobPlace, jobDelivery, jobErrorCode, jobErrorMessage *string
 		var jobAttempts *int
 		var jobCreated, jobUpdated *time.Time
+		var check InventoryCheck
+		var checkSource *time.Time
+		var checkStatus, checkError *string
+		var checkCategories, checkReasons *[]string
+		var checkCheckedAt *time.Time
 		err := rows.Scan(
-			&item.OrderNo, &item.OrderStatus, &detailJSON, &item.LastSeenAt,
+			&item.OrderNo, &item.OrderStatus, &detailJSON, &item.LastSeenAt, &item.DetailFetchedAt,
 			&jobID, &jobOrder, &jobStatus, &jobStep, &jobAttempts,
 			&jobSheinSKU, &jobWarehouseSKU, &jobWarehouse,
 			&jobPreRequest, &jobChannel, &jobCost, &jobCurrency,
 			&jobPlace, &jobDelivery, &jobErrorCode, &jobErrorMessage,
 			&jobCreated, &jobUpdated, &job.StartedAt, &job.CompletedAt,
+			&checkSource, &checkStatus, &checkCategories, &checkReasons,
+			&checkError, &checkCheckedAt,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("scan SHEIN fulfillment queue: %w", err)
@@ -319,6 +342,20 @@ func (s *Store) ListOrderQueue(ctx context.Context, shopKey, queue string) ([]Or
 			job.CreatedAt, job.UpdatedAt = pointerTime(jobCreated), pointerTime(jobUpdated)
 			item.Job = &job
 		}
+		if checkSource != nil {
+			check.SourceDetailFetchedAt = *checkSource
+			check.Status, check.ErrorMessage = pointerValue(checkStatus), pointerValue(checkError)
+			if checkCategories != nil {
+				check.Categories = *checkCategories
+			}
+			if checkReasons != nil {
+				check.ReasonDetails = *checkReasons
+			}
+			if checkCheckedAt != nil {
+				check.CheckedAt = *checkCheckedAt
+			}
+			item.InventoryCheck = &check
+		}
 		items = append(items, item)
 	}
 	if err := rows.Err(); err != nil {
@@ -334,7 +371,7 @@ func (s *Store) ListOrderQueue(ctx context.Context, shopKey, queue string) ([]Or
 		classifyOrderQueueItem(&items[index], mappings)
 		switch queue {
 		case "pending":
-			if items[index].AutoEligible && items[index].Job == nil {
+			if items[index].ReadyForAutomaticFulfillment() && items[index].Job == nil {
 				filtered = append(filtered, items[index])
 			}
 		case "manual":
@@ -478,6 +515,87 @@ func classifyOrderQueueItem(item *OrderQueueItem, mappings map[string]packageMap
 	}
 	item.ManualReasons = reasons
 	item.AutoEligible = len(reasons) == 0
+	item.staticAutoEligible = item.AutoEligible
+	applyInventoryCheck(item)
+}
+
+func (item OrderQueueItem) hasCurrentInventoryCheck() bool {
+	return item.InventoryCheck != nil && !item.DetailFetchedAt.IsZero() &&
+		item.InventoryCheck.SourceDetailFetchedAt.Equal(item.DetailFetchedAt)
+}
+
+func (item OrderQueueItem) ReadyForAutomaticFulfillment() bool {
+	return item.AutoEligible && item.hasCurrentInventoryCheck() && item.InventoryCheck.Status == "eligible"
+}
+
+func (item OrderQueueItem) EligibleBeforeInventoryCheck() bool {
+	return item.staticAutoEligible
+}
+
+func (item OrderQueueItem) AutomaticFulfillmentReason() string {
+	if len(item.ManualReasons) > 0 {
+		return item.ManualReasons[0]
+	}
+	if !item.hasCurrentInventoryCheck() {
+		return "订单尚未完成实时库存校验"
+	}
+	if item.InventoryCheck.ErrorMessage != "" {
+		return item.InventoryCheck.ErrorMessage
+	}
+	return "订单不在当前可自动履约队列"
+}
+
+func applyInventoryCheck(item *OrderQueueItem) {
+	if !item.staticAutoEligible || !item.hasCurrentInventoryCheck() || item.InventoryCheck.Status == "eligible" {
+		return
+	}
+	if item.InventoryCheck.Status == "manual" {
+		item.ManualReasons = append(item.ManualReasons, item.InventoryCheck.ReasonDetails...)
+	} else if item.InventoryCheck.ErrorMessage != "" {
+		item.ManualReasons = append(item.ManualReasons, "实时库存校验失败："+item.InventoryCheck.ErrorMessage)
+	} else {
+		item.ManualReasons = append(item.ManualReasons, "实时库存校验失败，请重新同步后再试")
+	}
+	item.AutoEligible = false
+}
+
+func (s *Store) SaveInventoryCheck(ctx context.Context, shopKey, orderNo string, check InventoryCheck) error {
+	if !check.SourceDetailFetchedAt.IsZero() {
+		check.SourceDetailFetchedAt = check.SourceDetailFetchedAt.UTC()
+	}
+	if check.Status != "eligible" && check.Status != "manual" && check.Status != "failed" {
+		return errors.New("invalid SHEIN inventory check status")
+	}
+	if check.SourceDetailFetchedAt.IsZero() {
+		return errors.New("inventory check source timestamp is required")
+	}
+	if check.Categories == nil {
+		check.Categories = []string{}
+	}
+	if check.ReasonDetails == nil {
+		check.ReasonDetails = []string{}
+	}
+	if len(check.ErrorMessage) > 500 {
+		check.ErrorMessage = check.ErrorMessage[:500]
+	}
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO shein_go_order_inventory_checks (
+			shop_key, order_no, source_detail_fetched_at, status,
+			categories, reason_details, error_message, checked_at
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, now())
+		ON CONFLICT (shop_key, order_no) DO UPDATE SET
+			source_detail_fetched_at = EXCLUDED.source_detail_fetched_at,
+			status = EXCLUDED.status,
+			categories = EXCLUDED.categories,
+			reason_details = EXCLUDED.reason_details,
+			error_message = EXCLUDED.error_message,
+			checked_at = now()
+	`, shopKey, orderNo, check.SourceDetailFetchedAt, check.Status,
+		check.Categories, check.ReasonDetails, check.ErrorMessage)
+	if err != nil {
+		return fmt.Errorf("save SHEIN inventory check: %w", err)
+	}
+	return nil
 }
 
 func logisticsOptions(detail map[string]any) []int {

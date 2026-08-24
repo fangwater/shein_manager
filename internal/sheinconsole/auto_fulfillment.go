@@ -11,10 +11,8 @@ import (
 	"strings"
 	"time"
 
-	"shein-api-manager/internal/shein"
-	"shein-api-manager/internal/xlwms"
-
 	"github.com/jackc/pgx/v5"
+	"shein-api-manager/internal/shein"
 )
 
 const (
@@ -102,6 +100,12 @@ func (s *Server) syncFulfillmentOrders(writer http.ResponseWriter, request *http
 		s.writeAPIError(writer, err)
 		return
 	}
+	if s.xlwms != nil {
+		if _, err := s.classifyFulfillmentInventory(ctx, shopKey); err != nil {
+			s.internalError(writer, "classify synced fulfillment inventory", err)
+			return
+		}
+	}
 	pending, err := s.store.ListOrderQueue(ctx, shopKey, "pending")
 	if err != nil {
 		s.internalError(writer, "list synced fulfillment orders", err)
@@ -181,6 +185,10 @@ func (s *Server) runAutoFulfillment(writer http.ResponseWriter, request *http.Re
 	}
 	ctx, cancel := context.WithTimeout(request.Context(), s.requestTimeout)
 	defer cancel()
+	if _, err := s.classifyFulfillmentInventory(ctx, shopKey); err != nil {
+		s.internalError(writer, "classify automatic fulfillment inventory", err)
+		return
+	}
 	eligibleOrders, err := s.store.ListOrderQueue(ctx, shopKey, "all")
 	if err != nil {
 		s.internalError(writer, "validate automatic fulfillment orders", err)
@@ -188,7 +196,7 @@ func (s *Server) runAutoFulfillment(writer http.ResponseWriter, request *http.Re
 	}
 	eligible := make(map[string]bool, len(eligibleOrders))
 	for _, order := range eligibleOrders {
-		eligible[order.OrderNo] = order.AutoEligible &&
+		eligible[order.OrderNo] = order.ReadyForAutomaticFulfillment() &&
 			(order.Job == nil || order.Job.Status == "failed")
 	}
 	rejected := make(map[string]string)
@@ -201,7 +209,15 @@ func (s *Server) runAutoFulfillment(writer http.ResponseWriter, request *http.Re
 		}
 		seen[orderNo] = true
 		if !eligible[orderNo] {
-			rejected[orderNo] = "订单不在当前可自动履约队列"
+			for _, order := range eligibleOrders {
+				if order.OrderNo == orderNo {
+					rejected[orderNo] = order.AutomaticFulfillmentReason()
+					break
+				}
+			}
+			if rejected[orderNo] == "" {
+				rejected[orderNo] = "订单不在当前可自动履约队列"
+			}
 			continue
 		}
 		accepted = append(accepted, orderNo)
@@ -451,10 +467,21 @@ func (s *Server) processAutoFulfillment(ref autoQueueRef) {
 	defer cancel()
 	if err := s.executeAutoFulfillment(ctx, ref); err != nil {
 		code, message := automaticError(err)
-		if stateErr := s.store.SetAutoJobState(context.WithoutCancel(ctx), ref.ShopKey, ref.OrderNo, "failed", "failed", code, message); stateErr != nil {
+		status := "failed"
+		step := "failed"
+		bulkStatus := "failed"
+		bulkMessage := message
+		var manualErr *inventoryManualRequiredError
+		if errors.As(err, &manualErr) {
+			status = "manual_required"
+			step = "manual_required"
+			bulkStatus = "succeeded"
+			bulkMessage = "订单已转入人工处理，自动批次已跳过"
+		}
+		if stateErr := s.store.SetAutoJobState(context.WithoutCancel(ctx), ref.ShopKey, ref.OrderNo, status, step, code, message); stateErr != nil {
 			s.logger.Error("save SHEIN automatic fulfillment failure failed", "shop", ref.ShopKey, "order", ref.OrderNo, "error", sanitizedError(stateErr))
 		}
-		s.finishBulkItem(context.WithoutCancel(ctx), ref, "failed", message)
+		s.finishBulkItem(context.WithoutCancel(ctx), ref, bulkStatus, bulkMessage)
 		s.logger.Warn("SHEIN automatic fulfillment failed", "shop", ref.ShopKey, "order", ref.OrderNo, "code", code, "error", sanitizedError(err))
 		return
 	}
@@ -514,6 +541,9 @@ func (s *Server) executeAutoFulfillment(ctx context.Context, ref autoQueueRef) e
 		return errors.New("订单已不在待履约队列")
 	}
 	if !order.AutoEligible || order.PackageSpec == nil {
+		if order.InventoryCheck != nil && order.InventoryCheck.Status == "manual" {
+			return inventoryManualError(*order.InventoryCheck)
+		}
 		return errors.New("订单已转入人工处理队列")
 	}
 	if !shein.CanPurchasePlatformLabel(order.Detail) {
@@ -532,14 +562,26 @@ func (s *Server) executeAutoFulfillment(ctx context.Context, ref autoQueueRef) e
 	if err := s.setAutomaticStep(ctx, ref, "query_inventory"); err != nil {
 		return err
 	}
-	inventoryItems := make([]xlwms.InventoryItem, 0, len(quantities))
-	for sku, quantity := range quantities {
-		inventoryItems = append(inventoryItems, xlwms.InventoryItem{WarehouseSKU: sku, Quantity: quantity})
-	}
-	sort.Slice(inventoryItems, func(i, j int) bool { return inventoryItems[i].WarehouseSKU < inventoryItems[j].WarehouseSKU })
+	inventoryItems := inventoryItems(quantities)
 	inventoryDecision, err := s.xlwms.QueryInventoryForShop(ctx, "shein", ref.ShopKey, inventoryItems)
 	if err != nil {
-		return fmt.Errorf("领星实时库存查询失败: %w", err)
+		check := automaticInventoryCheck(nil, quantities, err)
+		check.SourceDetailFetchedAt = order.DetailFetchedAt
+		if saveErr := s.store.SaveInventoryCheck(ctx, ref.ShopKey, ref.OrderNo, check); saveErr != nil {
+			return saveErr
+		}
+		return errors.New(check.ErrorMessage)
+	}
+	check := automaticInventoryCheck(inventoryDecision, quantities, nil)
+	check.SourceDetailFetchedAt = order.DetailFetchedAt
+	if err := s.store.SaveInventoryCheck(ctx, ref.ShopKey, ref.OrderNo, check); err != nil {
+		return err
+	}
+	if check.Status == "manual" {
+		return inventoryManualError(check)
+	}
+	if check.Status == "failed" {
+		return errors.New(check.ErrorMessage)
 	}
 	eligibleWarehouseKeys, err := automaticInventoryWarehouseKeys(inventoryDecision, quantities)
 	if err != nil {

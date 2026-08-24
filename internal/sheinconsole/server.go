@@ -59,6 +59,7 @@ func New(store *shein.Store, shopKey, shopName string, requestTimeout time.Durat
 		requestTimeout: requestTimeout, logger: logger, xlwms: xlwmsClient, autoQueue: make(chan autoQueueRef, 500),
 	}
 	server.startAutoWorkers()
+	server.startInventoryClassification()
 	server.startWarehouseWatch()
 	return server.routes()
 }

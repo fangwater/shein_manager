@@ -149,6 +149,24 @@ func TestAutomaticInventoryWarehouseKeysRejectsManualInventoryDecision(t *testin
 	}
 }
 
+func TestAutomaticInventoryCheckPersistsManualInventoryDecision(t *testing.T) {
+	decision := json.RawMessage(`{
+		"complete":true,
+		"package_resolution":{"complete":true},
+		"records":[{"sku":"SKU-1","requires_manual":true,"reason":"可用库存不足，需要人工发货"}]
+	}`)
+	check := automaticInventoryCheck(decision, map[string]int{"SKU-1": 1}, nil)
+	if check.Status != "manual" {
+		t.Fatalf("inventory check status = %q, want manual", check.Status)
+	}
+	if len(check.Categories) != 1 || check.Categories[0] != "inventory_rule" {
+		t.Fatalf("inventory check categories = %#v", check.Categories)
+	}
+	if len(check.ReasonDetails) != 1 || check.ReasonDetails[0] != "可用库存不足，需要人工发货" {
+		t.Fatalf("inventory check reasons = %#v", check.ReasonDetails)
+	}
+}
+
 func TestLowestQuotedChannelRejectsMixedCurrencies(t *testing.T) {
 	_, err := lowestQuotedChannel([]quotedChannel{
 		{Candidate: shein.ShippingQuoteCandidate{PerformanceCost: "1", CurrencyCode: "USD"}},

@@ -201,6 +201,21 @@ func (s *Store) Migrate(ctx context.Context) error {
 		CREATE INDEX IF NOT EXISTS idx_shein_go_auto_jobs_queue
 			ON shein_go_auto_fulfillment_jobs (shop_key, status, updated_at DESC);
 
+		CREATE TABLE IF NOT EXISTS shein_go_order_inventory_checks (
+			shop_key text NOT NULL,
+			order_no text NOT NULL,
+			source_detail_fetched_at timestamptz NOT NULL,
+			status text NOT NULL,
+			categories text[] NOT NULL DEFAULT ARRAY[]::text[],
+			reason_details text[] NOT NULL DEFAULT ARRAY[]::text[],
+			error_message text NOT NULL DEFAULT '',
+			checked_at timestamptz NOT NULL DEFAULT now(),
+			PRIMARY KEY (shop_key, order_no),
+			CHECK (status IN ('eligible', 'manual', 'failed'))
+		);
+		CREATE INDEX IF NOT EXISTS idx_shein_go_order_inventory_checks_queue
+			ON shein_go_order_inventory_checks (shop_key, status, checked_at DESC);
+
 		CREATE TABLE IF NOT EXISTS shein_go_bulk_fulfillment_batches (
 			id text PRIMARY KEY,
 			shop_key text NOT NULL,

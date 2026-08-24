@@ -1,6 +1,9 @@
 package shein
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func TestClassifyOrderQueueItemUsesSKUCodeMapping(t *testing.T) {
 	item := OrderQueueItem{
@@ -28,6 +31,47 @@ func TestClassifyOrderQueueItemUsesSKUCodeMapping(t *testing.T) {
 	}
 	if item.Goods[0].WarehouseSKU != "WH-1" || item.Goods[0].WarehouseQuantity != "2" {
 		t.Fatalf("goods line did not expose warehouse mapping: %#v", item.Goods[0])
+	}
+}
+
+func TestInventoryCheckMovesOtherwiseEligibleOrderToManual(t *testing.T) {
+	checkedAt := time.Date(2026, 8, 24, 10, 0, 0, 0, time.UTC)
+	item := OrderQueueItem{
+		AutoEligible:       true,
+		staticAutoEligible: true,
+		DetailFetchedAt:    checkedAt,
+		InventoryCheck: &InventoryCheck{
+			SourceDetailFetchedAt: checkedAt,
+			Status:                "manual",
+			ReasonDetails:         []string{"库存低于自动发货安全线"},
+		},
+	}
+	applyInventoryCheck(&item)
+	if item.AutoEligible || item.ReadyForAutomaticFulfillment() {
+		t.Fatalf("manual inventory check must block automatic fulfillment: %#v", item)
+	}
+	if len(item.ManualReasons) != 1 || item.ManualReasons[0] != "库存低于自动发货安全线" {
+		t.Fatalf("manual reasons = %#v", item.ManualReasons)
+	}
+}
+
+func TestEligibleInventoryCheckRequiresCurrentOrderDetail(t *testing.T) {
+	checkedAt := time.Date(2026, 8, 24, 10, 0, 0, 0, time.UTC)
+	item := OrderQueueItem{
+		AutoEligible:       true,
+		staticAutoEligible: true,
+		DetailFetchedAt:    checkedAt,
+		InventoryCheck: &InventoryCheck{
+			SourceDetailFetchedAt: checkedAt.Add(-time.Second),
+			Status:                "eligible",
+		},
+	}
+	if item.ReadyForAutomaticFulfillment() {
+		t.Fatal("stale inventory check must not permit automatic fulfillment")
+	}
+	item.InventoryCheck.SourceDetailFetchedAt = checkedAt
+	if !item.ReadyForAutomaticFulfillment() {
+		t.Fatal("current eligible inventory check should permit automatic fulfillment")
 	}
 }
 

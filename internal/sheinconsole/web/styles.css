@@ -61,11 +61,12 @@ main { padding: 28px clamp(18px, 3vw, 42px) 56px; }
 .status-band strong { margin-top: 5px; font-size: 21px; }
 .status-band strong.compact { font-size: 12px; }
 .filter-bar { display: grid; grid-template-columns: 1.2fr 1.2fr .8fr .8fr auto; align-items: end; gap: 12px; padding: 15px 16px; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); background: #fff; }
-.filter-bar label, .tool-panel label, .package-form label { display: flex; flex-direction: column; gap: 6px; }
+.filter-bar label, .tool-panel label, .package-form label, .resolution-form label { display: flex; flex-direction: column; gap: 6px; }
 label { min-width: 0; }
 label > span { color: #49545f; font-size: 11px; font-weight: 650; }
-input, select { width: 100%; min-height: 38px; padding: 8px 10px; border: 1px solid #cbd3da; border-radius: 4px; outline: 0; background: #fff; color: var(--ink); }
-input:focus, select:focus { border-color: #687681; box-shadow: 0 0 0 2px rgba(46, 62, 76, .1); }
+input, select, textarea { width: 100%; min-height: 38px; padding: 8px 10px; border: 1px solid #cbd3da; border-radius: 4px; outline: 0; background: #fff; color: var(--ink); }
+textarea { resize: vertical; line-height: 1.5; }
+input:focus, select:focus, textarea:focus { border-color: #687681; box-shadow: 0 0 0 2px rgba(46, 62, 76, .1); }
 .toolbar { min-height: 56px; display: flex; align-items: center; justify-content: space-between; gap: 14px; }
 .toolbar > span { color: var(--muted); font-size: 11px; }
 .table-note { margin-left: auto; white-space: nowrap; }
@@ -134,6 +135,9 @@ tbody tr:hover { background: #fff8f8; }
 .dialog-head small { color: var(--muted); font-size: 10px; }
 .dialog-head h2 { margin: 3px 0 0; font-size: 18px; }
 .dialog-body { max-height: calc(100vh - 104px); padding: 0 22px 26px; overflow: auto; background: #f7f8f9; }
+.resolution-dialog { width: min(520px, calc(100vw - 40px)); }
+.resolution-form { display: grid; gap: 16px; padding-top: 22px; }
+.resolution-actions { display: flex; justify-content: flex-end; gap: 8px; }
 .order-summary { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 1px; margin: 0 -22px 18px; background: var(--line); border-bottom: 1px solid var(--line); }
 .order-summary > div { min-height: 66px; display: flex; flex-direction: column; justify-content: center; padding: 10px 16px; background: #fff; }
 .order-summary small { color: var(--muted); font-size: 10px; }

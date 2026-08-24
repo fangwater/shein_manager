@@ -1,12 +1,26 @@
 package sheinconsole
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
 	"shein-api-manager/internal/shein"
 	"shein-api-manager/internal/xlwms"
 )
+
+func TestExpiredTrackingPackageErrorIsNotRetryable(t *testing.T) {
+	expired := fmt.Errorf("attach label: %w", &shein.APIError{Code: "9999400", Message: "expired"})
+	if !isExpiredTrackingPackageError(expired) {
+		t.Fatal("expired tracking package error must be classified as non-retryable")
+	}
+	if isExpiredTrackingPackageError(&shein.APIError{Code: "9999401", Message: "another error"}) {
+		t.Fatal("unrelated SHEIN error must remain retryable")
+	}
+	if isExpiredTrackingPackageError(fmt.Errorf("network failure")) {
+		t.Fatal("transport error must remain retryable")
+	}
+}
 
 func TestApplyLingxingParcelWarehouseDecisionUsesOutboundStatus(t *testing.T) {
 	status := 2

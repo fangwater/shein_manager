@@ -73,6 +73,7 @@ func (server *Server) routes() http.Handler {
 func (server *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /healthz", server.health)
 	mux.Handle("GET /", http.HandlerFunc(server.index))
+	mux.Handle("GET /temu/dashboard.css", http.HandlerFunc(server.localDashboardCSS))
 	mux.Handle("GET /assets/{name}", http.HandlerFunc(server.asset))
 	mux.Handle("GET /api/status", http.HandlerFunc(server.status))
 	mux.Handle("GET /api/oms-platform-orders/accounts", http.HandlerFunc(server.xlwmsAccounts))
@@ -107,6 +108,7 @@ func (server *Server) registerRoutes(mux *http.ServeMux) {
 	mux.Handle("POST /api/auto-fulfillment/run", http.HandlerFunc(server.runAutoFulfillment))
 	mux.Handle("GET /api/auto-fulfillment/batches/latest", http.HandlerFunc(server.latestAutoFulfillmentBatch))
 	mux.Handle("GET /api/shipping/tasks", http.HandlerFunc(server.fulfillmentTasks))
+	mux.Handle("POST /api/shipping/tasks/{orderNo}/resolve", http.HandlerFunc(server.resolveFulfillmentTask))
 	mux.Handle("POST /api/shipping/warehouses", server.operationHandler("available-shipping-warehouse"))
 	mux.Handle("POST /api/shipping/channels", server.operationHandler("order-mapping-channels"))
 	mux.Handle("POST /api/shipping/place", server.operationHandler("place-express-order"))
@@ -128,6 +130,19 @@ func (s *Server) index(writer http.ResponseWriter, _ *http.Request) {
 		return
 	}
 	writer.Header().Set("Content-Type", "text/html; charset=utf-8")
+	writer.Header().Set("Cache-Control", "no-store")
+	_, _ = writer.Write(content)
+}
+
+// localDashboardCSS keeps the standalone console usable when it is opened
+// directly rather than through the shared /temu/ Nginx route.
+func (s *Server) localDashboardCSS(writer http.ResponseWriter, _ *http.Request) {
+	content, err := webFiles.ReadFile("web/styles.css")
+	if err != nil {
+		http.Error(writer, "SHEIN console styles are unavailable", http.StatusInternalServerError)
+		return
+	}
+	writer.Header().Set("Content-Type", "text/css; charset=utf-8")
 	writer.Header().Set("Cache-Control", "no-store")
 	_, _ = writer.Write(content)
 }

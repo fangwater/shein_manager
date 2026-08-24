@@ -52,6 +52,9 @@ type FulfillmentTask struct {
 	PrintStatus           *int       `json:"print_status,omitempty"`
 	Status                string     `json:"status"`
 	FailureReason         string     `json:"failure_reason,omitempty"`
+	ResolutionStatus      string     `json:"resolution_status,omitempty"`
+	ResolutionReason      string     `json:"resolution_reason,omitempty"`
+	ResolvedAt            *time.Time `json:"resolved_at,omitempty"`
 	CreatedAt             time.Time  `json:"created_at"`
 	UpdatedAt             time.Time  `json:"updated_at"`
 	OutboundOrderNo       string     `json:"outbound_order_no,omitempty"`
@@ -151,6 +154,9 @@ func (s *Store) Migrate(ctx context.Context) error {
 			print_status integer,
 			status text NOT NULL DEFAULT 'discovered',
 			failure_reason text NOT NULL DEFAULT '',
+			resolution_status text NOT NULL DEFAULT '',
+			resolution_reason text NOT NULL DEFAULT '',
+			resolved_at timestamptz,
 			created_at timestamptz NOT NULL DEFAULT now(),
 			updated_at timestamptz NOT NULL DEFAULT now()
 		);
@@ -356,6 +362,12 @@ func (s *Store) Migrate(ctx context.Context) error {
 			ADD COLUMN IF NOT EXISTS oms_sync_message text NOT NULL DEFAULT '';
 		ALTER TABLE shein_go_fulfillment_tasks
 			ADD COLUMN IF NOT EXISTS oms_queried_at timestamptz;
+		ALTER TABLE shein_go_fulfillment_tasks
+			ADD COLUMN IF NOT EXISTS resolution_status text NOT NULL DEFAULT '';
+		ALTER TABLE shein_go_fulfillment_tasks
+			ADD COLUMN IF NOT EXISTS resolution_reason text NOT NULL DEFAULT '';
+		ALTER TABLE shein_go_fulfillment_tasks
+			ADD COLUMN IF NOT EXISTS resolved_at timestamptz;
 		CREATE INDEX IF NOT EXISTS idx_shein_go_fulfillment_tasks_watch
 			ON shein_go_fulfillment_tasks (shop_key, oms_sync_status, outbound_order_no, updated_at DESC);
 
@@ -500,6 +512,7 @@ func (s *Store) UpsertFulfillmentTask(ctx context.Context, shopKey string, task 
 				handle_result = COALESCE($10, handle_result),
 				print_status = COALESCE($11, print_status),
 				status = CASE
+					WHEN resolution_status <> '' THEN status
 					WHEN $12 = 'discovered' AND status IN ('placed', 'checking', 'confirming', 'ready', 'label_ready', 'failed') THEN status
 					ELSE COALESCE(NULLIF($12, ''), status)
 				END,
@@ -544,7 +557,10 @@ func (s *Store) UpdateFulfillmentTaskResult(
 			warehouse_address_code = COALESCE(NULLIF($5, ''), warehouse_address_code),
 			handle_result = COALESCE($6, handle_result),
 			print_status = COALESCE($7, print_status),
-			status = COALESCE(NULLIF($8, ''), status),
+			status = CASE
+				WHEN resolution_status <> '' THEN status
+				ELSE COALESCE(NULLIF($8, ''), status)
+			END,
 			failure_reason = $9,
 			updated_at = now()
 		WHERE shop_key = $1
@@ -565,7 +581,7 @@ func (s *Store) MarkFulfillmentTaskLabelReady(
 	_, err := s.pool.Exec(ctx, `
 		UPDATE shein_go_fulfillment_tasks
 		SET status = 'label_ready', print_status = 2, updated_at = now()
-		WHERE shop_key = $1 AND (
+		WHERE shop_key = $1 AND resolution_status = '' AND (
 			($2 <> '' AND delivery_no = $2)
 			OR ($3 <> '' AND order_no = $3 AND package_no = ANY($4::text[]))
 		)
@@ -648,7 +664,7 @@ func (s *Store) SaveParcelWatch(ctx context.Context, shopKey, orderNo string, up
 			oms_sync_message = $14,
 			oms_queried_at = now(),
 			updated_at = now()
-		WHERE shop_key = $1 AND order_no = $2
+		WHERE shop_key = $1 AND order_no = $2 AND resolution_status = ''
 			AND updated_at = (
 				SELECT max(updated_at) FROM shein_go_fulfillment_tasks
 				WHERE shop_key = $1 AND order_no = $2
@@ -661,6 +677,95 @@ func (s *Store) SaveParcelWatch(ctx context.Context, shopKey, orderNo string, up
 		strings.TrimSpace(update.OMSSyncStatus), message)
 	if err != nil {
 		return fmt.Errorf("save SHEIN parcel watch: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrFulfillmentTaskNotFound
+	}
+	return nil
+}
+
+// MarkFulfillmentTaskUnprintable prevents a permanently invalid package from
+// being selected by the warehouse watcher for another label retrieval attempt.
+func (s *Store) MarkFulfillmentTaskUnprintable(ctx context.Context, shopKey, orderNo, reason string) error {
+	shopKey = strings.TrimSpace(shopKey)
+	orderNo = strings.TrimSpace(orderNo)
+	reason = strings.TrimSpace(reason)
+	if shopKey == "" || orderNo == "" {
+		return ErrFulfillmentTaskNotFound
+	}
+	if reason == "" {
+		reason = "SHEIN 包裹已失效，不能打印面单"
+	}
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE shein_go_fulfillment_tasks
+		SET status = 'failed', failure_reason = $3, updated_at = now()
+		WHERE shop_key = $1 AND order_no = $2 AND resolution_status = ''
+			AND updated_at = (
+				SELECT max(updated_at) FROM shein_go_fulfillment_tasks
+				WHERE shop_key = $1 AND order_no = $2
+			)
+	`, shopKey, orderNo, reason)
+	if err != nil {
+		return fmt.Errorf("mark SHEIN fulfillment task unprintable: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrFulfillmentTaskNotFound
+	}
+	return nil
+}
+
+func validFulfillmentResolutionStatus(status string) bool {
+	switch strings.TrimSpace(status) {
+	case "manually_fulfilled", "cancelled", "not_required", "other":
+		return true
+	default:
+		return false
+	}
+}
+
+// ResolveFulfillmentTask ends local fulfillment handling for one package after
+// an operator has recorded its final outcome. It does not alter the SHEIN order.
+func (s *Store) ResolveFulfillmentTask(
+	ctx context.Context,
+	shopKey, orderNo, placeRequestID, deliveryNo, packageNo, resolutionStatus, resolutionReason string,
+) error {
+	shopKey = strings.TrimSpace(shopKey)
+	orderNo = strings.TrimSpace(orderNo)
+	placeRequestID = strings.TrimSpace(placeRequestID)
+	deliveryNo = strings.TrimSpace(deliveryNo)
+	packageNo = strings.TrimSpace(packageNo)
+	resolutionStatus = strings.TrimSpace(resolutionStatus)
+	resolutionReason = strings.TrimSpace(resolutionReason)
+	if shopKey == "" || orderNo == "" || (placeRequestID == "" && deliveryNo == "" && packageNo == "") {
+		return ErrFulfillmentTaskNotFound
+	}
+	if !validFulfillmentResolutionStatus(resolutionStatus) {
+		return errors.New("invalid fulfillment final status")
+	}
+	if resolutionReason == "" {
+		return errors.New("fulfillment resolution reason is required")
+	}
+	if len(resolutionReason) > 500 {
+		return errors.New("fulfillment resolution reason must not exceed 500 characters")
+	}
+
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE shein_go_fulfillment_tasks
+		SET status = 'resolved',
+			resolution_status = $6,
+			resolution_reason = $7,
+			resolved_at = now(),
+			oms_sync_status = 'manual_resolved',
+			oms_sync_message = '人工关闭：' || $7,
+			updated_at = now()
+		WHERE shop_key = $1 AND order_no = $2 AND (
+			($5 <> '' AND package_no = $5)
+			OR ($5 = '' AND $4 <> '' AND delivery_no = $4)
+			OR ($5 = '' AND $4 = '' AND $3 <> '' AND place_request_id = $3)
+		)
+	`, shopKey, orderNo, placeRequestID, deliveryNo, packageNo, resolutionStatus, resolutionReason)
+	if err != nil {
+		return fmt.Errorf("resolve SHEIN fulfillment task: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
 		return ErrFulfillmentTaskNotFound
@@ -788,7 +893,7 @@ func omsPlatformOrderStatusMatch(status string) string {
 
 const fulfillmentTaskSelect = `SELECT order_no, express_channel_code, warehouse_address_code,
 	place_request_id, delivery_no, package_no, waybill_no,
-	order_place_type, handle_result, print_status, status, failure_reason, created_at, updated_at,
+	order_place_type, handle_result, print_status, status, failure_reason, resolution_status, resolution_reason, resolved_at, created_at, updated_at,
 	outbound_order_no, outbound_status, outbound_status_name, label_attached,
 	oms_account, oms_order_no, oms_status_code, oms_status_key, oms_status_text,
 	oms_warehouse_code, oms_sync_status, oms_sync_message, oms_queried_at
@@ -803,7 +908,7 @@ func scanFulfillmentTask(scanner fulfillmentTaskScanner) (FulfillmentTask, error
 	err := scanner.Scan(
 		&task.OrderNo, &task.ExpressChannelCode, &task.WarehouseAddressCode,
 		&task.PlaceRequestID, &task.DeliveryNo, &task.PackageNo, &task.WaybillNo,
-		&task.OrderPlaceType, &task.HandleResult, &task.PrintStatus, &task.Status, &task.FailureReason, &task.CreatedAt, &task.UpdatedAt,
+		&task.OrderPlaceType, &task.HandleResult, &task.PrintStatus, &task.Status, &task.FailureReason, &task.ResolutionStatus, &task.ResolutionReason, &task.ResolvedAt, &task.CreatedAt, &task.UpdatedAt,
 		&task.OutboundOrderNo, &task.OutboundStatus, &task.OutboundStatusName, &task.LabelAttached,
 		&task.OMSAccount, &task.OMSOrderNo, &task.OMSStatusCode, &task.OMSStatusKey, &task.OMSStatusText,
 		&task.OMSWarehouseCode, &task.OMSSyncStatus, &task.OMSSyncMessage, &task.OMSQueriedAt,

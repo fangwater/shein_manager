@@ -36,6 +36,20 @@ func TestConsoleUsesSharedTemuShell(t *testing.T) {
 	}
 }
 
+func TestStandaloneConsoleHasCSSFallback(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	(&Server{}).localDashboardCSS(recorder, httptest.NewRequest(http.MethodGet, "/temu/dashboard.css", nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("fallback stylesheet status = %d", recorder.Code)
+	}
+	if !strings.HasPrefix(recorder.Header().Get("Content-Type"), "text/css") {
+		t.Fatalf("fallback stylesheet content type = %q", recorder.Header().Get("Content-Type"))
+	}
+	if !strings.Contains(recorder.Body.String(), ".app-shell") {
+		t.Fatal("fallback stylesheet does not contain console layout styles")
+	}
+}
+
 func TestPurchaseSuccessUsesTemuProcessingFlow(t *testing.T) {
 	index, err := webFiles.ReadFile("web/index.html")
 	if err != nil {
@@ -203,6 +217,65 @@ func TestProcessingViewCanSearchPlacedOrders(t *testing.T) {
 	} {
 		if !strings.Contains(source, required) {
 			t.Fatalf("processing search does not contain %q", required)
+		}
+	}
+}
+
+func TestManualOrdersShowWarehouseSKUOnly(t *testing.T) {
+	index, err := webFiles.ReadFile("web/index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(index), "仓库 SKU / 数量") {
+		t.Fatal("manual order table does not identify the warehouse SKU column")
+	}
+	script, err := webFiles.ReadFile("web/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := string(script)
+	for _, required := range []string{
+		"const goodsHTML = warehouseGoodsLines(order).map",
+		"quantityText(line.quantity)",
+	} {
+		if !strings.Contains(source, required) {
+			t.Fatalf("manual order warehouse SKU rendering does not contain %q", required)
+		}
+	}
+}
+
+func TestProcessingViewSupportsManualResolution(t *testing.T) {
+	index, err := webFiles.ReadFile("web/index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	html := string(index)
+	for _, required := range []string{
+		`id="task-exception-filter"`,
+		`option value="failed"`,
+		`option value="resolved"`,
+		`id="task-resolution-dialog"`,
+		`id="task-resolution-reason"`,
+	} {
+		if !strings.Contains(html, required) {
+			t.Fatalf("manual resolution UI does not contain %q", required)
+		}
+	}
+	script, err := webFiles.ReadFile("web/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := string(script)
+	for _, required := range []string{
+		"function openTaskResolution",
+		"function submitTaskResolution",
+		`data-resolve-task=`,
+		`"/resolve"`,
+		"resolution_reason",
+		`byId("task-exception-filter").addEventListener("change"`,
+	} {
+		if !strings.Contains(source, required) {
+			t.Fatalf("manual resolution flow does not contain %q", required)
 		}
 	}
 }

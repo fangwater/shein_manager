@@ -804,6 +804,7 @@ function formatTaskTime(value) {
 
 function taskStatusClass(task) {
   const status = task && typeof task === "object" ? task.status : task;
+  if (task && typeof task === "object" && (task.resolution_status || status === "resolved")) return "good";
   if (task && typeof task === "object" && task.parcel_complete) return "good";
   if (status === "label_ready") return "good";
   if (status === "ready") return "info";
@@ -846,16 +847,27 @@ function canComplementaryUploadLabel(task) {
   );
 }
 
+function taskIsResolved(task) {
+  return Boolean(task && (task.resolution_status || task.status === "resolved"));
+}
+
+function canResolveTask(task) {
+  return Boolean(task) && !taskIsResolved(task) && !sheinOrderAlreadyCollected(task);
+}
+
 function taskMatchesFilter(task, filter) {
   const status = task && task.status;
+  const resolved = taskIsResolved(task);
+  if (filter === "resolved") return resolved;
+  if (resolved) return false;
   if (sheinOrderAlreadyCollected(task) && filter !== "failed") return false;
   if (filter === "placed") return status === "placed";
   if (filter === "checking") return ["checking", "confirming", "ready"].includes(status);
   if (filter === "label_ready") return status === "label_ready" && !task.parcel_complete;
   if (filter === "parcel") return canComplementaryUploadLabel(task) || canStartManualParcel(task);
-  if (filter === "failed") return status === "failed";
+  if (filter === "failed") return status === "failed" || task.oms_sync_status === "manual_required";
   if (task && task.parcel_complete && Number(task.outbound_status) !== 7) return false;
-  return status !== "failed";
+  return status !== "failed" && status !== "resolved";
 }
 
 function setTaskFilter(filter) {
@@ -878,6 +890,7 @@ function taskSearchText(task) {
   return [
     task.order_no, task.express_channel_code, task.warehouse_address_code,
     task.place_request_id, task.delivery_no, task.package_no, task.waybill_no,
+    task.failure_reason, task.resolution_status, task.resolution_reason, task.oms_sync_message,
     taskStatusLabel(task)
   ].join(" ").toLowerCase();
 }
@@ -902,7 +915,10 @@ function renderTasks() {
       (task.delivery_no || task.order_no && task.package_no));
     const canCreateParcel = canStartManualParcel(task);
     const canUploadLabel = canComplementaryUploadLabel(task);
-    const failureTitle = task.failure_reason ? ' title="' + escapeHTML(task.failure_reason) + '"' : "";
+    const canResolve = canResolveTask(task);
+    const statusNote = task.resolution_reason || (task.oms_sync_status === "manual_required" ? task.failure_reason : "");
+    const statusTitle = [task.failure_reason, task.resolution_reason].filter(Boolean).join("\n");
+    const failureTitle = statusTitle ? ' title="' + escapeHTML(statusTitle) + '"' : "";
     const key = taskKey(task);
     const selected = key && key === state.selectedTaskKey;
     return '<tr class="' + (selected ? "is-selected" : "") + '" data-task-index="' + index +
@@ -914,14 +930,15 @@ function renderTasks() {
       escapeHTML(display(task.express_channel_code)) + "</strong><small>" +
       escapeHTML(display(task.warehouse_address_code)) + "</small></div></td><td><div class=\"order-id\"><strong>" +
       escapeHTML(display(packageNo)) + "</strong><small>" + escapeHTML(display(deliveryNo)) +
-      "</small></div></td><td><span class=\"badge " + taskStatusClass(task) + "\"" + failureTitle + ">" +
-      escapeHTML(taskStatusLabel(task)) + "</span></td><td>" +
+      "</small></div></td><td><div class=\"order-id\"><span class=\"badge " + taskStatusClass(task) + "\"" + failureTitle + ">" +
+      escapeHTML(taskStatusLabel(task)) + "</span>" + (statusNote ? "<small>" + escapeHTML(statusNote) + "</small>" : "") + "</div></td><td>" +
       escapeHTML(formatTaskTime(task.updated_at)) +
       "</td><td><div class=\"action-row\"><button class=\"table-action\" data-check-task=\"" + index +
       "\" " + (canCheck ? "" : "disabled") + ">查询结果</button><button class=\"table-action primary\" data-label-task=\"" + index +
       "\" " + (canPrint ? "" : "disabled") + ">获取面单</button>" +
       (canCreateParcel ? '<button class="table-action" data-parcel-task="' + index + '">补建出库单</button>' : "") +
       (canUploadLabel ? '<button class="table-action" data-upload-label-task="' + index + '">补传面单</button>' : "") +
+      (canResolve ? '<button class="table-action" data-resolve-task="' + index + '">人工关闭</button>' : "") +
       "</div></td></tr>";
   }).join("");
   const placed = state.tasks.filter(function (task) { return task.status === "placed"; }).length;
@@ -930,7 +947,9 @@ function renderTasks() {
   }).length;
   const ready = state.tasks.filter(function (task) { return taskMatchesFilter(task, "label_ready"); }).length;
   const parcelReady = state.tasks.filter(function (task) { return taskMatchesFilter(task, "parcel"); }).length;
+  const failed = state.tasks.filter(function (task) { return taskMatchesFilter(task, "failed"); }).length;
   const processing = state.tasks.filter(function (task) { return taskMatchesFilter(task, "processing"); }).length;
+  const resolved = state.tasks.filter(function (task) { return taskMatchesFilter(task, "resolved"); }).length;
   byId("nav-processing-count").textContent = String(processing);
   byId("nav-label-count").textContent = String(processing);
   byId("metric-task-total").textContent = String(processing);
@@ -938,6 +957,12 @@ function renderTasks() {
   byId("metric-task-checked").textContent = String(checking);
   byId("metric-task-label").textContent = String(ready);
   byId("metric-task-parcel").textContent = String(parcelReady);
+  const exceptionFilter = byId("task-exception-filter");
+  const failedOption = exceptionFilter.querySelector('option[value="failed"]');
+  const resolvedOption = exceptionFilter.querySelector('option[value="resolved"]');
+  failedOption.textContent = "异常待关闭 (" + failed + ")";
+  resolvedOption.textContent = "已人工关闭 (" + resolved + ")";
+  exceptionFilter.value = ["failed", "resolved"].includes(state.taskFilter) ? state.taskFilter : "";
   document.querySelectorAll("#task-status-filters [data-task-filter]").forEach(function (button) {
     const selected = button.dataset.taskFilter === (state.taskFilter || "processing");
     button.classList.toggle("is-selected", selected);
@@ -953,7 +978,9 @@ function renderTasks() {
       checking: ["没有处理中 / 可打印的订单", "后台确认物流后会显示在这里"],
       label_ready: ["没有面单已就绪的订单", "SHEIN 面单已生成、但领星出库单还没建好的 DPS 订单会显示在这里"],
       parcel: ["没有待补传的 DPS 订单", "自动建单失败、还缺面单，或面单异常的 DPS 订单会出现在这里，可在这里补建或补传"],
-      processing: ["没有正在处理的面单", "订单提交购单后会进入这里；DPS 自动建单贴面单、ARP 等待自动分仓后会离开处理中"]
+      failed: ["没有异常待关闭的订单", "需要人工处理的履约任务会显示在这里"],
+      processing: ["没有正在处理的面单", "订单提交购单后会进入这里；DPS 自动建单贴面单、ARP 等待自动分仓后会离开处理中"],
+      resolved: ["没有已人工关闭的订单", "人工关闭后的最终状态和原因会保留在这里"]
     }[state.taskFilter || "processing"] || ["没有正在处理的面单", "订单提交购单后会进入这里，不再显示在待发货队列"];
     empty.querySelector("strong").textContent = query ? "没有匹配的处理中订单" : emptyCopy[0];
     empty.querySelector("span").textContent = query ? "换一个订单号或状态筛选再试" : emptyCopy[1];
@@ -1151,8 +1178,12 @@ async function uploadXLWMSParcelLabel(button) {
 
 function taskStatusLabel(task) {
   if (task && typeof task === "object") {
+    if (task.resolution_status || task.status === "resolved") {
+      return "人工关闭 · " + taskResolutionStatusLabel(task.resolution_status);
+    }
     if (sheinOrderAlreadyCollected(task)) return "SHEIN 已揽收";
     if (task.parcel_complete) return "领星已建单";
+    if (task.oms_sync_status === "manual_required") return "需人工处理";
     task = task.status;
   }
   return {
@@ -1162,8 +1193,70 @@ function taskStatusLabel(task) {
     confirming: "承运商确认中",
     ready: "可获取面单",
     failed: "下单失败",
-    label_ready: "面单已生成"
+    label_ready: "面单已生成",
+    resolved: "人工关闭"
   }[task] || task;
+}
+
+function taskResolutionStatusLabel(status) {
+  return {
+    manually_fulfilled: "已人工完成",
+    cancelled: "订单已取消",
+    not_required: "无需继续处理",
+    other: "其他"
+  }[status] || "已关闭";
+}
+
+function openTaskResolution(index) {
+  const task = state.tasks[index];
+  if (!canResolveTask(task)) return;
+  byId("task-resolution-index").value = String(index);
+  byId("task-resolution-status").value = "cancelled";
+  byId("task-resolution-reason").value = "";
+  const dialog = byId("task-resolution-dialog");
+  if (!dialog.open) dialog.showModal();
+  byId("task-resolution-reason").focus();
+}
+
+function closeTaskResolution() {
+  const dialog = byId("task-resolution-dialog");
+  if (dialog.open) dialog.close();
+}
+
+async function submitTaskResolution(button) {
+  const index = Number(byId("task-resolution-index").value);
+  const task = state.tasks[index];
+  const finalStatus = byId("task-resolution-status").value;
+  const reason = byId("task-resolution-reason").value.trim();
+  if (!canResolveTask(task)) {
+    toast("该履约任务已更新，请刷新后重试", true);
+    return;
+  }
+  if (!reason) {
+    toast("请填写关闭原因", true);
+    byId("task-resolution-reason").focus();
+    return;
+  }
+  if (!window.confirm("确认关闭本系统对订单 " + task.order_no + " 的履约处理？")) return;
+  await busy(button, async function () {
+    try {
+      await request("shipping/tasks/" + encodeURIComponent(task.order_no) + "/resolve", {
+        method: "POST",
+        body: JSON.stringify({
+          place_request_id: task.place_request_id || "",
+          delivery_no: task.delivery_no || "",
+          package_no: task.package_no || "",
+          final_status: finalStatus,
+          reason: reason
+        })
+      });
+      closeTaskResolution();
+      await loadTasks();
+      toast("订单 " + task.order_no + " 已人工关闭");
+    } catch (error) {
+      toast(error.message, true);
+    }
+  });
 }
 
 async function checkTask(index, button) {
@@ -1582,7 +1675,9 @@ function renderManualOrders() {
   const query = byId("manual-search").value.trim().toLowerCase();
   const filtered = state.manualOrders.filter(function (order) {
     const goods = Array.isArray(order.goods) ? order.goods : [];
-    const text = [order.order_no, order.manual_reasons, goods.map(function (goodsItem) {
+    const text = [order.order_no, order.manual_reasons, warehouseGoodsLines(order).map(function (line) {
+      return line.sku;
+    }).join(" "), goods.map(function (goodsItem) {
       return [goodsItem.sku_code, goodsItem.seller_sku, goodsItem.title].join(" ");
     }).join(" ")].join(" ").toLowerCase();
     return !query || text.includes(query);
@@ -1590,10 +1685,9 @@ function renderManualOrders() {
   const rows = byId("manual-rows");
   rows.closest(".table-shell").classList.toggle("is-empty", filtered.length === 0);
   rows.innerHTML = filtered.map(function (order) {
-    const goods = Array.isArray(order.goods) ? order.goods : [];
-    const goodsHTML = goods.map(function (goodsItem) {
-      return '<span class="sku-line"><b>' + escapeHTML(display(goodsItem.sku_code || goodsItem.seller_sku)) +
-        '</b><span>' + escapeHTML(display(goodsItem.title, "商品")) + "</span></span>";
+    const goodsHTML = warehouseGoodsLines(order).map(function (line) {
+      return '<span class="sku-line"><b>' + escapeHTML(line.sku) +
+        '</b><span>数量 ' + escapeHTML(quantityText(line.quantity)) + "</span></span>";
     }).join("");
     const reasons = (order.manual_reasons || []).map(function (reason) {
       return '<span class="reason-line">' + escapeHTML(reason) + "</span>";
@@ -2047,6 +2141,12 @@ byId("backdrop").addEventListener("click", function () {
 byId("close-result").addEventListener("click", closeResult);
 byId("drawer-backdrop").addEventListener("click", closeResult);
 byId("close-fulfillment").addEventListener("click", function () { byId("fulfillment-dialog").close(); });
+byId("close-task-resolution").addEventListener("click", closeTaskResolution);
+byId("cancel-task-resolution").addEventListener("click", closeTaskResolution);
+byId("task-resolution-form").addEventListener("submit", function (event) {
+  event.preventDefault();
+  submitTaskResolution(event.submitter || byId("submit-task-resolution"));
+});
 byId("refresh-warehouses").addEventListener("click", loadFulfillmentContext);
 byId("transition-fulfillment-order").addEventListener("click", function (event) {
   transitionFulfillmentOrder(event.currentTarget);
@@ -2070,6 +2170,10 @@ byId("task-search").addEventListener("input", function (event) {
 byId("task-status-filters").addEventListener("click", function (event) {
   const button = event.target.closest("[data-task-filter]");
   if (button) setTaskFilter(button.dataset.taskFilter);
+});
+byId("task-exception-filter").addEventListener("change", function (event) {
+  state.taskFilter = event.target.value || "processing";
+  renderTasks();
 });
 byId("refresh-inventory-thresholds").addEventListener("click", function (event) {
   loadInventoryThresholds(event.currentTarget);
@@ -2174,6 +2278,7 @@ byId("task-rows").addEventListener("click", function (event) {
   const labelButton = event.target.closest("[data-label-task]");
   const parcelButton = event.target.closest("[data-parcel-task]");
   const uploadButton = event.target.closest("[data-upload-label-task]");
+  const resolveButton = event.target.closest("[data-resolve-task]");
   const orderButton = event.target.closest("[data-task-order]");
   const row = event.target.closest("tr[data-task-index]");
   const task = row ? state.tasks[Number(row.dataset.taskIndex)] : null;
@@ -2186,6 +2291,10 @@ byId("task-rows").addEventListener("click", function (event) {
   if (uploadButton) {
     const panel = byId("parcel-create-panel");
     if (panel) panel.scrollIntoView({ behavior: "smooth", block: "start" });
+    return;
+  }
+  if (resolveButton) {
+    openTaskResolution(Number(resolveButton.dataset.resolveTask));
     return;
   }
   if (checkButton) {

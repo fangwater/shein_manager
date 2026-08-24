@@ -11,7 +11,16 @@ import (
 	"shein-api-manager/internal/xlwms"
 )
 
-const warehouseWatchInterval = 2 * time.Minute
+const (
+	warehouseWatchInterval               = 2 * time.Minute
+	expiredTrackingPackageSHEINErrorCode = "9999400"
+	expiredTrackingPackageMessage        = "SHEIN 包裹已失效，不能打印面单"
+)
+
+func isExpiredTrackingPackageError(err error) bool {
+	var apiErr *shein.APIError
+	return errors.As(err, &apiErr) && strings.TrimSpace(apiErr.Code) == expiredTrackingPackageSHEINErrorCode
+}
 
 func (s *Server) startWarehouseWatch() {
 	if s.xlwms == nil || s.store == nil {
@@ -192,6 +201,18 @@ func (s *Server) refreshWarehouseWatch(ctx context.Context, task shein.Fulfillme
 		update.OMSWarehouseCode = firstNonEmpty(purchaseWarehouse.OMSCode, dpsWarehouse, update.OMSWarehouseCode)
 		created, createErr := s.ensureAutomaticDPSParcel(ctx, s.shopKey, task)
 		if createErr != nil {
+			if isExpiredTrackingPackageError(createErr) {
+				update.OMSSyncStatus = "manual_required"
+				update.OMSSyncMessage = expiredTrackingPackageMessage
+				if err := s.store.SaveParcelWatch(ctx, s.shopKey, task.OrderNo, update); err != nil {
+					return task, err
+				}
+				if err := s.store.MarkFulfillmentTaskUnprintable(ctx, s.shopKey, task.OrderNo, expiredTrackingPackageMessage); err != nil {
+					return task, err
+				}
+				_ = s.store.EnsureWarehouseLedgerJob(ctx, s.shopKey, task.OrderNo, task.WarehouseAddressCode, task.ExpressChannelCode, task.PlaceRequestID, task.DeliveryNo)
+				return task, createErr
+			}
 			update.OMSSyncStatus = "waiting_sync"
 			update.OMSSyncMessage = "DPS 自动建单失败，等待重试：" + createErr.Error()
 			if err := s.store.SaveParcelWatch(ctx, s.shopKey, task.OrderNo, update); err != nil {

@@ -513,10 +513,14 @@ func (s *Store) UpsertFulfillmentTask(ctx context.Context, shopKey string, task 
 				print_status = COALESCE($11, print_status),
 				status = CASE
 					WHEN resolution_status <> '' THEN status
+					WHEN status = 'failed' AND oms_sync_status = 'manual_required' THEN status
 					WHEN $12 = 'discovered' AND status IN ('placed', 'checking', 'confirming', 'ready', 'label_ready', 'failed') THEN status
 					ELSE COALESCE(NULLIF($12, ''), status)
 				END,
-				failure_reason = $13,
+				failure_reason = CASE
+					WHEN status = 'failed' AND oms_sync_status = 'manual_required' AND $13 = '' THEN failure_reason
+					ELSE $13
+				END,
 				updated_at = now()
 			WHERE shop_key = $1 AND (
 				($5 <> '' AND place_request_id = $5)
@@ -636,9 +640,13 @@ type ParcelWatchUpdate struct {
 	OMSSyncMessage     string
 }
 
-func (s *Store) SaveParcelWatch(ctx context.Context, shopKey, orderNo string, update ParcelWatchUpdate) error {
-	orderNo = strings.TrimSpace(orderNo)
-	if shopKey == "" || orderNo == "" {
+func (s *Store) SaveParcelWatch(ctx context.Context, shopKey string, task FulfillmentTask, update ParcelWatchUpdate) error {
+	shopKey = strings.TrimSpace(shopKey)
+	task.OrderNo = strings.TrimSpace(task.OrderNo)
+	task.PackageNo = strings.TrimSpace(task.PackageNo)
+	task.DeliveryNo = strings.TrimSpace(task.DeliveryNo)
+	task.PlaceRequestID = strings.TrimSpace(task.PlaceRequestID)
+	if shopKey == "" || task.OrderNo == "" || (task.PackageNo == "" && task.DeliveryNo == "" && task.PlaceRequestID == "") {
 		return ErrFulfillmentTaskNotFound
 	}
 	message := strings.TrimSpace(update.OMSSyncMessage)
@@ -647,29 +655,30 @@ func (s *Store) SaveParcelWatch(ctx context.Context, shopKey, orderNo string, up
 	}
 	tag, err := s.pool.Exec(ctx, `
 		UPDATE shein_go_fulfillment_tasks
-		SET outbound_order_no = COALESCE(NULLIF($3, ''), outbound_order_no),
-			outbound_status = COALESCE($4, outbound_status),
-			outbound_status_name = COALESCE(NULLIF($5, ''), outbound_status_name),
-			label_attached = $6,
-			oms_account = COALESCE(NULLIF($7, ''), oms_account),
-			oms_order_no = COALESCE(NULLIF($8, ''), oms_order_no),
-			oms_status_code = $9,
-			oms_status_key = COALESCE(NULLIF($10, ''), oms_status_key),
-			oms_status_text = COALESCE(NULLIF($11, ''), oms_status_text),
-			oms_warehouse_code = COALESCE(NULLIF($12, ''), oms_warehouse_code),
+		SET outbound_order_no = COALESCE(NULLIF($6, ''), outbound_order_no),
+			outbound_status = COALESCE($7, outbound_status),
+			outbound_status_name = COALESCE(NULLIF($8, ''), outbound_status_name),
+			label_attached = $9,
+			oms_account = COALESCE(NULLIF($10, ''), oms_account),
+			oms_order_no = COALESCE(NULLIF($11, ''), oms_order_no),
+			oms_status_code = $12,
+			oms_status_key = COALESCE(NULLIF($13, ''), oms_status_key),
+			oms_status_text = COALESCE(NULLIF($14, ''), oms_status_text),
+			oms_warehouse_code = COALESCE(NULLIF($15, ''), oms_warehouse_code),
 			oms_sync_status = CASE
-				WHEN $13 <> '' THEN $13
+				WHEN $16 <> '' THEN $16
 				ELSE oms_sync_status
 			END,
-			oms_sync_message = $14,
+			oms_sync_message = $17,
 			oms_queried_at = now(),
 			updated_at = now()
-		WHERE shop_key = $1 AND order_no = $2 AND resolution_status = ''
-			AND updated_at = (
-				SELECT max(updated_at) FROM shein_go_fulfillment_tasks
-				WHERE shop_key = $1 AND order_no = $2
-			)
-	`, shopKey, orderNo, strings.TrimSpace(update.OutboundOrderNo), update.OutboundStatus,
+		WHERE shop_key = $1 AND order_no = $2 AND resolution_status = '' AND (
+			($3 <> '' AND package_no = $3)
+			OR ($3 = '' AND $4 <> '' AND delivery_no = $4)
+			OR ($3 = '' AND $4 = '' AND $5 <> '' AND place_request_id = $5)
+		)
+	`, shopKey, task.OrderNo, task.PackageNo, task.DeliveryNo, task.PlaceRequestID,
+		strings.TrimSpace(update.OutboundOrderNo), update.OutboundStatus,
 		strings.TrimSpace(update.OutboundStatusName), update.LabelAttached,
 		strings.TrimSpace(update.OMSAccount), strings.TrimSpace(update.OMSOrderNo),
 		update.OMSStatusCode, strings.TrimSpace(update.OMSStatusKey),
@@ -686,11 +695,14 @@ func (s *Store) SaveParcelWatch(ctx context.Context, shopKey, orderNo string, up
 
 // MarkFulfillmentTaskUnprintable prevents a permanently invalid package from
 // being selected by the warehouse watcher for another label retrieval attempt.
-func (s *Store) MarkFulfillmentTaskUnprintable(ctx context.Context, shopKey, orderNo, reason string) error {
+func (s *Store) MarkFulfillmentTaskUnprintable(ctx context.Context, shopKey string, task FulfillmentTask, reason string) error {
 	shopKey = strings.TrimSpace(shopKey)
-	orderNo = strings.TrimSpace(orderNo)
+	task.OrderNo = strings.TrimSpace(task.OrderNo)
+	task.PackageNo = strings.TrimSpace(task.PackageNo)
+	task.DeliveryNo = strings.TrimSpace(task.DeliveryNo)
+	task.PlaceRequestID = strings.TrimSpace(task.PlaceRequestID)
 	reason = strings.TrimSpace(reason)
-	if shopKey == "" || orderNo == "" {
+	if shopKey == "" || task.OrderNo == "" || (task.PackageNo == "" && task.DeliveryNo == "" && task.PlaceRequestID == "") {
 		return ErrFulfillmentTaskNotFound
 	}
 	if reason == "" {
@@ -698,13 +710,13 @@ func (s *Store) MarkFulfillmentTaskUnprintable(ctx context.Context, shopKey, ord
 	}
 	tag, err := s.pool.Exec(ctx, `
 		UPDATE shein_go_fulfillment_tasks
-		SET status = 'failed', failure_reason = $3, updated_at = now()
-		WHERE shop_key = $1 AND order_no = $2 AND resolution_status = ''
-			AND updated_at = (
-				SELECT max(updated_at) FROM shein_go_fulfillment_tasks
-				WHERE shop_key = $1 AND order_no = $2
-			)
-	`, shopKey, orderNo, reason)
+		SET status = 'failed', failure_reason = $6, updated_at = now()
+		WHERE shop_key = $1 AND order_no = $2 AND resolution_status = '' AND (
+			($3 <> '' AND package_no = $3)
+			OR ($3 = '' AND $4 <> '' AND delivery_no = $4)
+			OR ($3 = '' AND $4 = '' AND $5 <> '' AND place_request_id = $5)
+		)
+	`, shopKey, task.OrderNo, task.PackageNo, task.DeliveryNo, task.PlaceRequestID, reason)
 	if err != nil {
 		return fmt.Errorf("mark SHEIN fulfillment task unprintable: %w", err)
 	}
@@ -784,22 +796,21 @@ func (s *Store) ListWarehouseWatchTasks(ctx context.Context, shopKey string, lim
 				COALESCE(oms_sync_status, '') = 'verified'
 				AND COALESCE(oms_status_key, '') IN ('shipped', 'delivered', 'outbound')
 			)
-			AND NOT (
-				COALESCE(oms_sync_status, '') = 'manual_required'
-				AND outbound_order_no = ''
-				AND NOT (warehouse_address_code = ANY($3))
-			)
+		AND NOT (
+			COALESCE(oms_sync_status, '') = 'manual_required'
+			AND outbound_order_no = ''
+		)
 			AND (
 				outbound_order_no <> ''
 				OR COALESCE(oms_sync_status, '') <> ''
-				OR warehouse_address_code = ANY($4)
+				OR warehouse_address_code = ANY($3)
 			)
 		ORDER BY
 			CASE WHEN oms_queried_at IS NULL THEN 0 ELSE 1 END,
 			oms_queried_at ASC NULLS FIRST,
 			updated_at DESC
 		LIMIT $2
-	`, shopKey, limit, manualParcelWarehouseAddressCodes(), warehouseWatchAddressCodes())
+	`, shopKey, limit, warehouseWatchAddressCodes())
 	if err != nil {
 		return nil, fmt.Errorf("list SHEIN warehouse watch tasks: %w", err)
 	}

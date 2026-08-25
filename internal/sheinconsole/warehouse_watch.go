@@ -22,6 +22,13 @@ func isExpiredTrackingPackageError(err error) bool {
 	return errors.As(err, &apiErr) && strings.TrimSpace(apiErr.Code) == expiredTrackingPackageSHEINErrorCode
 }
 
+// taskNeedsManualResolution is terminal for automated warehouse handling.
+// A human may close it locally after deciding how to resolve the order.
+func taskNeedsManualResolution(task shein.FulfillmentTask) bool {
+	return strings.TrimSpace(task.OMSSyncStatus) == "manual_required" &&
+		strings.TrimSpace(task.OutboundOrderNo) == ""
+}
+
 func (s *Server) startWarehouseWatch() {
 	if s.xlwms == nil || s.store == nil {
 		return
@@ -92,7 +99,7 @@ func (s *Server) recordParcelWatch(ctx context.Context, shopKey, orderNo, wareho
 		OMSSyncStatus:      firstNonEmpty(task.OMSSyncStatus, "waiting_sync"),
 		OMSSyncMessage:     firstNonEmpty(task.OMSSyncMessage, "领星出库单已创建，等待仓库状态"),
 	}
-	if err := s.store.SaveParcelWatch(ctx, shopKey, orderNo, update); err != nil {
+	if err := s.store.SaveParcelWatch(ctx, shopKey, task, update); err != nil {
 		return err
 	}
 	if err := s.store.EnsureWarehouseLedgerJob(ctx, shopKey, orderNo, task.WarehouseAddressCode, task.ExpressChannelCode, task.PlaceRequestID, task.DeliveryNo); err != nil {
@@ -103,6 +110,9 @@ func (s *Server) recordParcelWatch(ctx context.Context, shopKey, orderNo, wareho
 }
 
 func (s *Server) refreshWarehouseWatch(ctx context.Context, task shein.FulfillmentTask) (shein.FulfillmentTask, error) {
+	if taskNeedsManualResolution(task) {
+		return task, nil
+	}
 	purchase, purchaseWarehouse := s.purchasedWarehouseForTask(ctx, task)
 	dpsWarehouse := ""
 	if purchaseWarehouse.Account == "dps" {
@@ -144,7 +154,7 @@ func (s *Server) refreshWarehouseWatch(ctx context.Context, task shein.Fulfillme
 	if parcelErr != nil && strings.TrimSpace(task.OutboundOrderNo) == "" && !shein.RequiresManualParcelCreate(s.shopKey, task.WarehouseAddressCode, warehouse) {
 		if decision, ok := sheinPlatformAlreadyFulfilledDecision(s.sheinPlatformFulfillmentStatus(ctx, s.shopKey, task.OrderNo)); ok {
 			applySHEINOMSDecision(&update, decision)
-			if err := s.store.SaveParcelWatch(ctx, s.shopKey, task.OrderNo, update); err != nil {
+			if err := s.store.SaveParcelWatch(ctx, s.shopKey, task, update); err != nil {
 				return task, err
 			}
 			_ = s.store.EnsureWarehouseLedgerJob(ctx, s.shopKey, task.OrderNo, task.WarehouseAddressCode, task.ExpressChannelCode, task.PlaceRequestID, task.DeliveryNo)
@@ -152,13 +162,13 @@ func (s *Server) refreshWarehouseWatch(ctx context.Context, task shein.Fulfillme
 		}
 		update.OMSSyncStatus = "failed"
 		update.OMSSyncMessage = parcelErr.Error()
-		_ = s.store.SaveParcelWatch(ctx, s.shopKey, task.OrderNo, update)
+		_ = s.store.SaveParcelWatch(ctx, s.shopKey, task, update)
 		return task, parcelErr
 	}
 	platformStatus := s.sheinPlatformFulfillmentStatus(ctx, s.shopKey, task.OrderNo)
 	if decision, ok := sheinPlatformAlreadyFulfilledDecision(platformStatus); ok {
 		applySHEINOMSDecision(&update, decision)
-		if err := s.store.SaveParcelWatch(ctx, s.shopKey, task.OrderNo, update); err != nil {
+		if err := s.store.SaveParcelWatch(ctx, s.shopKey, task, update); err != nil {
 			return task, err
 		}
 		_ = s.store.EnsureWarehouseLedgerJob(ctx, s.shopKey, task.OrderNo, task.WarehouseAddressCode, task.ExpressChannelCode, task.PlaceRequestID, task.DeliveryNo)
@@ -167,7 +177,7 @@ func (s *Server) refreshWarehouseWatch(ctx context.Context, task shein.Fulfillme
 	if s.xlwms == nil {
 		update.OMSSyncStatus = "failed"
 		update.OMSSyncMessage = "领星查询服务未配置"
-		_ = s.store.SaveParcelWatch(ctx, s.shopKey, task.OrderNo, update)
+		_ = s.store.SaveParcelWatch(ctx, s.shopKey, task, update)
 		return task, errors.New(update.OMSSyncMessage)
 	}
 	preferredAccount := firstNonEmpty(purchaseWarehouse.Account, update.OMSAccount, shein.OMSAccountForWarehouse(task.WarehouseAddressCode, warehouse), "dps")
@@ -175,19 +185,19 @@ func (s *Server) refreshWarehouseWatch(ctx context.Context, task shein.Fulfillme
 	if err != nil {
 		update.OMSSyncStatus = "failed"
 		update.OMSSyncMessage = err.Error()
-		_ = s.store.SaveParcelWatch(ctx, s.shopKey, task.OrderNo, update)
+		_ = s.store.SaveParcelWatch(ctx, s.shopKey, task, update)
 		return task, err
 	}
 	arpLookup, err := s.xlwms.QueryPlatformOrder(ctx, "arp", task.OrderNo)
 	if err != nil {
 		update.OMSSyncStatus = "failed"
 		update.OMSSyncMessage = err.Error()
-		_ = s.store.SaveParcelWatch(ctx, s.shopKey, task.OrderNo, update)
+		_ = s.store.SaveParcelWatch(ctx, s.shopKey, task, update)
 		return task, err
 	}
 	expected, opposite, account := chooseOMSLookups(preferredAccount, dpsLookup, arpLookup)
 	if applyLingxingParcelWarehouseDecision(&update, parcel) && !omsLookupHasFulfillingOrders(opposite) {
-		if err := s.store.SaveParcelWatch(ctx, s.shopKey, task.OrderNo, update); err != nil {
+		if err := s.store.SaveParcelWatch(ctx, s.shopKey, task, update); err != nil {
 			return task, err
 		}
 		_ = s.store.EnsureWarehouseLedgerJob(ctx, s.shopKey, task.OrderNo, task.WarehouseAddressCode, task.ExpressChannelCode, task.PlaceRequestID, task.DeliveryNo)
@@ -204,10 +214,10 @@ func (s *Server) refreshWarehouseWatch(ctx context.Context, task shein.Fulfillme
 			if isExpiredTrackingPackageError(createErr) {
 				update.OMSSyncStatus = "manual_required"
 				update.OMSSyncMessage = expiredTrackingPackageMessage
-				if err := s.store.SaveParcelWatch(ctx, s.shopKey, task.OrderNo, update); err != nil {
+				if err := s.store.SaveParcelWatch(ctx, s.shopKey, task, update); err != nil {
 					return task, err
 				}
-				if err := s.store.MarkFulfillmentTaskUnprintable(ctx, s.shopKey, task.OrderNo, expiredTrackingPackageMessage); err != nil {
+				if err := s.store.MarkFulfillmentTaskUnprintable(ctx, s.shopKey, task, expiredTrackingPackageMessage); err != nil {
 					return task, err
 				}
 				_ = s.store.EnsureWarehouseLedgerJob(ctx, s.shopKey, task.OrderNo, task.WarehouseAddressCode, task.ExpressChannelCode, task.PlaceRequestID, task.DeliveryNo)
@@ -215,7 +225,7 @@ func (s *Server) refreshWarehouseWatch(ctx context.Context, task shein.Fulfillme
 			}
 			update.OMSSyncStatus = "waiting_sync"
 			update.OMSSyncMessage = "DPS 自动建单失败，等待重试：" + createErr.Error()
-			if err := s.store.SaveParcelWatch(ctx, s.shopKey, task.OrderNo, update); err != nil {
+			if err := s.store.SaveParcelWatch(ctx, s.shopKey, task, update); err != nil {
 				return task, err
 			}
 			_ = s.store.EnsureWarehouseLedgerJob(ctx, s.shopKey, task.OrderNo, task.WarehouseAddressCode, task.ExpressChannelCode, task.PlaceRequestID, task.DeliveryNo)
@@ -231,7 +241,7 @@ func (s *Server) refreshWarehouseWatch(ctx context.Context, task shein.Fulfillme
 			warehouse = firstNonEmpty(dpsWarehouse, warehouse)
 		}
 		if applyLingxingParcelWarehouseDecision(&update, parcel) {
-			if err := s.store.SaveParcelWatch(ctx, s.shopKey, task.OrderNo, update); err != nil {
+			if err := s.store.SaveParcelWatch(ctx, s.shopKey, task, update); err != nil {
 				return task, err
 			}
 			_ = s.store.EnsureWarehouseLedgerJob(ctx, s.shopKey, task.OrderNo, task.WarehouseAddressCode, task.ExpressChannelCode, task.PlaceRequestID, task.DeliveryNo)
@@ -239,7 +249,7 @@ func (s *Server) refreshWarehouseWatch(ctx context.Context, task shein.Fulfillme
 		}
 		update.OMSSyncStatus = "waiting_sync"
 		update.OMSSyncMessage = "等待 DPS 自动建领星出库单"
-		if err := s.store.SaveParcelWatch(ctx, s.shopKey, task.OrderNo, update); err != nil {
+		if err := s.store.SaveParcelWatch(ctx, s.shopKey, task, update); err != nil {
 			return task, err
 		}
 		_ = s.store.EnsureWarehouseLedgerJob(ctx, s.shopKey, task.OrderNo, task.WarehouseAddressCode, task.ExpressChannelCode, task.PlaceRequestID, task.DeliveryNo)
@@ -274,7 +284,7 @@ func (s *Server) refreshWarehouseWatch(ctx context.Context, task shein.Fulfillme
 		update.OMSAccount = firstNonEmpty(decision.Account, purchaseWarehouse.Account, expected.Account, account)
 		update.OMSWarehouseCode = firstNonEmpty(purchaseWarehouse.OMSCode, decision.Target.SendWarehouseCode, update.OMSWarehouseCode)
 	}
-	if err := s.store.SaveParcelWatch(ctx, s.shopKey, task.OrderNo, update); err != nil {
+	if err := s.store.SaveParcelWatch(ctx, s.shopKey, task, update); err != nil {
 		return task, err
 	}
 	_ = s.store.EnsureWarehouseLedgerJob(ctx, s.shopKey, task.OrderNo, task.WarehouseAddressCode, task.ExpressChannelCode, task.PlaceRequestID, task.DeliveryNo)

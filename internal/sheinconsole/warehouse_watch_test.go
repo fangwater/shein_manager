@@ -22,6 +22,18 @@ func TestExpiredTrackingPackageErrorIsNotRetryable(t *testing.T) {
 	}
 }
 
+func TestTaskNeedsManualResolutionSkipsWarehouseWatch(t *testing.T) {
+	if !taskNeedsManualResolution(shein.FulfillmentTask{OMSSyncStatus: "manual_required"}) {
+		t.Fatal("unassigned manual-required task must not be watched automatically")
+	}
+	if taskNeedsManualResolution(shein.FulfillmentTask{OMSSyncStatus: "manual_required", OutboundOrderNo: "OBS-1"}) {
+		t.Fatal("task with an outbound order must remain available for warehouse status updates")
+	}
+	if taskNeedsManualResolution(shein.FulfillmentTask{OMSSyncStatus: "waiting_sync"}) {
+		t.Fatal("waiting task must remain available for warehouse status updates")
+	}
+}
+
 func TestApplyLingxingParcelWarehouseDecisionUsesOutboundStatus(t *testing.T) {
 	status := 2
 	update := shein.ParcelWatchUpdate{}

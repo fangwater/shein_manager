@@ -333,7 +333,8 @@ func (s *Store) PurchasedLabelEvidenceByOrderNos(ctx context.Context, shopKey st
 		SELECT DISTINCT ON (upper(order_no)) order_no,
 			selected_warehouse_address_code, delivery_no, purchased_at
 		FROM shein_label_purchase_choices
-		WHERE shop_key = $1 AND upper(order_no) = ANY($2) AND delivery_no <> ''
+		WHERE shop_key = $1 AND upper(order_no) = ANY($2)
+			AND delivery_no <> '' AND rejected_at IS NULL
 		ORDER BY upper(order_no), purchased_at DESC
 	`, shopKey, normalized)
 	if err != nil {
@@ -374,7 +375,7 @@ func (s *Store) LatestLabelPurchase(ctx context.Context, shopKey, orderNo string
 			COALESCE(selected_performance_cost::text, ''), COALESCE(selected_currency_code, ''),
 			COALESCE(delivery_no, '')
 		FROM shein_label_purchase_choices
-		WHERE shop_key = $1 AND order_no = $2
+		WHERE shop_key = $1 AND order_no = $2 AND rejected_at IS NULL
 		ORDER BY purchased_at DESC
 		LIMIT 1
 	`, shopKey, orderNo).Scan(

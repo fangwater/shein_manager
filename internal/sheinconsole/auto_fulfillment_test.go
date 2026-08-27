@@ -2,6 +2,7 @@ package sheinconsole
 
 import (
 	"encoding/json"
+	"errors"
 	"testing"
 
 	"shein-api-manager/internal/shein"
@@ -222,6 +223,36 @@ func TestSelectAutomaticQuotedChannelPrefersARPWhenPricesTie(t *testing.T) {
 	}
 	if reason != "选择最低运费 GOFO / ARP_EAST" {
 		t.Fatalf("unexpected selection reason: %q", reason)
+	}
+}
+
+func TestCarrierCoverageReasonRecognizesGOFOPostalCodeRejection(t *testing.T) {
+	reason := "Please check whether the package delivery information is correct. Error reason: This ZIP code is not supported by GOFO delivery service."
+	if !carrierCoverageReason(reason, "GOFO-D2D250718-Na") {
+		t.Fatal("GOFO ZIP coverage rejection must trigger a carrier fallback")
+	}
+	if carrierCoverageReason("The ZIP code is invalid", "GOFO-D2D250718-Na") {
+		t.Fatal("an invalid address must not be treated as a carrier-specific coverage failure")
+	}
+}
+
+func TestCarrierCoverageErrorFromPreservesReasonAndCarrier(t *testing.T) {
+	reason := "This postal code is not supported by GOFO delivery service"
+	err := carrierCoverageErrorFrom(&shein.APIError{Code: "400", Message: reason}, "GOFO-D2D250718-Na")
+	if err == nil {
+		t.Fatal("expected a recoverable carrier coverage error")
+	}
+	if err.Carrier != "GOFO" || err.Reason != reason {
+		t.Fatalf("unexpected coverage error: %#v", err)
+	}
+	if got := carrierCoverageErrorFrom(errors.New(reason), "GOFO-D2D250718-Na"); got != nil {
+		t.Fatal("local workflow errors must not be mistaken for a SHEIN carrier rejection")
+	}
+}
+
+func TestAutomaticCarrierKeyUsesCarrierFamily(t *testing.T) {
+	if got := automaticCarrierKey("GOFO-D2D250718-Na"); got != "GOFO" {
+		t.Fatalf("automaticCarrierKey = %q, want GOFO", got)
 	}
 }
 

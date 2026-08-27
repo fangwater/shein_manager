@@ -38,6 +38,15 @@ type quotedChannel struct {
 	Priority  int
 }
 
+type carrierCoverageError struct {
+	Carrier string
+	Reason  string
+}
+
+func (err *carrierCoverageError) Error() string {
+	return err.Reason
+}
+
 func (s *Server) startAutoWorkers() {
 	for index := 0; index < autoWorkerCount; index++ {
 		go func() {
@@ -520,7 +529,26 @@ func (s *Server) executeAutoFulfillment(ctx context.Context, ref autoQueueRef) e
 	}
 	client := shein.NewClient(credentials, s.requestTimeout)
 	if job.PlaceRequestID != "" || job.DeliveryNo != "" {
-		return s.finishAutomaticOrder(ctx, client, ref, job)
+		err := s.finishAutomaticOrder(ctx, client, ref, job)
+		if err == nil {
+			return nil
+		}
+		var coverageErr *carrierCoverageError
+		if !errors.As(err, &coverageErr) {
+			return err
+		}
+		if err := s.store.RejectAutoJobCarrier(ctx, ref.ShopKey, ref.OrderNo, coverageErr.Carrier, coverageErr.Reason); err != nil {
+			return err
+		}
+		job.PlaceRequestID, job.DeliveryNo = "", ""
+	}
+	rejectedCarriers, err := s.store.RejectedAutoJobCarriers(ctx, ref.ShopKey, ref.OrderNo)
+	if err != nil {
+		return err
+	}
+	rejected := make(map[string]bool, len(rejectedCarriers))
+	for _, carrier := range rejectedCarriers {
+		rejected[strings.ToUpper(strings.TrimSpace(carrier))] = true
 	}
 
 	if err := s.refreshSingleOrder(ctx, client, ref.ShopKey, ref.OrderNo); err != nil {
@@ -600,25 +628,113 @@ func (s *Server) executeAutoFulfillment(ctx context.Context, ref autoQueueRef) e
 	if len(warehouses) == 0 {
 		return errors.New("SHEIN 可用发货仓均未通过领星实时库存校验")
 	}
-	if err := s.setAutomaticStep(ctx, ref, "quote_channels"); err != nil {
-		return err
-	}
 	policyGroups, err := s.store.ListMergedCarrierPolicies(ctx, ref.ShopKey)
 	if err != nil {
 		return err
 	}
 	policiesByWarehouse := shein.PoliciesByWarehouse(policyGroups)
+	for {
+		if err := s.setAutomaticStep(ctx, ref, "quote_channels"); err != nil {
+			return err
+		}
+		quotes, err := s.automaticShippingQuotes(ctx, client, ref, *order, warehouses, policiesByWarehouse, rejected)
+		if err != nil {
+			return err
+		}
+		selected, reason, err := selectAutomaticQuotedChannel(quotes)
+		if err != nil {
+			if len(rejected) > 0 {
+				return fmt.Errorf("%w；已自动排除不覆盖目的邮编的承运商：%s", err, joinedCarrierKeys(rejected))
+			}
+			return err
+		}
+		if len(rejected) > 0 {
+			reason += "；已排除邮编不覆盖承运商 " + joinedCarrierKeys(rejected)
+		}
+		if err := s.store.SetAutoJobSelection(ctx, ref.ShopKey, ref.OrderNo, order.SheinSKU, order.WarehouseSKU,
+			selected.Quote.WarehouseAddressCode, selected.Quote.PreRequestID,
+			selected.Candidate.ExpressChannelCode, selected.Candidate.PerformanceCost, selected.Candidate.CurrencyCode); err != nil {
+			return err
+		}
+		job.WarehouseAddressCode = selected.Quote.WarehouseAddressCode
+		job.PreRequestID = selected.Quote.PreRequestID
+		job.ExpressChannelCode = selected.Candidate.ExpressChannelCode
+		job.PerformanceCost = selected.Candidate.PerformanceCost
+		job.CurrencyCode = selected.Candidate.CurrencyCode
+		if err := s.setAutomaticStep(ctx, ref, "place_order"); err != nil {
+			return err
+		}
+		placeData := map[string]any{
+			"expressChannelCode": selected.Candidate.ExpressChannelCode,
+			"preRequestId":       selected.Quote.PreRequestID,
+			"packageInfoList": []any{map[string]any{
+				"orderNo": ref.OrderNo, "goodsIds": goodsIDsFromQueue(order.Goods),
+			}},
+		}
+		placeKey := "shein-auto-place-" + hashRequest(placeData)[:32]
+		recorded, err := s.store.ReserveLabelPurchaseSelection(
+			ctx, ref.ShopKey, selected.Quote.PreRequestID, selected.Candidate.ExpressChannelCode,
+			placeKey, "automatic", reason,
+		)
+		if err != nil {
+			return err
+		}
+		if !recorded {
+			return errors.New("无法保存自动购单价格快照")
+		}
+		placeResult, err := s.callAutomaticOperation(ctx, client, ref.ShopKey, "place-express-order", placeData, placeKey)
+		if err != nil {
+			if coverageErr := carrierCoverageErrorFrom(err, job.ExpressChannelCode); coverageErr != nil {
+				if err := s.rejectAutomaticCarrier(ctx, ref, rejected, coverageErr); err != nil {
+					return err
+				}
+				continue
+			}
+			return err
+		}
+		s.persistFulfillmentState(ref.ShopKey, "place-express-order", placeData, placeResult)
+		info := firstObject(placeResult["info"])
+		placeRequestID := firstString(info, "placeRequestId")
+		deliveryNo := firstString(info, "deliveryNo")
+		if placeRequestID == "" && deliveryNo == "" {
+			return errors.New("在线下单响应缺少履约编号")
+		}
+		if err := s.store.SetAutoJobResult(ctx, ref.ShopKey, ref.OrderNo, placeRequestID, deliveryNo); err != nil {
+			return err
+		}
+		if err := s.store.UpdateLabelPurchaseResult(ctx, ref.ShopKey, selected.Quote.PreRequestID, placeRequestID, deliveryNo); err != nil {
+			return err
+		}
+		job.PlaceRequestID, job.DeliveryNo = placeRequestID, deliveryNo
+		if err := s.finishAutomaticOrder(ctx, client, ref, job); err != nil {
+			var coverageErr *carrierCoverageError
+			if !errors.As(err, &coverageErr) {
+				return err
+			}
+			if err := s.rejectAutomaticCarrier(ctx, ref, rejected, coverageErr); err != nil {
+				return err
+			}
+			job.PlaceRequestID, job.DeliveryNo = "", ""
+			continue
+		}
+		return nil
+	}
+}
+
+func (s *Server) automaticShippingQuotes(ctx context.Context, client *shein.Client, ref autoQueueRef,
+	order shein.OrderQueueItem, warehouses []map[string]any, policiesByWarehouse map[string][]shein.CarrierPolicy,
+	rejected map[string]bool) ([]quotedChannel, error) {
 	quotes := make([]quotedChannel, 0)
 	for _, warehouse := range warehouses {
 		warehouseCode := scalarString(warehouse, "warehouseAddressCode", "warehouseCode")
 		warehouseName := scalarString(warehouse, "warehouseName", "warehouseAddressName", "warehouseDesc")
 		data, err := channelRequest(ref.OrderNo, warehouseCode, warehouseName, *order.PackageSpec, order.Goods, shein.IsCODOrder(order.Detail))
 		if err != nil {
-			return err
+			return nil, err
 		}
 		result, err := client.Call(ctx, "order-mapping-channels", data)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		policies := policiesByWarehouse[shein.PolicyWarehouseKey(warehouseCode, warehouseName)]
 		shein.ApplyCarrierPoliciesToChannels(result, warehouseCode, warehouseName, policies)
@@ -627,70 +743,32 @@ func (s *Server) executeAutoFulfillment(ctx context.Context, ref autoQueueRef) e
 			continue
 		}
 		if err := s.store.SaveShippingQuote(ctx, ref.ShopKey, quote); err != nil {
-			return err
+			return nil, err
 		}
 		for _, candidate := range quote.Candidates {
-			if candidate.PerformanceCost == "" {
+			carrier := automaticCarrierKey(candidate.ExpressChannelCode, candidate.ExpressIDCode, candidate.ExpressShortName)
+			if candidate.PerformanceCost == "" || rejected[carrier] {
 				continue
 			}
 			quotes = append(quotes, quotedChannel{
 				Quote:     quote,
 				Candidate: candidate,
-				Priority: shein.ConfiguredCarrierPriority(
-					policies, shein.CarrierCode(candidate.ExpressChannelCode, candidate.ExpressIDCode, candidate.ExpressShortName),
-				),
+				Priority:  shein.ConfiguredCarrierPriority(policies, carrier),
 			})
 		}
 	}
-	selected, reason, err := selectAutomaticQuotedChannel(quotes)
-	if err != nil {
+	return quotes, nil
+}
+
+func (s *Server) rejectAutomaticCarrier(ctx context.Context, ref autoQueueRef, rejected map[string]bool,
+	err *carrierCoverageError) error {
+	if err := s.store.RejectAutoJobCarrier(ctx, ref.ShopKey, ref.OrderNo, err.Carrier, err.Reason); err != nil {
 		return err
 	}
-	if err := s.store.SetAutoJobSelection(ctx, ref.ShopKey, ref.OrderNo, order.SheinSKU, order.WarehouseSKU,
-		selected.Quote.WarehouseAddressCode, selected.Quote.PreRequestID,
-		selected.Candidate.ExpressChannelCode, selected.Candidate.PerformanceCost, selected.Candidate.CurrencyCode); err != nil {
-		return err
-	}
-	if err := s.setAutomaticStep(ctx, ref, "place_order"); err != nil {
-		return err
-	}
-	placeData := map[string]any{
-		"expressChannelCode": selected.Candidate.ExpressChannelCode,
-		"preRequestId":       selected.Quote.PreRequestID,
-		"packageInfoList": []any{map[string]any{
-			"orderNo": ref.OrderNo, "goodsIds": goodsIDsFromQueue(order.Goods),
-		}},
-	}
-	placeKey := "shein-auto-place-" + hashRequest(placeData)[:32]
-	recorded, err := s.store.ReserveLabelPurchaseSelection(
-		ctx, ref.ShopKey, selected.Quote.PreRequestID, selected.Candidate.ExpressChannelCode,
-		placeKey, "automatic", reason,
-	)
-	if err != nil {
-		return err
-	}
-	if !recorded {
-		return errors.New("无法保存自动购单价格快照")
-	}
-	placeResult, err := s.callAutomaticOperation(ctx, client, ref.ShopKey, "place-express-order", placeData, placeKey)
-	if err != nil {
-		return err
-	}
-	s.persistFulfillmentState(ref.ShopKey, "place-express-order", placeData, placeResult)
-	info := firstObject(placeResult["info"])
-	placeRequestID := firstString(info, "placeRequestId")
-	deliveryNo := firstString(info, "deliveryNo")
-	if placeRequestID == "" && deliveryNo == "" {
-		return errors.New("在线下单响应缺少履约编号")
-	}
-	if err := s.store.SetAutoJobResult(ctx, ref.ShopKey, ref.OrderNo, placeRequestID, deliveryNo); err != nil {
-		return err
-	}
-	if err := s.store.UpdateLabelPurchaseResult(ctx, ref.ShopKey, selected.Quote.PreRequestID, placeRequestID, deliveryNo); err != nil {
-		return err
-	}
-	job.PlaceRequestID, job.DeliveryNo = placeRequestID, deliveryNo
-	return s.finishAutomaticOrder(ctx, client, ref, job)
+	rejected[err.Carrier] = true
+	s.logger.Info("SHEIN carrier does not cover destination postal code; trying fallback",
+		"shop", ref.ShopKey, "order", ref.OrderNo, "carrier", err.Carrier)
+	return nil
 }
 
 func (s *Server) refreshSingleOrder(ctx context.Context, client *shein.Client, shopKey, orderNo string) error {
@@ -751,7 +829,17 @@ func (s *Server) finishAutomaticOrder(ctx context.Context, client *shein.Client,
 			}
 		}
 		if check.Status == "failed" {
-			return errors.New("SHEIN 拒绝物流下单")
+			reason := strings.TrimSpace(check.FailureReason)
+			if reason == "" {
+				reason = "SHEIN 拒绝物流下单"
+			}
+			if carrierCoverageReason(reason, job.ExpressChannelCode) {
+				return &carrierCoverageError{
+					Carrier: automaticCarrierKey(job.ExpressChannelCode),
+					Reason:  reason,
+				}
+			}
+			return errors.New(reason)
 		}
 		if check.Status == "ready" || check.Status == "label_ready" {
 			break
@@ -1116,6 +1204,59 @@ func selectAutomaticQuotedChannel(quotes []quotedChannel) (quotedChannel, string
 	}
 	reason := fmt.Sprintf("选择最低运费 %s / %s", carrier, warehouseKey)
 	return choice, reason, nil
+}
+
+func automaticCarrierKey(values ...string) string {
+	if carrier := shein.CarrierCode(values...); carrier != "" {
+		return carrier
+	}
+	for _, value := range values {
+		if value = strings.ToUpper(strings.TrimSpace(value)); value != "" {
+			return value
+		}
+	}
+	return "UNKNOWN"
+}
+
+func joinedCarrierKeys(carriers map[string]bool) string {
+	items := make([]string, 0, len(carriers))
+	for carrier, rejected := range carriers {
+		if rejected {
+			items = append(items, carrier)
+		}
+	}
+	sort.Strings(items)
+	return strings.Join(items, "、")
+}
+
+func carrierCoverageErrorFrom(err error, channelCode string) *carrierCoverageError {
+	var apiErr *shein.APIError
+	if !errors.As(err, &apiErr) || !carrierCoverageReason(apiErr.Message, channelCode) {
+		return nil
+	}
+	return &carrierCoverageError{
+		Carrier: automaticCarrierKey(channelCode),
+		Reason:  strings.TrimSpace(apiErr.Message),
+	}
+}
+
+func carrierCoverageReason(reason, channelCode string) bool {
+	text := strings.ToLower(strings.TrimSpace(reason))
+	if text == "" {
+		return false
+	}
+	mentionsPostalCode := strings.Contains(text, "zip") || strings.Contains(text, "postal") ||
+		strings.Contains(text, "邮编") || strings.Contains(text, "邮政编码")
+	serviceUnavailable := strings.Contains(text, "not supported") || strings.Contains(text, "unsupported") ||
+		strings.Contains(text, "does not support") || strings.Contains(text, "cannot deliver") ||
+		strings.Contains(text, "service area") || strings.Contains(text, "不支持") ||
+		strings.Contains(text, "无法配送") || strings.Contains(text, "服务范围")
+	if !mentionsPostalCode || !serviceUnavailable {
+		return false
+	}
+	carrier := strings.ToLower(automaticCarrierKey(channelCode))
+	return strings.Contains(text, carrier) || strings.Contains(text, "delivery service") ||
+		strings.Contains(text, "承运商") || strings.Contains(text, "物流服务")
 }
 
 func betterQuotedChannel(left, right quotedChannel) bool {

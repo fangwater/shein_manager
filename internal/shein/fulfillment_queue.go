@@ -753,6 +753,81 @@ func (s *Store) SetAutoJobResult(ctx context.Context, shopKey, orderNo, placeReq
 	return nil
 }
 
+func (s *Store) RejectedAutoJobCarriers(ctx context.Context, shopKey, orderNo string) ([]string, error) {
+	var carriers []string
+	err := s.pool.QueryRow(ctx, `
+		SELECT rejected_carriers
+		FROM shein_go_auto_fulfillment_jobs
+		WHERE shop_key = $1 AND order_no = $2
+	`, shopKey, orderNo).Scan(&carriers)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, errors.New("SHEIN auto fulfillment job not found")
+	}
+	if err != nil {
+		return nil, fmt.Errorf("load rejected SHEIN carriers: %w", err)
+	}
+	return carriers, nil
+}
+
+func (s *Store) RejectAutoJobCarrier(ctx context.Context, shopKey, orderNo, carrier, reason string) error {
+	carrier = strings.ToUpper(strings.TrimSpace(carrier))
+	if carrier == "" {
+		return errors.New("rejected carrier is required")
+	}
+	reason = strings.TrimSpace(reason)
+	if len(reason) > 500 {
+		reason = reason[:500]
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin SHEIN carrier fallback: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	var preRequestID string
+	err = tx.QueryRow(ctx, `
+		SELECT pre_request_id
+		FROM shein_go_auto_fulfillment_jobs
+		WHERE shop_key = $1 AND order_no = $2
+		FOR UPDATE
+	`, shopKey, orderNo).Scan(&preRequestID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return errors.New("SHEIN auto fulfillment job not found")
+	}
+	if err != nil {
+		return fmt.Errorf("lock SHEIN carrier fallback: %w", err)
+	}
+	if preRequestID != "" {
+		if _, err := tx.Exec(ctx, `
+			UPDATE shein_label_purchase_choices
+			SET rejected_at = now(), rejection_reason = $3
+			WHERE shop_key = $1 AND pre_request_id = $2
+		`, shopKey, preRequestID, reason); err != nil {
+			return fmt.Errorf("mark rejected SHEIN label purchase: %w", err)
+		}
+	}
+	tag, err := tx.Exec(ctx, `
+		UPDATE shein_go_auto_fulfillment_jobs
+		SET rejected_carriers = CASE
+				WHEN $3 = ANY(rejected_carriers) THEN rejected_carriers
+				ELSE array_append(rejected_carriers, $3)
+			END,
+			warehouse_address_code = '', pre_request_id = '', express_channel_code = '',
+			performance_cost = NULL, currency_code = '', place_request_id = '', delivery_no = '',
+			current_step = 'quote_channels', updated_at = now()
+		WHERE shop_key = $1 AND order_no = $2
+	`, shopKey, orderNo, carrier)
+	if err != nil {
+		return fmt.Errorf("reject SHEIN carrier for automatic fallback: %w", err)
+	}
+	if tag.RowsAffected() != 1 {
+		return errors.New("SHEIN auto fulfillment job not found")
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit SHEIN carrier fallback: %w", err)
+	}
+	return nil
+}
+
 func (s *Store) RequeueWaitingAutoJob(ctx context.Context, shopKey, orderNo string, maxAttempts int) (bool, error) {
 	tag, err := s.pool.Exec(ctx, `
 		UPDATE shein_go_auto_fulfillment_jobs

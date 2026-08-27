@@ -206,6 +206,8 @@ func (s *Store) Migrate(ctx context.Context) error {
 		);
 		CREATE INDEX IF NOT EXISTS idx_shein_go_auto_jobs_queue
 			ON shein_go_auto_fulfillment_jobs (shop_key, status, updated_at DESC);
+		ALTER TABLE shein_go_auto_fulfillment_jobs
+			ADD COLUMN IF NOT EXISTS rejected_carriers text[] NOT NULL DEFAULT ARRAY[]::text[];
 
 		CREATE TABLE IF NOT EXISTS shein_go_order_inventory_checks (
 			shop_key text NOT NULL,
@@ -312,6 +314,10 @@ func (s *Store) Migrate(ctx context.Context) error {
 			ON shein_label_purchase_choices (shop_key, order_no, purchased_at DESC);
 		CREATE INDEX IF NOT EXISTS idx_shein_label_purchase_choices_operation
 			ON shein_label_purchase_choices (shop_key, operation_idempotency_key);
+		ALTER TABLE shein_label_purchase_choices
+			ADD COLUMN IF NOT EXISTS rejected_at timestamptz;
+		ALTER TABLE shein_label_purchase_choices
+			ADD COLUMN IF NOT EXISTS rejection_reason text NOT NULL DEFAULT '';
 
 		CREATE TABLE IF NOT EXISTS shein_label_purchase_candidates (
 			shop_key text NOT NULL,

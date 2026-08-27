@@ -72,6 +72,15 @@ preference. A disabled or non-whitelist carrier cannot be selected manually
 or automatically. ARP East defaults UNIUNI and SwiftX to disabled. `export-address` with `handleType=2` is only
 used for merchant self-ship orders that cannot buy a platform label.
 
+If SHEIN rejects a selected carrier because the destination postal code is
+outside that carrier's service area, the automatic worker records the carrier
+family as rejected, requests fresh quotes, and tries the next available
+carrier. The failed carrier is excluded across all quoted warehouses for that
+order. Other address-validation failures remain operator-visible and are not
+silently rerouted. A terminal failure is isolated to its order: bulk fulfillment
+continues through the remaining orders and finishes as `completed_with_errors`
+when one or more orders require attention.
+
 The selected shop is sent in `X-Shein-Shop` and kept in session storage. The
 shop selector displays `Beauty Hangers home` while requests use the stable
 `beauty-hangers-home` code. The

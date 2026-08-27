@@ -389,6 +389,25 @@ func TestCarrierPolicyConsoleUsesWarehousePriority(t *testing.T) {
 	}
 }
 
+func TestBulkFulfillmentConsoleShowsNonBlockingFailures(t *testing.T) {
+	index, err := webFiles.ReadFile("web/index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(index), "单个订单异常不会阻塞后续发货") {
+		t.Fatal("exception view does not explain order-level failure isolation")
+	}
+	script, err := webFiles.ReadFile("web/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, required := range []string{"completed_with_errors", "批次已处理完成", "异常 "} {
+		if !strings.Contains(string(script), required) {
+			t.Fatalf("bulk completion UI does not contain %q", required)
+		}
+	}
+}
+
 func TestInventoryThresholdConsoleIsShopScoped(t *testing.T) {
 	script, err := webFiles.ReadFile("web/app.js")
 	if err != nil {

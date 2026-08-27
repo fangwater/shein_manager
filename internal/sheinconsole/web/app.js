@@ -1477,18 +1477,23 @@ function renderBulkBatch() {
     button.innerHTML = '<svg><use href="#i-truck"/></svg>一键发货';
     return;
   }
-  const progress = batch.succeeded_orders + " / " + batch.total_orders;
+  const processed = Number(batch.succeeded_orders || 0) + Number(batch.failed_orders || 0);
+  const progress = processed + " / " + batch.total_orders;
   node.hidden = false;
   node.className = "batch-state" +
-    (batch.status === "stopped" ? " error" : batch.status === "completed" ? " good" : "");
+    (["stopped", "completed_with_errors"].includes(batch.status) ? " error" : batch.status === "completed" ? " good" : "");
   if (batch.status === "running") {
     node.textContent = "一键发货进行中 · 已完成 " + progress;
     button.disabled = true;
     button.innerHTML = '<svg><use href="#i-truck"/></svg>执行中 ' + progress;
   } else if (batch.status === "stopped") {
-    node.textContent = "批次已在首个异常处停止 · 已完成 " + progress;
+    node.textContent = "旧批次已停止 · 重试异常订单后将继续 · 已处理 " + progress;
     button.disabled = state.orders.length === 0;
     button.innerHTML = '<svg><use href="#i-truck"/></svg>新建一键发货';
+  } else if (batch.status === "completed_with_errors") {
+    node.textContent = "批次已处理完成 · 成功 " + batch.succeeded_orders + " · 异常 " + batch.failed_orders;
+    button.disabled = state.orders.length === 0;
+    button.innerHTML = '<svg><use href="#i-truck"/></svg>一键发货';
   } else {
     node.textContent = "最近批次已完成 · " + progress;
     button.disabled = state.orders.length === 0;

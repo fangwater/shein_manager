@@ -175,15 +175,15 @@ func (s *Store) FinishBulkFulfillmentItem(ctx context.Context, shopKey, orderNo,
 		return BulkFulfillmentBatch{}, false, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	var batchID string
+	var batchID, failedOrderNo, lastBatchError string
 	err = tx.QueryRow(ctx, `
-		SELECT b.id
+		SELECT b.id, b.failed_order_no, b.last_error
 		FROM shein_go_bulk_fulfillment_batches b
 		JOIN shein_go_bulk_fulfillment_items i ON i.batch_id = b.id
 		WHERE b.shop_key = $1 AND b.status = 'running'
 			AND i.order_no = $2 AND i.status = 'running'
 		ORDER BY b.created_at DESC LIMIT 1 FOR UPDATE OF b
-	`, shopKey, orderNo).Scan(&batchID)
+	`, shopKey, orderNo).Scan(&batchID, &failedOrderNo, &lastBatchError)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return BulkFulfillmentBatch{}, false, nil
 	}
@@ -206,21 +206,19 @@ func (s *Store) FinishBulkFulfillmentItem(ctx context.Context, shopKey, orderNo,
 	`, batchID).Scan(&succeeded, &failed, &remaining); err != nil {
 		return BulkFulfillmentBatch{}, false, err
 	}
-	batchStatus := "running"
-	if failed > 0 {
-		batchStatus = "stopped"
-	} else if remaining == 0 {
-		batchStatus = "completed"
+	if status == "failed" {
+		failedOrderNo = orderNo
+		lastBatchError = lastError
 	}
+	batchStatus := bulkFulfillmentBatchStatus(failed, remaining)
 	if _, err := tx.Exec(ctx, `
 		UPDATE shein_go_bulk_fulfillment_batches
 		SET status = $2, succeeded_orders = $3, failed_orders = $4,
-			failed_order_no = CASE WHEN $2 = 'stopped' THEN $5 ELSE '' END,
-			last_error = CASE WHEN $2 = 'stopped' THEN $6 ELSE '' END,
+			failed_order_no = $5, last_error = $6,
 			updated_at = now(),
-			completed_at = CASE WHEN $2 IN ('stopped', 'completed') THEN now() ELSE NULL END
+			completed_at = CASE WHEN $2 IN ('completed', 'completed_with_errors') THEN now() ELSE NULL END
 		WHERE id = $1
-	`, batchID, batchStatus, succeeded, failed, orderNo, lastError); err != nil {
+	`, batchID, batchStatus, succeeded, failed, failedOrderNo, lastBatchError); err != nil {
 		return BulkFulfillmentBatch{}, false, err
 	}
 	batch, err := scanBulkBatch(tx.QueryRow(ctx, bulkBatchSelect+` WHERE b.id = $1`, batchID))
@@ -231,6 +229,16 @@ func (s *Store) FinishBulkFulfillmentItem(ctx context.Context, shopKey, orderNo,
 		return BulkFulfillmentBatch{}, false, err
 	}
 	return batch, true, nil
+}
+
+func bulkFulfillmentBatchStatus(failed, remaining int) string {
+	if remaining > 0 {
+		return "running"
+	}
+	if failed > 0 {
+		return "completed_with_errors"
+	}
+	return "completed"
 }
 
 func (s *Store) RestartStoppedBulkItem(ctx context.Context, shopKey, orderNo string) (bool, error) {

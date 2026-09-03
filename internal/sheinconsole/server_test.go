@@ -12,9 +12,12 @@ import (
 func TestRejectDisabledCarrierPurchaseUsesWarehousePolicy(t *testing.T) {
 	policies := []shein.CarrierPolicy{{WarehouseKey: "DPS002", CarrierCode: "GOFO", Priority: 1, Enabled: false}}
 	reason := shein.ChannelUnavailableReason(
-		"GOFO-D2D250718-Na", "", "", "WH2604283535967233", "",
+		"GOFO-D2D250718-Na", "", "", "USD", "WH2604283535967233", "", false,
 		shein.PoliciesByWarehouse([]shein.WarehouseCarrierPolicies{{
-			WarehouseKey: "DPS002", Carriers: policies,
+			WarehouseKey: "DPS002", BaseRules: shein.WarehouseCarrierRules{
+				WarehouseKey: "DPS002", AllowedCarrierCodes: []string{"GOFO"}, AllowSignature: true,
+				SelectionMode: "lowest_price", WarehouseTiePriority: 1,
+			}, Carriers: policies,
 		}})["DPS002"],
 	)
 	if reason != "SHEIN 发货策略已在 DPS002 仓库禁用 GOFO" {

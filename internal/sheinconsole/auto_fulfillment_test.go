@@ -3,6 +3,7 @@ package sheinconsole
 import (
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 
 	"shein-api-manager/internal/shein"
@@ -179,16 +180,19 @@ func TestLowestQuotedChannelRejectsMixedCurrencies(t *testing.T) {
 }
 
 func TestSelectAutomaticQuotedChannelPicksLowestPrice(t *testing.T) {
+	rules := currentSheinRules("ARP_EAST")
 	quotes := []quotedChannel{
 		{
 			Quote:     shein.ShippingQuote{WarehouseAddressCode: "WH2607084039788546"},
 			Candidate: shein.ShippingQuoteCandidate{ExpressChannelCode: "SPEEDX-US", ExpressShortName: "SpeedX", PerformanceCost: "10.00", CurrencyCode: "USD"},
 			Priority:  3,
+			Rules:     rules,
 		},
 		{
 			Quote:     shein.ShippingQuote{WarehouseAddressCode: "WH2607084039788546"},
 			Candidate: shein.ShippingQuoteCandidate{ExpressChannelCode: "GOFO-D2D250718-Na", ExpressShortName: "GOFO", PerformanceCost: "10.40", CurrencyCode: "USD"},
 			Priority:  1,
+			Rules:     rules,
 		},
 	}
 	selected, reason, err := selectAutomaticQuotedChannel(quotes)
@@ -198,7 +202,7 @@ func TestSelectAutomaticQuotedChannelPicksLowestPrice(t *testing.T) {
 	if selected.Candidate.ExpressChannelCode != "SPEEDX-US" {
 		t.Fatalf("expected cheapest SPEEDX, got %#v", selected)
 	}
-	if reason != "选择最低运费 SPEEDX / ARP_EAST" {
+	if reason != "按 XLWMS ARP_EAST 基础规则选择最低运费 SPEEDX" {
 		t.Fatalf("unexpected selection reason: %q", reason)
 	}
 }
@@ -208,10 +212,12 @@ func TestSelectAutomaticQuotedChannelPrefersARPWhenPricesTie(t *testing.T) {
 		{
 			Quote:     shein.ShippingQuote{WarehouseAddressCode: "WH2604283535967233"},
 			Candidate: shein.ShippingQuoteCandidate{ExpressChannelCode: "GOFO-DPS", PerformanceCost: "10.00", CurrencyCode: "USD"},
+			Rules:     currentSheinRules("DPS002"),
 		},
 		{
 			Quote:     shein.ShippingQuote{WarehouseAddressCode: "WH2607084039788546"},
 			Candidate: shein.ShippingQuoteCandidate{ExpressChannelCode: "GOFO-ARP", PerformanceCost: "10.00", CurrencyCode: "USD"},
+			Rules:     currentSheinRules("ARP_EAST"),
 		},
 	}
 	selected, reason, err := selectAutomaticQuotedChannel(quotes)
@@ -221,9 +227,34 @@ func TestSelectAutomaticQuotedChannelPrefersARPWhenPricesTie(t *testing.T) {
 	if selected.Quote.WarehouseAddressCode != "WH2607084039788546" {
 		t.Fatalf("same price must prefer ARP, got %#v", selected)
 	}
-	if reason != "选择最低运费 GOFO / ARP_EAST" {
+	if reason != "按 XLWMS ARP_EAST 基础规则选择最低运费 GOFO" {
 		t.Fatalf("unexpected selection reason: %q", reason)
 	}
+}
+
+func TestSelectAutomaticQuotedChannelUsesConfiguredPriorityWithinDelta(t *testing.T) {
+	rules := currentSheinRules("ARP_EAST")
+	rules.SelectionMode = "carrier_priority_within_delta"
+	rules.MaxPriceDelta = 0.5
+	quotes := []quotedChannel{
+		{Quote: shein.ShippingQuote{WarehouseAddressCode: "WH2607084039788546"}, Candidate: shein.ShippingQuoteCandidate{ExpressChannelCode: "SPEEDX-US", PerformanceCost: "10.00", CurrencyCode: "USD"}, Priority: 3, Rules: rules},
+		{Quote: shein.ShippingQuote{WarehouseAddressCode: "WH2607084039788546"}, Candidate: shein.ShippingQuoteCandidate{ExpressChannelCode: "GOFO-US", PerformanceCost: "10.40", CurrencyCode: "USD"}, Priority: 1, Rules: rules},
+	}
+	selected, _, err := selectAutomaticQuotedChannel(quotes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if shein.CarrierCode(selected.Candidate.ExpressChannelCode) != "GOFO" {
+		t.Fatalf("configured priority was not applied: %#v", selected)
+	}
+}
+
+func currentSheinRules(warehouseKey string) shein.WarehouseCarrierRules {
+	tiePriority := 2
+	if strings.HasPrefix(warehouseKey, "ARP") {
+		tiePriority = 1
+	}
+	return shein.WarehouseCarrierRules{WarehouseKey: warehouseKey, SelectionMode: "lowest_price", WarehouseTiePriority: tiePriority}
 }
 
 func TestCarrierCoverageReasonRecognizesGOFOPostalCodeRejection(t *testing.T) {

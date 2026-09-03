@@ -36,6 +36,7 @@ type quotedChannel struct {
 	Quote     shein.ShippingQuote
 	Candidate shein.ShippingQuoteCandidate
 	Priority  int
+	Rules     shein.WarehouseCarrierRules
 }
 
 type carrierCoverageError struct {
@@ -722,7 +723,7 @@ func (s *Server) executeAutoFulfillment(ctx context.Context, ref autoQueueRef) e
 }
 
 func (s *Server) automaticShippingQuotes(ctx context.Context, client *shein.Client, ref autoQueueRef,
-	order shein.OrderQueueItem, warehouses []map[string]any, policiesByWarehouse map[string][]shein.CarrierPolicy,
+	order shein.OrderQueueItem, warehouses []map[string]any, policiesByWarehouse map[string]shein.WarehouseCarrierPolicies,
 	rejected map[string]bool) ([]quotedChannel, error) {
 	quotes := make([]quotedChannel, 0)
 	for _, warehouse := range warehouses {
@@ -736,8 +737,8 @@ func (s *Server) automaticShippingQuotes(ctx context.Context, client *shein.Clie
 		if err != nil {
 			return nil, err
 		}
-		policies := policiesByWarehouse[shein.PolicyWarehouseKey(warehouseCode, warehouseName)]
-		shein.ApplyCarrierPoliciesToChannels(result, warehouseCode, warehouseName, policies)
+		policyGroup := policiesByWarehouse[shein.PolicyWarehouseKey(warehouseCode, warehouseName)]
+		shein.ApplyCarrierPoliciesToChannels(result, warehouseCode, warehouseName, policyGroup)
 		quote, ok := shippingQuoteFromChannels(data, result)
 		if !ok {
 			continue
@@ -753,7 +754,8 @@ func (s *Server) automaticShippingQuotes(ctx context.Context, client *shein.Clie
 			quotes = append(quotes, quotedChannel{
 				Quote:     quote,
 				Candidate: candidate,
-				Priority:  shein.ConfiguredCarrierPriority(policies, carrier),
+				Priority:  shein.ConfiguredCarrierPriority(policyGroup.Carriers, carrier),
+				Rules:     policyGroup.BaseRules,
 			})
 		}
 	}
@@ -1190,10 +1192,35 @@ func selectAutomaticQuotedChannel(quotes []quotedChannel) (quotedChannel, string
 	sort.SliceStable(items, func(left, right int) bool {
 		return betterQuotedChannel(items[left], items[right])
 	})
-	if _, err := strconv.ParseFloat(items[0].Candidate.PerformanceCost, 64); err != nil {
+	minimum, err := strconv.ParseFloat(items[0].Candidate.PerformanceCost, 64)
+	if err != nil {
 		return quotedChannel{}, "", errors.New("物流报价缺少可比较价格")
 	}
-	choice := items[0]
+	withinRange := make([]quotedChannel, 0, len(items))
+	for _, item := range items {
+		amount, parseErr := strconv.ParseFloat(item.Candidate.PerformanceCost, 64)
+		if parseErr != nil {
+			continue
+		}
+		delta := item.Rules.MaxPriceDelta
+		if item.Rules.SelectionMode != "carrier_priority_within_delta" {
+			delta = 0
+		}
+		if amount <= minimum+delta+0.000001 {
+			withinRange = append(withinRange, item)
+		}
+	}
+	if len(withinRange) == 0 {
+		return quotedChannel{}, "", errors.New("物流报价缺少可比较价格")
+	}
+	sort.SliceStable(withinRange, func(left, right int) bool {
+		leftItem, rightItem := withinRange[left], withinRange[right]
+		if leftItem.Rules.SelectionMode == "carrier_priority_within_delta" && rightItem.Rules.SelectionMode == "carrier_priority_within_delta" && leftItem.Priority != rightItem.Priority {
+			return leftItem.Priority < rightItem.Priority
+		}
+		return betterQuotedChannel(leftItem, rightItem)
+	})
+	choice := withinRange[0]
 	carrier := shein.CarrierCode(choice.Candidate.ExpressChannelCode, choice.Candidate.ExpressIDCode, choice.Candidate.ExpressShortName)
 	warehouseKey := shein.PolicyWarehouseKey(choice.Quote.WarehouseAddressCode, "")
 	if warehouseKey == "" {
@@ -1202,7 +1229,10 @@ func selectAutomaticQuotedChannel(quotes []quotedChannel) (quotedChannel, string
 	if carrier == "" {
 		carrier = choice.Candidate.ExpressChannelCode
 	}
-	reason := fmt.Sprintf("选择最低运费 %s / %s", carrier, warehouseKey)
+	reason := fmt.Sprintf("按 XLWMS %s 基础规则选择最低运费 %s", warehouseKey, carrier)
+	if choice.Rules.SelectionMode == "carrier_priority_within_delta" {
+		reason = fmt.Sprintf("%s 是 %s 的第 %d 优先快递，运费距最低价不超过 %.2f", carrier, warehouseKey, choice.Priority, choice.Rules.MaxPriceDelta)
+	}
 	return choice, reason, nil
 }
 
@@ -1270,6 +1300,9 @@ func betterQuotedChannel(left, right quotedChannel) bool {
 	}
 	if leftCost != rightCost {
 		return leftCost < rightCost
+	}
+	if left.Rules.WarehouseTiePriority != right.Rules.WarehouseTiePriority {
+		return left.Rules.WarehouseTiePriority < right.Rules.WarehouseTiePriority
 	}
 	leftARP := shein.IsARPPolicyWarehouse(shein.PolicyWarehouseKey(left.Quote.WarehouseAddressCode, ""))
 	rightARP := shein.IsARPPolicyWarehouse(shein.PolicyWarehouseKey(right.Quote.WarehouseAddressCode, ""))

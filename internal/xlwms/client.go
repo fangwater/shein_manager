@@ -74,12 +74,23 @@ type CarrierPolicy struct {
 	Enabled      bool   `json:"enabled"`
 }
 
+type WarehouseCarrierRules struct {
+	WarehouseKey         string   `json:"warehouse_key"`
+	AllowedCarrierCodes  []string `json:"allowed_carrier_codes"`
+	AllowSignature       bool     `json:"allow_signature"`
+	AllowedCurrencyCodes []string `json:"allowed_currency_codes"`
+	SelectionMode        string   `json:"selection_mode"`
+	MaxPriceDelta        float64  `json:"max_price_delta"`
+	WarehouseTiePriority int      `json:"warehouse_tie_priority"`
+}
+
 type WarehouseCarrierPolicies struct {
-	WarehouseKey string          `json:"warehouse_key"`
-	WarehouseSKU string          `json:"warehouse_sku,omitempty"`
-	Customized   bool            `json:"customized"`
-	Source       string          `json:"source"`
-	Carriers     []CarrierPolicy `json:"carriers"`
+	WarehouseKey string                `json:"warehouse_key"`
+	WarehouseSKU string                `json:"warehouse_sku,omitempty"`
+	Customized   bool                  `json:"customized"`
+	Source       string                `json:"source"`
+	BaseRules    WarehouseCarrierRules `json:"base_rules"`
+	Carriers     []CarrierPolicy       `json:"carriers"`
 }
 
 func (client *Client) CarrierPolicies(ctx context.Context, platform, warehouseSKU string) ([]WarehouseCarrierPolicies, error) {

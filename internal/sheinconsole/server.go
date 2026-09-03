@@ -413,7 +413,16 @@ func (s *Server) carrierPolicies(ctx context.Context, warehouseSKU string) ([]sh
 		for _, policy := range group.Carriers {
 			carriers = append(carriers, shein.CarrierPolicy{WarehouseKey: policy.WarehouseKey, CarrierCode: policy.CarrierCode, Priority: policy.Priority, Enabled: policy.Enabled})
 		}
-		result = append(result, shein.WarehouseCarrierPolicies{WarehouseKey: group.WarehouseKey, Carriers: carriers})
+		rules := shein.WarehouseCarrierRules{
+			WarehouseKey: group.BaseRules.WarehouseKey, AllowedCarrierCodes: append([]string(nil), group.BaseRules.AllowedCarrierCodes...),
+			AllowSignature: group.BaseRules.AllowSignature, AllowedCurrencyCodes: append([]string(nil), group.BaseRules.AllowedCurrencyCodes...),
+			SelectionMode: group.BaseRules.SelectionMode, MaxPriceDelta: group.BaseRules.MaxPriceDelta,
+			WarehouseTiePriority: group.BaseRules.WarehouseTiePriority,
+		}
+		if rules.WarehouseKey == "" {
+			return nil, fmt.Errorf("XLWMS did not return base carrier rules for %s", group.WarehouseKey)
+		}
+		result = append(result, shein.WarehouseCarrierPolicies{WarehouseKey: group.WarehouseKey, BaseRules: rules, Carriers: carriers})
 	}
 	return result, nil
 }
@@ -451,8 +460,8 @@ func (s *Server) applyCarrierPoliciesToChannelResult(ctx context.Context, shopKe
 	if warehouseName == "" {
 		warehouseName = firstString(firstObject(result["info"]), "warehouseName", "warehouseAddressName", "warehouseDesc")
 	}
-	policies := shein.PoliciesByWarehouse(groups)[shein.PolicyWarehouseKey(warehouseCode, warehouseName)]
-	shein.ApplyCarrierPoliciesToChannels(result, warehouseCode, warehouseName, policies)
+	policyGroup := shein.PoliciesByWarehouse(groups)[shein.PolicyWarehouseKey(warehouseCode, warehouseName)]
+	shein.ApplyCarrierPoliciesToChannels(result, warehouseCode, warehouseName, policyGroup)
 	return nil
 }
 
@@ -474,7 +483,7 @@ func (s *Server) rejectDisabledCarrierPurchase(ctx context.Context, shopKey stri
 		return err
 	}
 	reason := shein.ChannelUnavailableReason(
-		channelCode, "", "", warehouseCode, "",
+		channelCode, "", "", "", warehouseCode, "", false,
 		shein.PoliciesByWarehouse(groups)[shein.PolicyWarehouseKey(warehouseCode, "")],
 	)
 	if reason != "" {

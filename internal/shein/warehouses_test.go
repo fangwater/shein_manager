@@ -79,38 +79,29 @@ func TestIsAllowedShippingWarehouseRejectsPGAndUnknownWarehouses(t *testing.T) {
 	}
 }
 
-func TestOMSAccountForWarehouseUsesOperatedOwnership(t *testing.T) {
-	if got := OMSAccountForWarehouse("WH2604283535967233", "DPSNY002（美东）"); got != "dps" {
-		t.Fatalf("DPS account = %q", got)
-	}
+func TestResolvedOMSWarehouseCodeDoesNotInferAccount(t *testing.T) {
 	if got := ResolvedOMSWarehouseCode("WH2607084039788546", ""); got != "HYTX30" {
 		t.Fatalf("ARP east OMS warehouse = %q", got)
 	}
 	if got := ResolvedOMSWarehouseCode("WH2608123417047040", "ARP-美西仓"); got != "ARPCA01" {
 		t.Fatalf("ARP west OMS warehouse = %q", got)
 	}
-	if got := OMSAccountForWarehouse("WH2607084039788546", "ARP仓-美东"); got != "arp" {
-		t.Fatalf("ARP account = %q", got)
-	}
-	if got := OMSAccountForWarehouse("PG1955", "PG仓"); got != "" {
-		t.Fatalf("PG account = %q", got)
-	}
-	if OppositeOMSAccount("dps") != "arp" || OppositeOMSAccount("ARP") != "dps" {
-		t.Fatal("opposite OMS account mapping is wrong")
+	if got := ResolvedDPSWarehouseCode("WH2604283535967233", ""); got != "DPSNY002" {
+		t.Fatalf("DPS physical warehouse = %q", got)
 	}
 }
 
 func TestResolvePurchasedWarehouseFollowsBoughtLabelOnly(t *testing.T) {
 	west := ResolvePurchasedWarehouse("WH2603303477748739")
-	if !west.OK() || west.Account != "dps" || west.OMSCode != "DPSCA004" {
+	if !west.OK() || west.OMSCode != "DPSCA004" {
 		t.Fatalf("DPS west label must stay DPSCA004: %#v", west)
 	}
 	east := ResolvePurchasedWarehouse("WH2604283535967233")
-	if !east.OK() || east.Account != "dps" || east.OMSCode != "DPSNY002" {
+	if !east.OK() || east.OMSCode != "DPSNY002" {
 		t.Fatalf("DPS east label must stay DPSNY002: %#v", east)
 	}
 	directARP := ResolvePurchasedWarehouse("WH2607084039788546")
-	if !directARP.OK() || directARP.Account != "arp" || directARP.OMSCode != "HYTX30" {
+	if !directARP.OK() || directARP.OMSCode != "HYTX30" {
 		t.Fatalf("ARP label must map to HYTX30: %#v", directARP)
 	}
 	if ResolvePurchasedWarehouse("WH-UNKNOWN").OK() {

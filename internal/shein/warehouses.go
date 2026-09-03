@@ -143,10 +143,12 @@ func RequiresManualParcelCreate(shopKey, code, name string) bool {
 
 func ResolvedDPSWarehouseCode(code, name string) string {
 	oms := ResolvedOMSWarehouseCode(code, name)
-	if OMSAccountForResolvedWarehouse(oms) == "dps" {
+	switch normalizedWarehouseCode(oms) {
+	case "DPSNY002", "DPSCA004":
 		return oms
+	default:
+		return ""
 	}
-	return ""
 }
 
 func ResolvedOMSWarehouseCode(code, name string) string {
@@ -181,25 +183,13 @@ func ResolvedOMSWarehouseCode(code, name string) string {
 	return ""
 }
 
-func OMSAccountForResolvedWarehouse(omsCode string) string {
-	switch normalizedWarehouseCode(omsCode) {
-	case "DPSNY002", "DPSCA004":
-		return "dps"
-	case "HYTX30", "ARPCA01":
-		return "arp"
-	default:
-		return ""
-	}
-}
-
 type PurchasedWarehouse struct {
 	AddressCode string
 	OMSCode     string
-	Account     string
 }
 
 func (purchase PurchasedWarehouse) OK() bool {
-	return purchase.OMSCode != "" && purchase.Account != ""
+	return purchase.OMSCode != ""
 }
 
 // ResolvePurchasedWarehouse maps a bought-label SHEIN warehouse to the OMS
@@ -209,11 +199,10 @@ func (purchase PurchasedWarehouse) OK() bool {
 func ResolvePurchasedWarehouse(selected string) PurchasedWarehouse {
 	selected = strings.TrimSpace(selected)
 	oms := ResolvedOMSWarehouseCode(selected, "")
-	account := OMSAccountForResolvedWarehouse(oms)
-	if selected == "" || oms == "" || account == "" {
+	if selected == "" || oms == "" {
 		return PurchasedWarehouse{}
 	}
-	return PurchasedWarehouse{AddressCode: selected, OMSCode: oms, Account: account}
+	return PurchasedWarehouse{AddressCode: selected, OMSCode: oms}
 }
 
 func shopRequiresManualParcelCreate(shopKey string) bool {
@@ -222,30 +211,6 @@ func shopRequiresManualParcelCreate(shopKey string) bool {
 		return true
 	default:
 		return false
-	}
-}
-
-func OMSAccountForWarehouse(code, name string) string {
-	if account := OMSAccountForResolvedWarehouse(ResolvedOMSWarehouseCode(code, name)); account != "" {
-		return account
-	}
-	if ResolvedDPSWarehouseCode(code, name) != "" {
-		return "dps"
-	}
-	if IsOperatedShippingWarehouse(code, name) && !IsPGWarehouse(code, name) {
-		return "arp"
-	}
-	return ""
-}
-
-func OppositeOMSAccount(account string) string {
-	switch strings.ToLower(strings.TrimSpace(account)) {
-	case "dps":
-		return "arp"
-	case "arp":
-		return "dps"
-	default:
-		return ""
 	}
 }
 

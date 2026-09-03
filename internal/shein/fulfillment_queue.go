@@ -725,14 +725,14 @@ func (s *Store) SetAutoJobState(ctx context.Context, shopKey, orderNo, status, s
 }
 
 func (s *Store) SetAutoJobSelection(ctx context.Context, shopKey, orderNo, sheinSKU, warehouseSKU,
-	warehouseAddressCode, preRequestID, channelCode, cost, currency string) error {
+	omsAccount, warehouseAddressCode, preRequestID, channelCode, cost, currency string) error {
 	_, err := s.pool.Exec(ctx, `
 		UPDATE shein_go_auto_fulfillment_jobs
-		SET shein_sku = $3, warehouse_sku = $4, warehouse_address_code = $5,
-			pre_request_id = $6, express_channel_code = $7,
-			performance_cost = NULLIF($8, '')::numeric, currency_code = $9, updated_at = now()
+		SET shein_sku = $3, warehouse_sku = $4, oms_account = $5, warehouse_address_code = $6,
+			pre_request_id = $7, express_channel_code = $8,
+			performance_cost = NULLIF($9, '')::numeric, currency_code = $10, updated_at = now()
 		WHERE shop_key = $1 AND order_no = $2
-	`, shopKey, orderNo, sheinSKU, warehouseSKU, warehouseAddressCode,
+	`, shopKey, orderNo, sheinSKU, warehouseSKU, strings.ToLower(strings.TrimSpace(omsAccount)), warehouseAddressCode,
 		preRequestID, channelCode, cost, currency)
 	if err != nil {
 		return fmt.Errorf("save SHEIN auto fulfillment selection: %w", err)
@@ -908,7 +908,7 @@ const autoJobSelect = `SELECT j.id, j.order_no, j.status, j.current_step, j.atte
 	j.place_request_id, j.delivery_no, j.error_code, j.error_message,
 	j.created_at, j.updated_at, j.started_at, j.completed_at,
 	COALESCE(t.outbound_order_no, ''), t.outbound_status, COALESCE(t.outbound_status_name, ''),
-	COALESCE(t.oms_account, ''), COALESCE(t.oms_order_no, ''), t.oms_status_code,
+	COALESCE(NULLIF(j.oms_account, ''), t.oms_account, ''), COALESCE(t.oms_order_no, ''), t.oms_status_code,
 	COALESCE(t.oms_status_key, ''), COALESCE(t.oms_status_text, ''),
 	COALESCE(t.oms_warehouse_code, ''), COALESCE(t.oms_sync_status, ''),
 	COALESCE(t.oms_sync_message, ''), t.oms_queried_at, COALESCE(t.label_attached, false)

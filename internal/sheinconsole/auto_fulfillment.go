@@ -612,6 +612,10 @@ func (s *Server) executeAutoFulfillment(ctx context.Context, ref autoQueueRef) e
 	if check.Status == "failed" {
 		return errors.New(check.ErrorMessage)
 	}
+	omsAccount, err := automaticOMSAccount(inventoryDecision)
+	if err != nil {
+		return err
+	}
 	eligibleWarehouseKeys, err := automaticInventoryWarehouseKeys(inventoryDecision, quantities)
 	if err != nil {
 		return err
@@ -653,11 +657,12 @@ func (s *Server) executeAutoFulfillment(ctx context.Context, ref autoQueueRef) e
 			reason += "；已排除邮编不覆盖承运商 " + joinedCarrierKeys(rejected)
 		}
 		if err := s.store.SetAutoJobSelection(ctx, ref.ShopKey, ref.OrderNo, order.SheinSKU, order.WarehouseSKU,
-			selected.Quote.WarehouseAddressCode, selected.Quote.PreRequestID,
+			omsAccount, selected.Quote.WarehouseAddressCode, selected.Quote.PreRequestID,
 			selected.Candidate.ExpressChannelCode, selected.Candidate.PerformanceCost, selected.Candidate.CurrencyCode); err != nil {
 			return err
 		}
 		job.WarehouseAddressCode = selected.Quote.WarehouseAddressCode
+		job.OMSAccount = omsAccount
 		job.PreRequestID = selected.Quote.PreRequestID
 		job.ExpressChannelCode = selected.Candidate.ExpressChannelCode
 		job.PerformanceCost = selected.Candidate.PerformanceCost
@@ -997,7 +1002,13 @@ func availableWarehouses(result map[string]any) []map[string]any {
 }
 
 type automaticInventoryDecision struct {
-	Complete          bool `json:"complete"`
+	Complete        bool `json:"complete"`
+	AccountDecision struct {
+		AccountKey     string `json:"account_key"`
+		Configured     bool   `json:"configured"`
+		RequiresManual bool   `json:"requires_manual"`
+		Reason         string `json:"reason"`
+	} `json:"account_decision"`
 	PackageResolution struct {
 		Complete bool   `json:"complete"`
 		Error    string `json:"error"`
@@ -1016,6 +1027,34 @@ type automaticInventoryDecision struct {
 			} `json:"warehouses"`
 		} `json:"regions"`
 	} `json:"records"`
+}
+
+func automaticOMSAccount(raw json.RawMessage) (string, error) {
+	var decision automaticInventoryDecision
+	if err := json.Unmarshal(raw, &decision); err != nil {
+		return "", errors.New("领星履约账户响应无法解析")
+	}
+	account := strings.ToLower(strings.TrimSpace(decision.AccountDecision.AccountKey))
+	if decision.AccountDecision.Configured && !decision.AccountDecision.RequiresManual && validOMSAccountKey(account) {
+		return account, nil
+	}
+	reason := strings.TrimSpace(decision.AccountDecision.Reason)
+	if reason == "" {
+		reason = "平台 SKU 未配置领星履约账户"
+	}
+	return "", errors.New(reason)
+}
+
+func validOMSAccountKey(value string) bool {
+	if value == "" || len(value) > 64 {
+		return false
+	}
+	for _, char := range value {
+		if (char < 'a' || char > 'z') && (char < '0' || char > '9') && char != '-' && char != '_' {
+			return false
+		}
+	}
+	return true
 }
 
 type automaticInventoryWarehouse struct {

@@ -187,6 +187,7 @@ func (s *Store) Migrate(ctx context.Context) error {
 			attempts integer NOT NULL DEFAULT 0,
 			shein_sku text NOT NULL DEFAULT '',
 			warehouse_sku text NOT NULL DEFAULT '',
+			oms_account text NOT NULL DEFAULT '',
 			warehouse_address_code text NOT NULL DEFAULT '',
 			pre_request_id text NOT NULL DEFAULT '',
 			express_channel_code text NOT NULL DEFAULT '',
@@ -208,6 +209,8 @@ func (s *Store) Migrate(ctx context.Context) error {
 			ON shein_go_auto_fulfillment_jobs (shop_key, status, updated_at DESC);
 		ALTER TABLE shein_go_auto_fulfillment_jobs
 			ADD COLUMN IF NOT EXISTS rejected_carriers text[] NOT NULL DEFAULT ARRAY[]::text[];
+		ALTER TABLE shein_go_auto_fulfillment_jobs
+			ADD COLUMN IF NOT EXISTS oms_account text NOT NULL DEFAULT '';
 
 		CREATE TABLE IF NOT EXISTS shein_go_order_inventory_checks (
 			shop_key text NOT NULL,
@@ -513,6 +516,10 @@ func (s *Store) UpsertFulfillmentTask(ctx context.Context, shopKey string, task 
 					WHEN status = 'failed' AND oms_sync_status = 'manual_required' AND $13 = '' THEN failure_reason
 					ELSE $13
 				END,
+				oms_account = COALESCE(NULLIF((
+					SELECT job.oms_account FROM shein_go_auto_fulfillment_jobs job
+					WHERE job.shop_key=$1 AND job.order_no=$2
+				), ''), oms_account),
 				updated_at = now()
 			WHERE shop_key = $1 AND (
 				($5 <> '' AND place_request_id = $5)
@@ -524,9 +531,11 @@ func (s *Store) UpsertFulfillmentTask(ctx context.Context, shopKey string, task 
 		INSERT INTO shein_go_fulfillment_tasks (
 			shop_key, order_no, express_channel_code, warehouse_address_code,
 			place_request_id, delivery_no, package_no, waybill_no,
-			order_place_type, handle_result, print_status, status, failure_reason
+			order_place_type, handle_result, print_status, status, failure_reason, oms_account
 		)
-		SELECT $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13
+		SELECT $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
+			COALESCE((SELECT job.oms_account FROM shein_go_auto_fulfillment_jobs job
+				WHERE job.shop_key=$1 AND job.order_no=$2), '')
 		WHERE NOT EXISTS (SELECT 1 FROM updated)
 		ON CONFLICT DO NOTHING
 	`

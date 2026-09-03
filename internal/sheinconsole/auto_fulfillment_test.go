@@ -133,6 +133,22 @@ func TestAutomaticInventoryWarehouseKeysExcludesZeroStockARPEast(t *testing.T) {
 	}
 }
 
+func TestAutomaticOMSAccountUsesXLWMSDecision(t *testing.T) {
+	decision := json.RawMessage(`{
+		"account_decision":{"account_key":"OMS_US_1","configured":true,"requires_manual":false}
+	}`)
+	account, err := automaticOMSAccount(decision)
+	if err != nil || account != "oms_us_1" {
+		t.Fatalf("account decision = (%q, %v)", account, err)
+	}
+	manual := json.RawMessage(`{
+		"account_decision":{"configured":false,"requires_manual":true,"reason":"SKU 未配置账户"}
+	}`)
+	if _, err := automaticOMSAccount(manual); err == nil || err.Error() != "SKU 未配置账户" {
+		t.Fatalf("manual account decision error = %v", err)
+	}
+}
+
 func TestAutomaticInventoryWarehouseKeysRejectsManualInventoryDecision(t *testing.T) {
 	decision := json.RawMessage(`{
 		"complete":true,

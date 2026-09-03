@@ -628,7 +628,7 @@ func (s *Server) executeAutoFulfillment(ctx context.Context, ref autoQueueRef) e
 	if len(warehouses) == 0 {
 		return errors.New("SHEIN 可用发货仓均未通过领星实时库存校验")
 	}
-	policyGroups, err := s.store.ListMergedCarrierPolicies(ctx, ref.ShopKey)
+	policyGroups, err := s.carrierPolicies(ctx, order.WarehouseSKU)
 	if err != nil {
 		return err
 	}

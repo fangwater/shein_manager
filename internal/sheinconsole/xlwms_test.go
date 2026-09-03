@@ -73,20 +73,20 @@ func TestXLWMSPlatformOrderQueriesEveryAccountWithoutLogin(t *testing.T) {
 	}
 }
 
-func TestInventoryThresholdRoutesUseCurrentShop(t *testing.T) {
+func TestInventoryThresholdRoutesUsePlatformScope(t *testing.T) {
 	gateway := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		if request.URL.Path != "/inventory-thresholds" {
 			http.NotFound(writer, request)
 			return
 		}
-		if request.URL.Query().Get("platform") != "shein" || request.URL.Query().Get("shop") != "beauty-hangers-home" {
+		if request.URL.Query().Get("platform") != "shein" || request.URL.Query().Has("shop") {
 			t.Fatalf("query = %s", request.URL.RawQuery)
 		}
-		if request.Header.Get("X-Shein-Shop") != "beauty-hangers-home" {
-			t.Fatalf("X-Shein-Shop = %q", request.Header.Get("X-Shein-Shop"))
+		if request.Header.Get("X-Shein-Shop") != "" {
+			t.Fatalf("unexpected X-Shein-Shop = %q", request.Header.Get("X-Shein-Shop"))
 		}
 		writer.Header().Set("Content-Type", "application/json")
-		_, _ = writer.Write([]byte(`{"success":true,"data":{"records":[{"warehouse_sku":"WH-1","east_threshold":1,"west_threshold":2,"total_threshold":3,"customized":false,"source":"shop_default"}],"page":1,"page_size":30,"total":1,"pages":1,"default_thresholds":{"platform":"shein","shop_code":"beauty-hangers-home","east_threshold":10,"west_threshold":20,"total_threshold":30,"customized":false}}}`))
+		_, _ = writer.Write([]byte(`{"success":true,"data":{"records":[{"warehouse_sku":"WH-1","east_threshold":1,"west_threshold":2,"total_threshold":3,"customized":false,"source":"platform_default"}],"page":1,"page_size":30,"total":1,"pages":1,"default_thresholds":{"platform":"shein","east_threshold":10,"west_threshold":20,"total_threshold":30}}}`))
 	}))
 	defer gateway.Close()
 	client, err := xlwms.NewClient(gateway.URL, time.Second)
@@ -116,6 +116,14 @@ func TestInventoryThresholdRoutesUseCurrentShop(t *testing.T) {
 	}
 	if payload.Meta["total"] != float64(1) {
 		t.Fatalf("meta = %#v", payload.Meta)
+	}
+}
+
+func TestInventoryThresholdDefaultResetIsGone(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	inventoryThresholdDefaultResetGone(recorder, httptest.NewRequest(http.MethodPost, "/api/inventory-thresholds/defaults/reset", nil))
+	if recorder.Code != http.StatusGone {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
 	}
 }
 
@@ -319,8 +327,8 @@ func TestLingxingParcelChannelUsesUploadLabelForSheinCodes(t *testing.T) {
 
 func TestFirstSheinLabelURLPrefersFilePdfUrl(t *testing.T) {
 	url := firstSheinLabelURL(map[string]any{"info": []any{map[string]any{
-		"deliveryNo": "GU-1",
-		"filePdfUrl": "https://pdf.sheinbackend.com/label.pdf",
+		"deliveryNo":   "GU-1",
+		"filePdfUrl":   "https://pdf.sheinbackend.com/label.pdf",
 		"packageLabel": "",
 	}}})
 	if url != "https://pdf.sheinbackend.com/label.pdf" {

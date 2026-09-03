@@ -169,7 +169,7 @@ func TestShippingQuoteFromChannelsSkipsDisabledPolicyChannels(t *testing.T) {
 			map[string]any{
 				"expressChannelCode": "GOFO-D2D250718-Na", "expressShortName": "GOFO",
 				"performanceCost": 9.1, "currencyCode": "USD",
-				"availableStatus": "0", "unavailableReason": "GOFO 店铺策略已在 DPS002 仓库禁用",
+				"availableStatus": "0", "unavailableReason": "SHEIN 发货策略已在 DPS002 仓库禁用 GOFO",
 			},
 			map[string]any{
 				"expressChannelCode": "UPS-GROUND", "expressShortName": "UPS",

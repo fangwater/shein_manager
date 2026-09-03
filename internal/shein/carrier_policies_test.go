@@ -33,58 +33,11 @@ func TestCarrierCodeRecognizesSHEINChannelNames(t *testing.T) {
 	}
 }
 
-func TestValidateCarrierPoliciesRequiresCompleteUniqueOrder(t *testing.T) {
-	policies := DefaultCarrierPolicies("DPS002")
-	policies[1].Priority = policies[0].Priority
-	if _, err := ValidateCarrierPolicies("DPS002", policies); err == nil {
-		t.Fatal("duplicate priorities must fail")
-	}
-	if _, err := ValidateCarrierPolicies("UNKNOWN", DefaultCarrierPolicies("DPS002")); err == nil {
-		t.Fatal("unknown warehouse must fail")
-	}
-}
-
-func TestMergeCarrierPoliciesFillsMissingWarehouses(t *testing.T) {
-	groups := MergeCarrierPolicies(nil)
-	if len(groups) != 4 || groups[0].WarehouseKey != "DPS002" || len(groups[0].Carriers) != 7 {
-		t.Fatalf("unexpected default groups: %#v", groups)
-	}
-	if groups[0].Carriers[0].CarrierCode != "GOFO" || !groups[0].Carriers[0].Enabled {
-		t.Fatalf("default GOFO policy = %#v", groups[0].Carriers[0])
-	}
-}
-
-func TestDefaultCarrierPoliciesDisableARPEastSwiftX(t *testing.T) {
-	east := DefaultCarrierPolicies("ARP_EAST")
-	found := false
-	for _, policy := range east {
-		if policy.CarrierCode == "SWIFTX" {
-			found = true
-			if policy.Enabled {
-				t.Fatal("ARP east SwiftX must start disabled")
-			}
-		}
-	}
-	if !found {
-		t.Fatal("ARP east is missing SwiftX")
-	}
-	if DefaultCarrierEnabled("ARP_EAST", "UNIUNI") {
-		t.Fatal("ARP east UNIUNI must stay disabled")
-	}
-	for _, warehouse := range []string{"DPS002", "DPS004", "ARP_WEST"} {
-		for _, policy := range DefaultCarrierPolicies(warehouse) {
-			if policy.CarrierCode == "SWIFTX" && !policy.Enabled {
-				t.Fatalf("%s SwiftX should stay enabled by default: %#v", warehouse, policy)
-			}
-		}
-	}
-}
-
 func TestChannelUnavailableReasonUsesWarehousePolicy(t *testing.T) {
-	policies := DefaultCarrierPolicies("DPS002")
+	policies := testCarrierPolicies("DPS002")
 	policies[0].Enabled = false
 	reason := ChannelUnavailableReason("GOFO-D2D250718-Na", "GOFO", "", "WH2604283535967233", "DPSNY002（美东）", policies)
-	if reason == "" || reason != "GOFO 店铺策略已在 DPS002 仓库禁用" {
+	if reason == "" || reason != "SHEIN 发货策略已在 DPS002 仓库禁用 GOFO" {
 		t.Fatalf("unexpected disable reason: %q", reason)
 	}
 	if got := ChannelUnavailableReason("UNIUNI-1", "", "", "WH2604283535967233", "", policies); got != "UNIUNI 已禁用" {
@@ -99,7 +52,7 @@ func TestChannelUnavailableReasonUsesWarehousePolicy(t *testing.T) {
 }
 
 func TestApplyCarrierPoliciesToChannelsMarksDisabled(t *testing.T) {
-	policies := DefaultCarrierPolicies("ARP_EAST")
+	policies := testCarrierPolicies("ARP_EAST")
 	for index := range policies {
 		if policies[index].CarrierCode == "SPEEDX" {
 			policies[index].Enabled = false
@@ -111,10 +64,18 @@ func TestApplyCarrierPoliciesToChannelsMarksDisabled(t *testing.T) {
 	}}}
 	ApplyCarrierPoliciesToChannels(result, "WH2607084039788546", "ARP仓-美东", policies)
 	channels := channelObjects(result["info"])
-	if channels[0]["availableStatus"] != "0" || channels[0]["unavailableReason"] != "SPEEDX 店铺策略已在 ARP_EAST 仓库禁用" {
+	if channels[0]["availableStatus"] != "0" || channels[0]["unavailableReason"] != "SHEIN 发货策略已在 ARP_EAST 仓库禁用 SPEEDX" {
 		t.Fatalf("SPEEDX was left selectable: %#v", channels[0])
 	}
 	if channels[1]["availableStatus"] == "0" {
 		t.Fatalf("GOFO was disabled: %#v", channels[1])
 	}
+}
+
+func testCarrierPolicies(warehouseKey string) []CarrierPolicy {
+	policies := make([]CarrierPolicy, 0, len(SupportedAutomaticCarrierCodes))
+	for index, code := range SupportedAutomaticCarrierCodes {
+		policies = append(policies, CarrierPolicy{WarehouseKey: warehouseKey, CarrierCode: code, Priority: index + 1, Enabled: true})
+	}
+	return policies
 }

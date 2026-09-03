@@ -22,8 +22,6 @@ func TestConsoleUsesSharedTemuShell(t *testing.T) {
 		`data-oms-status="2"`,
 		"按领星平台订单状态查看自动发货核验与归档结果",
 		`id="view-inventory-thresholds"`,
-		`id="view-warehouses"`,
-		`id="carrier-policy-grid"`,
 		`id="warehouse-check"`,
 		`src="./assets/xlwms.js`,
 	} {
@@ -356,36 +354,24 @@ func TestFulfillmentConsoleKeepsPGWarehousesUnselectable(t *testing.T) {
 	}
 }
 
-func TestCarrierPolicyConsoleUsesWarehousePriority(t *testing.T) {
+func TestCarrierPolicyConsoleHasMovedToXLWMS(t *testing.T) {
 	index, err := webFiles.ReadFile("web/index.html")
 	if err != nil {
 		t.Fatal(err)
 	}
 	html := string(index)
-	for _, required := range []string{
+	for _, removed := range []string{
 		`data-view="warehouses"`,
-		"仓库快递优先级",
 		`id="carrier-policy-grid"`,
 	} {
-		if !strings.Contains(html, required) {
-			t.Fatalf("carrier policy console does not contain %q", required)
+		if strings.Contains(html, removed) {
+			t.Fatalf("moved carrier policy console still contains %q", removed)
 		}
 	}
-	script, err := webFiles.ReadFile("web/app.js")
-	if err != nil {
-		t.Fatal(err)
-	}
-	source := string(script)
-	for _, required := range []string{
-		"function loadCarrierPolicies",
-		"function saveCarrierPolicies",
-		"function isChannelSelectable",
-		"carrier-policies/",
-		"快递策略尚未加载",
-	} {
-		if !strings.Contains(source, required) {
-			t.Fatalf("carrier policy console does not contain %q", required)
-		}
+	recorder := httptest.NewRecorder()
+	fulfillmentPoliciesMoved(recorder, httptest.NewRequest(http.MethodGet, "/api/carrier-policies", nil))
+	if recorder.Code != http.StatusGone {
+		t.Fatalf("moved carrier policy endpoint status = %d", recorder.Code)
 	}
 }
 
@@ -408,7 +394,7 @@ func TestBulkFulfillmentConsoleShowsNonBlockingFailures(t *testing.T) {
 	}
 }
 
-func TestInventoryThresholdConsoleIsShopScoped(t *testing.T) {
+func TestInventoryThresholdConsoleIsPlatformScoped(t *testing.T) {
 	script, err := webFiles.ReadFile("web/app.js")
 	if err != nil {
 		t.Fatal(err)
@@ -416,13 +402,15 @@ func TestInventoryThresholdConsoleIsShopScoped(t *testing.T) {
 	source := string(script)
 	for _, required := range []string{
 		"function loadInventoryThresholds",
-		"inventory-thresholds/defaults/reset",
-		"当前店铺默认安全线已保存",
-		"当前店铺已恢复仓库默认安全线",
+		"SHEIN 平台默认安全线已保存",
+		"已恢复 SHEIN 平台默认安全线",
 	} {
 		if !strings.Contains(source, required) {
 			t.Fatalf("inventory threshold console does not contain %q", required)
 		}
+	}
+	if strings.Contains(source, "inventory-thresholds/defaults/reset") {
+		t.Fatal("inventory threshold console still exposes shop-default reset")
 	}
 }
 

@@ -38,13 +38,13 @@ func TestClientUsesPublicManagerContract(t *testing.T) {
 			}
 			_, _ = writer.Write([]byte(`{"success":true,"data":{"complete":true,"records":[]}}`))
 		case "/api/inventory-thresholds/defaults":
-			if request.URL.Query().Get("platform") != "shein" || request.URL.Query().Get("shop") != "beauty-hangers-home" {
-				t.Fatalf("shop query = %s", request.URL.RawQuery)
+			if request.URL.Query().Get("platform") != "shein" || request.URL.Query().Has("shop") {
+				t.Fatalf("platform query = %s", request.URL.RawQuery)
 			}
-			if request.Header.Get("X-Shein-Shop") != "beauty-hangers-home" {
-				t.Fatalf("X-Shein-Shop = %q", request.Header.Get("X-Shein-Shop"))
+			if request.Header.Get("X-Shein-Shop") != "" {
+				t.Fatalf("unexpected X-Shein-Shop = %q", request.Header.Get("X-Shein-Shop"))
 			}
-			_, _ = writer.Write([]byte(`{"success":true,"data":{"platform":"shein","shop_code":"beauty-hangers-home","east_threshold":10,"west_threshold":20,"total_threshold":30,"customized":true}}`))
+			_, _ = writer.Write([]byte(`{"success":true,"data":{"platform":"shein","east_threshold":10,"west_threshold":20,"total_threshold":30}}`))
 		default:
 			http.NotFound(writer, request)
 		}
@@ -66,9 +66,9 @@ func TestClientUsesPublicManagerContract(t *testing.T) {
 	if _, err := client.QueryInventory(context.Background(), []InventoryItem{{WarehouseSKU: "WH-SKU", Quantity: 2}}); err != nil {
 		t.Fatalf("QueryInventory: %v", err)
 	}
-	thresholds, err := client.ShopInventoryThresholds(context.Background(), "shein", "beauty-hangers-home")
-	if err != nil || thresholds.ShopCode != "beauty-hangers-home" || thresholds.EastThreshold != 10 {
-		t.Fatalf("ShopInventoryThresholds = %#v, %v", thresholds, err)
+	thresholds, err := client.PlatformInventoryThresholds(context.Background(), "shein")
+	if err != nil || thresholds.Platform != "shein" || thresholds.EastThreshold != 10 {
+		t.Fatalf("PlatformInventoryThresholds = %#v, %v", thresholds, err)
 	}
 
 	<-requests

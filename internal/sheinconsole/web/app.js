@@ -27,12 +27,11 @@ const state = {
   placedOrderNos: {},
   inventoryThresholds: [],
   inventoryThresholdMeta: {},
-  shopInventoryThresholds: {},
+  platformInventoryThresholds: {},
   inventoryThresholdPage: 1,
   inventoryThresholdSearchTimer: 0,
   parcelDraft: null,
   parcelDraftOrderNo: "",
-  carrierPolicies: []
 };
 
 function escapeHTML(value) {
@@ -524,27 +523,20 @@ function selectView(name) {
   if (name === "labels") loadTasks();
   if (name === "oms-statuses" && typeof loadOMSPlatformOrders === "function") loadOMSPlatformOrders();
   if (name === "inventory-thresholds") loadInventoryThresholds();
-  if (name === "warehouses") loadCarrierPolicies();
 }
 
 function inventoryThresholdSource(item) {
-  if (item.source === "shop_sku" || item.customized) return "店铺 SKU 单独设置";
-  if (item.source === "shop_default") return "店铺默认";
-  return "店铺默认";
+  if (item.source === "platform_sku" || item.customized) return "SHEIN SKU 单独设置";
+  return "SHEIN 平台默认";
 }
 
 function thresholdPayloadFromForm(form) {
-  if (form.id === "shop-threshold-form") {
-    return {
-      east_threshold: Number(byId("shop-east-threshold").value),
-      west_threshold: Number(byId("shop-west-threshold").value),
-      total_threshold: Number(byId("shop-total-threshold").value)
-    };
-  }
   return {
-    east_threshold: Number(form.querySelector("[data-threshold-field='east_threshold']").value),
-    west_threshold: Number(form.querySelector("[data-threshold-field='west_threshold']").value),
-    total_threshold: Number(form.querySelector("[data-threshold-field='total_threshold']").value)
+    east_threshold: 0,
+    west_threshold: 0,
+    total_threshold: Number(form.id === "platform-threshold-form"
+      ? byId("platform-total-threshold").value
+      : form.querySelector("[data-threshold-field='total_threshold']").value)
   };
 }
 
@@ -562,22 +554,16 @@ function renderInventoryThresholdPager() {
 }
 
 function renderInventoryThresholds() {
-  const defaults = state.shopInventoryThresholds || {};
-  const selectedShop = state.shops.find(function (shop) { return shop.code === state.shopKey; });
-  const shopName = selectedShop ? display(selectedShop.name, state.shopKey) : state.shopKey;
-  byId("shop-east-threshold").value = defaults.east_threshold ?? "";
-  byId("shop-west-threshold").value = defaults.west_threshold ?? "";
-  byId("shop-total-threshold").value = defaults.total_threshold ?? "";
-  byId("shop-threshold-scope").textContent = shopName + " 未单独设置 SKU 时使用";
-  byId("reset-shop-thresholds").hidden = !defaults.customized;
+  const defaults = state.platformInventoryThresholds || {};
+  byId("platform-total-threshold").value = defaults.total_threshold ?? "";
+  byId("platform-threshold-scope").textContent = "SHEIN 全部店铺共用";
   byId("inventory-threshold-rows").innerHTML = state.inventoryThresholds.map(function (item) {
     return '<tr data-threshold-sku="' + escapeHTML(item.warehouse_sku) + '">' +
       '<td><div class="sku-rule-identity"><code>' + escapeHTML(item.warehouse_sku) + '</code><span>' +
       escapeHTML(item.product_name || "未记录商品名称") + "</span></div></td>" +
-      '<td><input class="threshold-input" data-threshold-field="east_threshold" type="number" min="0" step="1" value="' +
-      escapeHTML(item.east_threshold) + '"></td>' +
-      '<td><input class="threshold-input" data-threshold-field="west_threshold" type="number" min="0" step="1" value="' +
-      escapeHTML(item.west_threshold) + '"></td>' +
+      "<td>" + escapeHTML(item.east_available) + "</td>" +
+      "<td>" + escapeHTML(item.west_available) + "</td>" +
+      "<td>" + escapeHTML(item.total_available) + "</td>" +
       '<td><input class="threshold-input" data-threshold-field="total_threshold" type="number" min="0" step="1" value="' +
       escapeHTML(item.total_threshold) + '"></td>' +
       '<td><span class="status-badge ' + (item.customized ? "pending" : "neutral") + '">' +
@@ -595,109 +581,6 @@ function renderInventoryThresholds() {
   renderInventoryThresholdPager();
 }
 
-const policyWarehouses = [
-  { key: "DPS002", name: "DPS002", region: "美东" },
-  { key: "ARP_EAST", name: "ARP美东", region: "美东" },
-  { key: "DPS004", name: "DPS004", region: "美西" },
-  { key: "ARP_WEST", name: "ARP美西", region: "美西" }
-];
-
-function carrierPolicyGroup(warehouseKey) {
-  return state.carrierPolicies.find(function (group) { return group.warehouse_key === warehouseKey; });
-}
-
-function renderCarrierPolicies() {
-  const container = byId("carrier-policy-grid");
-  const selectedShop = state.shops.find(function (shop) { return shop.code === state.shopKey; });
-  byId("carrier-policy-shop").textContent = selectedShop ? display(selectedShop.name, state.shopKey) : state.shopKey;
-  container.innerHTML = policyWarehouses.map(function (warehouse) {
-    const group = carrierPolicyGroup(warehouse.key) || { warehouse_key: warehouse.key, carriers: [] };
-    const carriers = (group.carriers || []).slice().sort(function (left, right) { return left.priority - right.priority; });
-    const enabledCount = carriers.filter(function (carrier) { return carrier.enabled; }).length;
-    return '<section class="carrier-policy-card"><header><div><small>' + escapeHTML(warehouse.region) +
-      '</small><strong>' + escapeHTML(warehouse.name) + '</strong></div><span>' + enabledCount + " / " +
-      carriers.length + ' 启用</span><button class="secondary-button carrier-policy-save" data-save-carriers="' +
-      escapeHTML(warehouse.key) + '"><svg><use href="#i-check"/></svg>保存</button></header><div class="carrier-policy-list">' +
-      carriers.map(function (carrier, index) {
-        return '<div class="carrier-policy-item ' + (carrier.enabled ? "" : "disabled") + '"><b>' + (index + 1) +
-          '</b><div><strong>' + escapeHTML(carrier.carrier_code) + '</strong><small>' +
-          (carrier.enabled ? "第 " + (index + 1) + " 优先" : "已禁用") +
-          '</small></div><div class="carrier-policy-order"><button class="icon-button" data-policy-move="up" data-policy-warehouse="' +
-          escapeHTML(warehouse.key) + '" data-policy-carrier="' + escapeHTML(carrier.carrier_code) + '" ' +
-          (index === 0 ? "disabled" : "") + ' title="上移 ' + escapeHTML(carrier.carrier_code) +
-          '" aria-label="上移 ' + escapeHTML(carrier.carrier_code) +
-          '"><svg><use href="#i-arrow-up"/></svg></button><button class="icon-button" data-policy-move="down" data-policy-warehouse="' +
-          escapeHTML(warehouse.key) + '" data-policy-carrier="' + escapeHTML(carrier.carrier_code) + '" ' +
-          (index === carriers.length - 1 ? "disabled" : "") + ' title="下移 ' + escapeHTML(carrier.carrier_code) +
-          '" aria-label="下移 ' + escapeHTML(carrier.carrier_code) +
-          '"><svg><use href="#i-arrow-down"/></svg></button></div><label class="policy-switch" title="' +
-          (carrier.enabled ? "禁用 " : "启用 ") + escapeHTML(carrier.carrier_code) +
-          '"><input type="checkbox" data-policy-enabled="' + escapeHTML(carrier.carrier_code) +
-          '" data-policy-warehouse="' + escapeHTML(warehouse.key) + '" ' + (carrier.enabled ? "checked" : "") +
-          ' aria-label="' + (carrier.enabled ? "允许 " : "禁用 ") + escapeHTML(carrier.carrier_code) +
-          '"><span></span></label></div>';
-      }).join("") + "</div></section>";
-  }).join("");
-}
-
-function moveCarrierPolicy(warehouseKey, carrierCode, direction) {
-  const group = carrierPolicyGroup(warehouseKey);
-  if (!group) return;
-  const carriers = group.carriers.slice().sort(function (left, right) { return left.priority - right.priority; });
-  const index = carriers.findIndex(function (carrier) { return carrier.carrier_code === carrierCode; });
-  const target = direction === "up" ? index - 1 : index + 1;
-  if (index < 0 || target < 0 || target >= carriers.length) return;
-  const swapped = carriers[index];
-  carriers[index] = carriers[target];
-  carriers[target] = swapped;
-  carriers.forEach(function (carrier, priority) { carrier.priority = priority + 1; });
-  group.carriers = carriers;
-  renderCarrierPolicies();
-}
-
-function setCarrierEnabled(warehouseKey, carrierCode, enabled) {
-  const group = carrierPolicyGroup(warehouseKey);
-  const carrier = group && group.carriers.find(function (item) { return item.carrier_code === carrierCode; });
-  if (!carrier) return;
-  carrier.enabled = enabled;
-  renderCarrierPolicies();
-}
-
-async function saveCarrierPolicies(warehouseKey, button) {
-  const group = carrierPolicyGroup(warehouseKey);
-  if (!group) {
-    toast("快递策略尚未加载", true);
-    return;
-  }
-  await busy(button, async function () {
-    try {
-      const payload = await request("carrier-policies/" + encodeURIComponent(warehouseKey), {
-        method: "PUT",
-        body: JSON.stringify({ carriers: group.carriers })
-      });
-      const index = state.carrierPolicies.findIndex(function (item) { return item.warehouse_key === warehouseKey; });
-      if (index >= 0) state.carrierPolicies[index] = payload.data;
-      else state.carrierPolicies.push(payload.data);
-      toast(warehouseKey + " 快递策略已保存");
-      renderCarrierPolicies();
-    } catch (error) {
-      toast(error.message, true);
-    }
-  });
-}
-
-async function loadCarrierPolicies(button) {
-  await busy(button || null, async function () {
-    try {
-      const payload = await request("carrier-policies");
-      state.carrierPolicies = Array.isArray(payload.data) ? payload.data : [];
-      renderCarrierPolicies();
-    } catch (error) {
-      toast(error.message, true);
-    }
-  });
-}
-
 async function loadInventoryThresholds(button) {
   const query = byId("inventory-threshold-search").value.trim();
   const params = new URLSearchParams({ page: String(state.inventoryThresholdPage), page_size: String(state.pageSize) });
@@ -707,9 +590,9 @@ async function loadInventoryThresholds(button) {
       const payload = await request("inventory-thresholds?" + params.toString());
       state.inventoryThresholds = Array.isArray(payload.data) ? payload.data : [];
       state.inventoryThresholdMeta = payload.meta || {};
-      state.shopInventoryThresholds = payload.meta && payload.meta.default_thresholds
+      state.platformInventoryThresholds = payload.meta && payload.meta.default_thresholds
         ? payload.meta.default_thresholds
-        : state.shopInventoryThresholds;
+        : state.platformInventoryThresholds;
       const pages = Number(state.inventoryThresholdMeta.pages || 1);
       if (state.inventoryThresholdPage > pages && pages >= 1) {
         state.inventoryThresholdPage = pages;
@@ -723,7 +606,7 @@ async function loadInventoryThresholds(button) {
   });
 }
 
-async function saveShopInventoryThresholds(event) {
+async function savePlatformInventoryThresholds(event) {
   event.preventDefault();
   await busy(event.submitter, async function () {
     try {
@@ -731,22 +614,9 @@ async function saveShopInventoryThresholds(event) {
         method: "PATCH",
         body: JSON.stringify(thresholdPayloadFromForm(event.currentTarget))
       });
-      state.shopInventoryThresholds = payload.data || {};
-      toast("当前店铺默认安全线已保存");
+      state.platformInventoryThresholds = payload.data || {};
+      toast("SHEIN 平台默认安全线已保存");
       renderInventoryThresholds();
-    } catch (error) {
-      toast(error.message, true);
-    }
-  });
-}
-
-async function resetShopInventoryThresholds(button) {
-  await busy(button, async function () {
-    try {
-      const payload = await request("inventory-thresholds/defaults/reset", { method: "POST" });
-      state.shopInventoryThresholds = payload.data || {};
-      toast("当前店铺已恢复仓库默认安全线");
-      await loadInventoryThresholds();
     } catch (error) {
       toast(error.message, true);
     }
@@ -776,7 +646,7 @@ async function resetSKUInventoryThreshold(warehouseSKU, button) {
   await busy(button, async function () {
     try {
       await request("inventory-thresholds/" + encodeURIComponent(warehouseSKU) + "/reset", { method: "POST" });
-      toast(warehouseSKU + " 已恢复店铺默认安全线");
+      toast(warehouseSKU + " 已恢复 SHEIN 平台默认安全线");
       await loadInventoryThresholds();
     } catch (error) {
       toast(error.message, true);
@@ -2183,28 +2053,12 @@ byId("task-exception-filter").addEventListener("change", function (event) {
 byId("refresh-inventory-thresholds").addEventListener("click", function (event) {
   loadInventoryThresholds(event.currentTarget);
 });
-byId("refresh-carrier-policies").addEventListener("click", function (event) {
-  loadCarrierPolicies(event.currentTarget);
-});
-byId("carrier-policy-grid").addEventListener("click", function (event) {
-  const move = event.target.closest("[data-policy-move]");
-  const save = event.target.closest("[data-save-carriers]");
-  if (move) moveCarrierPolicy(move.dataset.policyWarehouse, move.dataset.policyCarrier, move.dataset.policyMove);
-  if (save) saveCarrierPolicies(save.dataset.saveCarriers, save);
-});
-byId("carrier-policy-grid").addEventListener("change", function (event) {
-  const input = event.target.closest("[data-policy-enabled]");
-  if (input) setCarrierEnabled(input.dataset.policyWarehouse, input.dataset.policyEnabled, input.checked);
-});
 byId("inventory-threshold-search").addEventListener("input", function () {
   state.inventoryThresholdPage = 1;
   window.clearTimeout(state.inventoryThresholdSearchTimer);
   state.inventoryThresholdSearchTimer = window.setTimeout(function () { loadInventoryThresholds(); }, 250);
 });
-byId("shop-threshold-form").addEventListener("submit", saveShopInventoryThresholds);
-byId("reset-shop-thresholds").addEventListener("click", function (event) {
-  resetShopInventoryThresholds(event.currentTarget);
-});
+byId("platform-threshold-form").addEventListener("submit", savePlatformInventoryThresholds);
 byId("inventory-threshold-rows").addEventListener("click", function (event) {
   const saveButton = event.target.closest("[data-save-threshold]");
   const resetButton = event.target.closest("[data-reset-threshold]");

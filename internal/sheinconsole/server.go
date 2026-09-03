@@ -99,11 +99,11 @@ func (server *Server) registerRoutes(mux *http.ServeMux) {
 	mux.Handle("GET /api/inventory-thresholds", http.HandlerFunc(server.inventoryThresholds))
 	mux.Handle("GET /api/inventory-thresholds/defaults", http.HandlerFunc(server.inventoryThresholdDefaults))
 	mux.Handle("PATCH /api/inventory-thresholds/defaults", http.HandlerFunc(server.inventoryThresholdDefaults))
-	mux.Handle("POST /api/inventory-thresholds/defaults/reset", http.HandlerFunc(server.resetInventoryThresholdDefaults))
+	mux.Handle("POST /api/inventory-thresholds/defaults/reset", http.HandlerFunc(inventoryThresholdDefaultResetGone))
 	mux.Handle("PATCH /api/inventory-thresholds/{warehouseSKU}", http.HandlerFunc(server.updateSKUInventoryThreshold))
 	mux.Handle("POST /api/inventory-thresholds/{warehouseSKU}/reset", http.HandlerFunc(server.resetSKUInventoryThreshold))
-	mux.Handle("GET /api/carrier-policies", http.HandlerFunc(server.listCarrierPolicies))
-	mux.Handle("PUT /api/carrier-policies/{warehouseKey}", http.HandlerFunc(server.updateCarrierPolicies))
+	mux.Handle("GET /api/carrier-policies", http.HandlerFunc(fulfillmentPoliciesMoved))
+	mux.Handle("PUT /api/carrier-policies/{warehouseKey}", http.HandlerFunc(fulfillmentPoliciesMoved))
 	mux.Handle("GET /api/auto-fulfillment/jobs", http.HandlerFunc(server.autoFulfillmentJobs))
 	mux.Handle("POST /api/auto-fulfillment/run", http.HandlerFunc(server.runAutoFulfillment))
 	mux.Handle("GET /api/auto-fulfillment/batches/latest", http.HandlerFunc(server.latestAutoFulfillmentBatch))
@@ -395,46 +395,51 @@ func decodeJSON(writer http.ResponseWriter, request *http.Request, target any) b
 	return true
 }
 
-func (s *Server) listCarrierPolicies(writer http.ResponseWriter, request *http.Request) {
-	shopKey, err := s.requestedShopKey(request, request.URL.Query().Get("shop_key"))
-	if err != nil {
-		writeJSON(writer, http.StatusBadRequest, response{Success: false, Error: err.Error()})
-		return
-	}
-	ctx, cancel := context.WithTimeout(request.Context(), s.requestTimeout)
-	defer cancel()
-	items, err := s.store.ListMergedCarrierPolicies(ctx, shopKey)
-	if err != nil {
-		s.internalError(writer, "list carrier policies", err)
-		return
-	}
-	writeJSON(writer, http.StatusOK, response{Success: true, Data: items})
+func fulfillmentPoliciesMoved(writer http.ResponseWriter, _ *http.Request) {
+	writeJSON(writer, http.StatusGone, response{Success: false, Error: "发货策略已迁移到 XLWMS 仓库运营中台"})
 }
 
-func (s *Server) updateCarrierPolicies(writer http.ResponseWriter, request *http.Request) {
-	shopKey, err := s.requestedShopKey(request, "")
+func (s *Server) carrierPolicies(ctx context.Context, warehouseSKU string) ([]shein.WarehouseCarrierPolicies, error) {
+	if s.xlwms == nil {
+		return nil, errors.New("XLWMS client is unavailable")
+	}
+	groups, err := s.xlwms.CarrierPolicies(ctx, "shein", warehouseSKU)
 	if err != nil {
-		writeJSON(writer, http.StatusBadRequest, response{Success: false, Error: err.Error()})
-		return
+		return nil, err
 	}
-	var input struct {
-		Carriers []shein.CarrierPolicy `json:"carriers"`
+	result := make([]shein.WarehouseCarrierPolicies, 0, len(groups))
+	for _, group := range groups {
+		carriers := make([]shein.CarrierPolicy, 0, len(group.Carriers))
+		for _, policy := range group.Carriers {
+			carriers = append(carriers, shein.CarrierPolicy{WarehouseKey: policy.WarehouseKey, CarrierCode: policy.CarrierCode, Priority: policy.Priority, Enabled: policy.Enabled})
+		}
+		result = append(result, shein.WarehouseCarrierPolicies{WarehouseKey: group.WarehouseKey, Carriers: carriers})
 	}
-	if !decodeJSON(writer, request, &input) {
-		return
-	}
-	ctx, cancel := context.WithTimeout(request.Context(), s.requestTimeout)
-	defer cancel()
-	item, err := s.store.UpdateCarrierPolicies(ctx, shopKey, request.PathValue("warehouseKey"), input.Carriers)
+	return result, nil
+}
+
+func (s *Server) orderWarehouseSKU(ctx context.Context, shopKey, orderNo string) string {
+	goods, err := s.store.MappedOrderGoods(ctx, shopKey, orderNo)
 	if err != nil {
-		writeJSON(writer, http.StatusBadRequest, response{Success: false, Error: err.Error()})
-		return
+		return ""
 	}
-	writeJSON(writer, http.StatusOK, response{Success: true, Data: item})
+	unique := ""
+	for _, item := range goods {
+		sku := strings.TrimSpace(item.WarehouseSKU)
+		if sku == "" {
+			continue
+		}
+		if unique != "" && unique != sku {
+			return ""
+		}
+		unique = sku
+	}
+	return unique
 }
 
 func (s *Server) applyCarrierPoliciesToChannelResult(ctx context.Context, shopKey string, requestData, result map[string]any) error {
-	groups, err := s.store.ListMergedCarrierPolicies(ctx, shopKey)
+	warehouseSKU := s.orderWarehouseSKU(ctx, shopKey, firstString(requestData, "orderNo"))
+	groups, err := s.carrierPolicies(ctx, warehouseSKU)
 	if err != nil {
 		return err
 	}
@@ -457,14 +462,14 @@ func (s *Server) rejectDisabledCarrierPurchase(ctx context.Context, shopKey stri
 	if preRequestID == "" || channelCode == "" {
 		return nil
 	}
-	warehouseCode, err := s.store.ShippingQuoteWarehouse(ctx, shopKey, preRequestID)
+	warehouseCode, orderNo, err := s.store.ShippingQuoteWarehouseAndOrder(ctx, shopKey, preRequestID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil
 	}
 	if err != nil {
 		return err
 	}
-	groups, err := s.store.ListMergedCarrierPolicies(ctx, shopKey)
+	groups, err := s.carrierPolicies(ctx, s.orderWarehouseSKU(ctx, shopKey, orderNo))
 	if err != nil {
 		return err
 	}

@@ -1618,16 +1618,11 @@ func (s *Server) inventoryThresholds(writer http.ResponseWriter, request *http.R
 		writeJSON(writer, http.StatusServiceUnavailable, response{Success: false, Error: "领星查询服务未配置"})
 		return
 	}
-	shopKey, err := s.requestedShopKey(request, request.URL.Query().Get("shop_key"))
-	if err != nil {
-		writeJSON(writer, http.StatusBadRequest, response{Success: false, Error: err.Error()})
-		return
-	}
 	page := queryInt(request, "page", 1)
 	pageSize := queryInt(request, "page_size", 30)
 	ctx, cancel := context.WithTimeout(request.Context(), s.requestTimeout)
 	defer cancel()
-	item, err := s.xlwms.ListShopSKUInventoryThresholds(ctx, "shein", shopKey, request.URL.Query().Get("q"), page, pageSize)
+	item, err := s.xlwms.ListPlatformSKUInventoryThresholds(ctx, "shein", request.URL.Query().Get("q"), page, pageSize)
 	if err != nil {
 		writeXLWMSError(writer, err)
 		return
@@ -1643,15 +1638,10 @@ func (s *Server) inventoryThresholdDefaults(writer http.ResponseWriter, request 
 		writeJSON(writer, http.StatusServiceUnavailable, response{Success: false, Error: "领星查询服务未配置"})
 		return
 	}
-	shopKey, err := s.requestedShopKey(request, request.URL.Query().Get("shop_key"))
-	if err != nil {
-		writeJSON(writer, http.StatusBadRequest, response{Success: false, Error: err.Error()})
-		return
-	}
 	ctx, cancel := context.WithTimeout(request.Context(), s.requestTimeout)
 	defer cancel()
 	if request.Method == http.MethodGet {
-		item, err := s.xlwms.ShopInventoryThresholds(ctx, "shein", shopKey)
+		item, err := s.xlwms.PlatformInventoryThresholds(ctx, "shein")
 		if err != nil {
 			writeXLWMSError(writer, err)
 			return
@@ -1663,27 +1653,7 @@ func (s *Server) inventoryThresholdDefaults(writer http.ResponseWriter, request 
 	if !decodeJSON(writer, request, &payload) {
 		return
 	}
-	item, err := s.xlwms.UpdateShopInventoryThresholds(ctx, "shein", shopKey, payload)
-	if err != nil {
-		writeXLWMSError(writer, err)
-		return
-	}
-	writeJSON(writer, http.StatusOK, response{Success: true, Data: item})
-}
-
-func (s *Server) resetInventoryThresholdDefaults(writer http.ResponseWriter, request *http.Request) {
-	if s.xlwms == nil {
-		writeJSON(writer, http.StatusServiceUnavailable, response{Success: false, Error: "领星查询服务未配置"})
-		return
-	}
-	shopKey, err := s.requestedShopKey(request, request.URL.Query().Get("shop_key"))
-	if err != nil {
-		writeJSON(writer, http.StatusBadRequest, response{Success: false, Error: err.Error()})
-		return
-	}
-	ctx, cancel := context.WithTimeout(request.Context(), s.requestTimeout)
-	defer cancel()
-	item, err := s.xlwms.ResetShopInventoryThresholds(ctx, "shein", shopKey)
+	item, err := s.xlwms.UpdatePlatformInventoryThresholds(ctx, "shein", payload)
 	if err != nil {
 		writeXLWMSError(writer, err)
 		return
@@ -1696,18 +1666,13 @@ func (s *Server) updateSKUInventoryThreshold(writer http.ResponseWriter, request
 		writeJSON(writer, http.StatusServiceUnavailable, response{Success: false, Error: "领星查询服务未配置"})
 		return
 	}
-	shopKey, err := s.requestedShopKey(request, request.URL.Query().Get("shop_key"))
-	if err != nil {
-		writeJSON(writer, http.StatusBadRequest, response{Success: false, Error: err.Error()})
-		return
-	}
 	var payload xlwms.InventoryThresholds
 	if !decodeJSON(writer, request, &payload) {
 		return
 	}
 	ctx, cancel := context.WithTimeout(request.Context(), s.requestTimeout)
 	defer cancel()
-	item, err := s.xlwms.UpdateShopSKUInventoryThreshold(ctx, "shein", shopKey, request.PathValue("warehouseSKU"), payload)
+	item, err := s.xlwms.UpdatePlatformSKUInventoryThreshold(ctx, "shein", request.PathValue("warehouseSKU"), payload)
 	if err != nil {
 		writeXLWMSError(writer, err)
 		return
@@ -1720,18 +1685,17 @@ func (s *Server) resetSKUInventoryThreshold(writer http.ResponseWriter, request 
 		writeJSON(writer, http.StatusServiceUnavailable, response{Success: false, Error: "领星查询服务未配置"})
 		return
 	}
-	shopKey, err := s.requestedShopKey(request, request.URL.Query().Get("shop_key"))
-	if err != nil {
-		writeJSON(writer, http.StatusBadRequest, response{Success: false, Error: err.Error()})
-		return
-	}
 	ctx, cancel := context.WithTimeout(request.Context(), s.requestTimeout)
 	defer cancel()
-	if err := s.xlwms.ResetShopSKUInventoryThreshold(ctx, "shein", shopKey, request.PathValue("warehouseSKU")); err != nil {
+	if err := s.xlwms.ResetPlatformSKUInventoryThreshold(ctx, "shein", request.PathValue("warehouseSKU")); err != nil {
 		writeXLWMSError(writer, err)
 		return
 	}
 	writeJSON(writer, http.StatusOK, response{Success: true, Data: map[string]bool{"deleted": true}})
+}
+
+func inventoryThresholdDefaultResetGone(writer http.ResponseWriter, _ *http.Request) {
+	writeJSON(writer, http.StatusGone, response{Success: false, Error: "platform inventory thresholds have no parent default"})
 }
 
 func warehouseQuantities(order shein.OrderQueueItem) (map[string]int, []string) {

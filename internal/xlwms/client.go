@@ -67,6 +67,38 @@ type InventoryItem struct {
 	Quantity     int    `json:"quantity"`
 }
 
+type CarrierPolicy struct {
+	WarehouseKey string `json:"warehouse_key"`
+	CarrierCode  string `json:"carrier_code"`
+	Priority     int    `json:"priority"`
+	Enabled      bool   `json:"enabled"`
+}
+
+type WarehouseCarrierPolicies struct {
+	WarehouseKey string          `json:"warehouse_key"`
+	WarehouseSKU string          `json:"warehouse_sku,omitempty"`
+	Customized   bool            `json:"customized"`
+	Source       string          `json:"source"`
+	Carriers     []CarrierPolicy `json:"carriers"`
+}
+
+func (client *Client) CarrierPolicies(ctx context.Context, platform, warehouseSKU string) ([]WarehouseCarrierPolicies, error) {
+	platform = strings.ToLower(strings.TrimSpace(platform))
+	if platform == "" {
+		return nil, errors.New("platform is required")
+	}
+	values := url.Values{}
+	values.Set("platform", platform)
+	if warehouseSKU = strings.TrimSpace(warehouseSKU); warehouseSKU != "" {
+		values.Set("warehouse_sku", warehouseSKU)
+	}
+	var result []WarehouseCarrierPolicies
+	if err := client.do(ctx, http.MethodGet, "/fulfillment-policies/carriers?"+values.Encode(), nil, "", "", "", &result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
 type envelope struct {
 	Success bool            `json:"success"`
 	Data    json.RawMessage `json:"data"`
@@ -305,15 +337,11 @@ type InventoryThresholds struct {
 	TotalThreshold float64 `json:"total_threshold"`
 }
 
-type ShopInventoryThresholds struct {
+type PlatformInventoryThresholds struct {
 	Platform       string    `json:"platform"`
-	ShopCode       string    `json:"shop_code"`
-	ShopName       string    `json:"shop_name"`
-	Enabled        bool      `json:"enabled"`
 	EastThreshold  float64   `json:"east_threshold"`
 	WestThreshold  float64   `json:"west_threshold"`
 	TotalThreshold float64   `json:"total_threshold"`
-	Customized     bool      `json:"customized"`
 	UpdatedAt      time.Time `json:"updated_at"`
 }
 
@@ -333,43 +361,47 @@ type SKUInventoryThreshold struct {
 }
 
 type InventoryThresholdPage struct {
-	Records           []SKUInventoryThreshold `json:"records"`
-	Total             int                     `json:"total"`
-	Page              int                     `json:"page"`
-	PageSize          int                     `json:"page_size"`
-	Pages             int                     `json:"pages"`
-	DefaultThresholds ShopInventoryThresholds `json:"default_thresholds"`
+	Records           []SKUInventoryThreshold     `json:"records"`
+	Total             int                         `json:"total"`
+	Page              int                         `json:"page"`
+	PageSize          int                         `json:"page_size"`
+	Pages             int                         `json:"pages"`
+	DefaultThresholds PlatformInventoryThresholds `json:"default_thresholds"`
 }
 
-func (client *Client) ShopInventoryThresholds(ctx context.Context, platform, shopCode string) (ShopInventoryThresholds, error) {
-	var result ShopInventoryThresholds
-	if err := client.do(ctx, http.MethodGet, "/inventory-thresholds/defaults?platform="+url.QueryEscape(platform)+"&shop="+url.QueryEscape(shopCode), nil, "", platform, shopCode, &result); err != nil {
-		return ShopInventoryThresholds{}, err
+func (client *Client) PlatformInventoryThresholds(ctx context.Context, platform string) (PlatformInventoryThresholds, error) {
+	platform = strings.TrimSpace(strings.ToLower(platform))
+	if platform == "" {
+		return PlatformInventoryThresholds{}, errors.New("platform is required")
+	}
+	var result PlatformInventoryThresholds
+	if err := client.do(ctx, http.MethodGet, "/inventory-thresholds/defaults?platform="+url.QueryEscape(platform), nil, "", "", "", &result); err != nil {
+		return PlatformInventoryThresholds{}, err
 	}
 	return result, nil
 }
 
-func (client *Client) UpdateShopInventoryThresholds(ctx context.Context, platform, shopCode string, thresholds InventoryThresholds) (ShopInventoryThresholds, error) {
+func (client *Client) UpdatePlatformInventoryThresholds(ctx context.Context, platform string, thresholds InventoryThresholds) (PlatformInventoryThresholds, error) {
+	platform = strings.TrimSpace(strings.ToLower(platform))
+	if platform == "" {
+		return PlatformInventoryThresholds{}, errors.New("platform is required")
+	}
 	body, err := json.Marshal(thresholds)
 	if err != nil {
-		return ShopInventoryThresholds{}, err
+		return PlatformInventoryThresholds{}, err
 	}
-	var result ShopInventoryThresholds
-	if err := client.do(ctx, http.MethodPatch, "/inventory-thresholds/defaults?platform="+url.QueryEscape(platform)+"&shop="+url.QueryEscape(shopCode), body, "", platform, shopCode, &result); err != nil {
-		return ShopInventoryThresholds{}, err
-	}
-	return result, nil
-}
-
-func (client *Client) ResetShopInventoryThresholds(ctx context.Context, platform, shopCode string) (ShopInventoryThresholds, error) {
-	var result ShopInventoryThresholds
-	if err := client.do(ctx, http.MethodPost, "/inventory-thresholds/defaults/reset?platform="+url.QueryEscape(platform)+"&shop="+url.QueryEscape(shopCode), nil, "", platform, shopCode, &result); err != nil {
-		return ShopInventoryThresholds{}, err
+	var result PlatformInventoryThresholds
+	if err := client.do(ctx, http.MethodPatch, "/inventory-thresholds/defaults?platform="+url.QueryEscape(platform), body, "", "", "", &result); err != nil {
+		return PlatformInventoryThresholds{}, err
 	}
 	return result, nil
 }
 
-func (client *Client) ListShopSKUInventoryThresholds(ctx context.Context, platform, shopCode, query string, page, pageSize int) (InventoryThresholdPage, error) {
+func (client *Client) ListPlatformSKUInventoryThresholds(ctx context.Context, platform, query string, page, pageSize int) (InventoryThresholdPage, error) {
+	platform = strings.TrimSpace(strings.ToLower(platform))
+	if platform == "" {
+		return InventoryThresholdPage{}, errors.New("platform is required")
+	}
 	if page < 1 {
 		page = 1
 	}
@@ -378,20 +410,23 @@ func (client *Client) ListShopSKUInventoryThresholds(ctx context.Context, platfo
 	}
 	values := url.Values{}
 	values.Set("platform", platform)
-	values.Set("shop", shopCode)
 	values.Set("page", fmt.Sprintf("%d", page))
 	values.Set("page_size", fmt.Sprintf("%d", pageSize))
 	if query = strings.TrimSpace(query); query != "" {
 		values.Set("q", query)
 	}
 	var result InventoryThresholdPage
-	if err := client.do(ctx, http.MethodGet, "/inventory-thresholds?"+values.Encode(), nil, "", platform, shopCode, &result); err != nil {
+	if err := client.do(ctx, http.MethodGet, "/inventory-thresholds?"+values.Encode(), nil, "", "", "", &result); err != nil {
 		return InventoryThresholdPage{}, err
 	}
 	return result, nil
 }
 
-func (client *Client) UpdateShopSKUInventoryThreshold(ctx context.Context, platform, shopCode, warehouseSKU string, thresholds InventoryThresholds) (SKUInventoryThreshold, error) {
+func (client *Client) UpdatePlatformSKUInventoryThreshold(ctx context.Context, platform, warehouseSKU string, thresholds InventoryThresholds) (SKUInventoryThreshold, error) {
+	platform = strings.TrimSpace(strings.ToLower(platform))
+	if platform == "" {
+		return SKUInventoryThreshold{}, errors.New("platform is required")
+	}
 	warehouseSKU = strings.TrimSpace(warehouseSKU)
 	if warehouseSKU == "" {
 		return SKUInventoryThreshold{}, errors.New("warehouse SKU is required")
@@ -401,7 +436,7 @@ func (client *Client) UpdateShopSKUInventoryThreshold(ctx context.Context, platf
 		return SKUInventoryThreshold{}, err
 	}
 	var result SKUInventoryThreshold
-	if err := client.do(ctx, http.MethodPatch, "/inventory-thresholds/"+url.PathEscape(warehouseSKU)+"?platform="+url.QueryEscape(platform)+"&shop="+url.QueryEscape(shopCode), body, "", platform, shopCode, &result); err != nil {
+	if err := client.do(ctx, http.MethodPatch, "/inventory-thresholds/"+url.PathEscape(warehouseSKU)+"?platform="+url.QueryEscape(platform), body, "", "", "", &result); err != nil {
 		return SKUInventoryThreshold{}, err
 	}
 	return result, nil
@@ -528,13 +563,17 @@ func (client *Client) postOutbound(ctx context.Context, warehouse, operation str
 	return result, nil
 }
 
-func (client *Client) ResetShopSKUInventoryThreshold(ctx context.Context, platform, shopCode, warehouseSKU string) error {
+func (client *Client) ResetPlatformSKUInventoryThreshold(ctx context.Context, platform, warehouseSKU string) error {
+	platform = strings.TrimSpace(strings.ToLower(platform))
+	if platform == "" {
+		return errors.New("platform is required")
+	}
 	warehouseSKU = strings.TrimSpace(warehouseSKU)
 	if warehouseSKU == "" {
 		return errors.New("warehouse SKU is required")
 	}
 	var result map[string]bool
-	return client.do(ctx, http.MethodPost, "/inventory-thresholds/"+url.PathEscape(warehouseSKU)+"/reset?platform="+url.QueryEscape(platform)+"&shop="+url.QueryEscape(shopCode), nil, "", platform, shopCode, &result)
+	return client.do(ctx, http.MethodPost, "/inventory-thresholds/"+url.PathEscape(warehouseSKU)+"/reset?platform="+url.QueryEscape(platform), nil, "", "", "", &result)
 }
 
 func (client *Client) do(ctx context.Context, method, path string, body []byte, account, platform, shopCode string, target any) error {

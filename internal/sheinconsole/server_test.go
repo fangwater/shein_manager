@@ -10,15 +10,14 @@ import (
 )
 
 func TestRejectDisabledCarrierPurchaseUsesWarehousePolicy(t *testing.T) {
-	policies := shein.DefaultCarrierPolicies("DPS002")
-	policies[0].Enabled = false
+	policies := []shein.CarrierPolicy{{WarehouseKey: "DPS002", CarrierCode: "GOFO", Priority: 1, Enabled: false}}
 	reason := shein.ChannelUnavailableReason(
 		"GOFO-D2D250718-Na", "", "", "WH2604283535967233", "",
 		shein.PoliciesByWarehouse([]shein.WarehouseCarrierPolicies{{
 			WarehouseKey: "DPS002", Carriers: policies,
 		}})["DPS002"],
 	)
-	if reason != "GOFO 店铺策略已在 DPS002 仓库禁用" {
+	if reason != "SHEIN 发货策略已在 DPS002 仓库禁用 GOFO" {
 		t.Fatalf("purchase of a disabled warehouse carrier must be rejected: %q", reason)
 	}
 }

@@ -45,7 +45,6 @@
         <button class="nav-button" data-view="ledger"><svg><use href="#i-ledger"/></svg><span>自动发货账本</span><b id="nav-ledger-count">0</b></button>
         <span id="nav-label-count" hidden>0</span>
         <button class="nav-button" data-view="inventory-thresholds"><svg><use href="#i-warning"/></svg><span>库存安全线</span></button>
-        <button class="nav-button" data-view="warehouses"><svg><use href="#i-warehouse"/></svg><span>仓库快递</span></button>
         <button class="nav-button" data-view="tools"><svg><use href="#i-tools"/></svg><span>物流工具</span></button>
       </nav>
       <div class="sidebar-foot"><a class="app-switch-link" href="/warehouse-console/"><svg><use href="#i-tools"/></svg><span>仓库运营中台</span></a><div class="sidebar-service"><span class="dot warning" id="service-dot"></span><span id="service-text">检查服务</span></div></div>
@@ -268,15 +267,12 @@
         </section>
 
         <section class="view" id="view-inventory-thresholds">
-          <div class="page-head"><div><h1>库存安全线</h1><p>当前店铺独立维护自动发货转人工阈值，未单独设置的 SKU 使用店铺默认</p></div><button class="secondary-button" id="refresh-inventory-thresholds" type="button"><svg><use href="#i-refresh"/></svg>刷新</button></div>
-          <form class="threshold-defaults" id="shop-threshold-form">
-            <div class="threshold-default-title"><strong>店铺默认</strong><small id="shop-threshold-scope">当前店铺未单独设置 SKU 时使用</small></div>
-            <label><span>美东低于或等于</span><input id="shop-east-threshold" required type="number" min="0" step="1"></label>
-            <label><span>美西低于或等于</span><input id="shop-west-threshold" required type="number" min="0" step="1"></label>
-            <label><span>总库存低于或等于</span><input id="shop-total-threshold" required type="number" min="0" step="1"></label>
+          <div class="page-head"><div><h1>库存安全线</h1><p>SHEIN 平台统一维护自动发货转人工阈值，未单独设置的 SKU 使用平台默认</p></div><button class="secondary-button" id="refresh-inventory-thresholds" type="button"><svg><use href="#i-refresh"/></svg>刷新</button></div>
+          <form class="threshold-defaults" id="platform-threshold-form">
+            <div class="threshold-default-title"><strong>SHEIN 平台默认</strong><small id="platform-threshold-scope">SHEIN 全部店铺共用</small></div>
+            <label><span>四仓总库存低于或等于</span><input id="platform-total-threshold" required type="number" min="0" step="1"></label>
             <div class="threshold-default-actions">
-              <button class="secondary-button" id="reset-shop-thresholds" type="button" hidden><svg><use href="#i-refresh"/></svg>恢复仓库默认</button>
-              <button class="primary-button" type="submit"><svg><use href="#i-check"/></svg>保存店铺默认</button>
+              <button class="primary-button" type="submit"><svg><use href="#i-check"/></svg>保存平台默认</button>
             </div>
           </form>
           <div class="toolbar">
@@ -285,21 +281,12 @@
           </div>
           <div class="table-shell sku-rule-table">
             <table>
-              <thead><tr><th>仓库 SKU / 商品</th><th>美东</th><th>美西</th><th>总库存</th><th>规则来源</th><th></th></tr></thead>
+              <thead><tr><th>仓库 SKU / 商品</th><th>美东库存</th><th>美西库存</th><th>四仓总库存</th><th>安全线</th><th>规则来源</th><th></th></tr></thead>
               <tbody id="inventory-threshold-rows"></tbody>
             </table>
             <div class="empty" id="inventory-threshold-empty" hidden><svg><use href="#i-warning"/></svg><strong>没有可配置的 SKU</strong><span>仓库 SKU 同步后会显示在这里</span></div>
           </div>
           <div class="pager" id="inventory-threshold-pager" hidden></div>
-        </section>
-
-        <section class="view" id="view-warehouses">
-          <div class="page-head">
-            <div><h1>仓库快递</h1><p>当前店铺按 OMS 仓独立配置快递启用状态和优先级；禁用后自动发货和人工购单都不能再选</p></div>
-            <button class="secondary-button" id="refresh-carrier-policies" type="button"><svg><use href="#i-refresh"/></svg>刷新</button>
-          </div>
-          <div class="section-title carrier-policy-heading"><h2>仓库快递优先级</h2><span id="carrier-policy-shop"></span></div>
-          <div class="carrier-policy-grid" id="carrier-policy-grid"></div>
         </section>
 
         <section class="view" id="view-tools">

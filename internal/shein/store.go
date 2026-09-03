@@ -377,20 +377,6 @@ func (s *Store) Migrate(ctx context.Context) error {
 		CREATE INDEX IF NOT EXISTS idx_shein_go_fulfillment_tasks_watch
 			ON shein_go_fulfillment_tasks (shop_key, oms_sync_status, outbound_order_no, updated_at DESC);
 
-		CREATE TABLE IF NOT EXISTS shein_go_carrier_policies (
-			shop_key text NOT NULL,
-			oms_warehouse_key text NOT NULL,
-			carrier_code text NOT NULL,
-			priority integer NOT NULL CHECK (priority > 0),
-			enabled boolean NOT NULL DEFAULT true,
-			updated_at timestamptz NOT NULL DEFAULT now(),
-			PRIMARY KEY (shop_key, oms_warehouse_key, carrier_code)
-		);
-		CREATE INDEX IF NOT EXISTS idx_shein_go_carrier_policies_lookup
-			ON shein_go_carrier_policies (shop_key, oms_warehouse_key, priority);
-		UPDATE shein_go_carrier_policies
-			SET enabled = false, updated_at = now()
-			WHERE oms_warehouse_key = 'ARP_EAST' AND carrier_code = 'SWIFTX' AND enabled;
 	`)
 	if err != nil {
 		return fmt.Errorf("migrate SHEIN Go tables: %w", err)

@@ -12,7 +12,6 @@ os.environ["SHEIN_WEB_COOKIE_SECURE"] = "false"
 from shein_api_manager.pnl_web import (
     ACCESS_COST_TEMPLATES,
     ACCESS_INVENTORY,
-    ACCESS_SKU_MAPPINGS,
     COOKIE_NAME,
     ROLE_ADMIN,
     ROLE_OPERATIONS,
@@ -56,7 +55,6 @@ class PnlWebAuthTests(unittest.TestCase):
             VIEW_RETURNS,
             VIEW_LOGISTICS,
             VIEW_SHIPPING_FEE,
-            ACCESS_SKU_MAPPINGS,
             VIEW_WAREHOUSE_RELATIONS,
         ):
             self.assertTrue(operations.can(permission))
@@ -64,7 +62,6 @@ class PnlWebAuthTests(unittest.TestCase):
             self.assertFalse(operations.can(permission))
         for permission in (
             VIEW_RETURNS,
-            ACCESS_SKU_MAPPINGS,
             VIEW_WAREHOUSE_RELATIONS,
             VIEW_WAREHOUSE_COST,
             ACCESS_INVENTORY,
@@ -99,7 +96,7 @@ class PnlWebAuthTests(unittest.TestCase):
         self.assertEqual(login.status_code, 303)
         self.assertEqual(login.headers["location"], "/logistics")
         self.assertEqual(self.client.get("/").status_code, 303)
-        for path in ("/logistics", "/shipping-fee", "/returns", "/sku-mappings"):
+        for path in ("/logistics", "/shipping-fee", "/returns"):
             self.assertEqual(self.client.get(path).status_code, 200)
         relations = self.client.get("/warehouse-relations")
         self.assertEqual(relations.status_code, 200)
@@ -113,9 +110,9 @@ class PnlWebAuthTests(unittest.TestCase):
         login = self.login("order-follow-up", "order-follow-up")
 
         self.assertEqual(login.status_code, 303)
-        self.assertEqual(login.headers["location"], "/sku-mappings")
+        self.assertEqual(login.headers["location"], "/warehouse-relations")
         self.assertEqual(self.client.get("/").status_code, 303)
-        for path in ("/returns", "/sku-mappings", "/warehouse-relations", "/inventory", "/inventory-templates"):
+        for path in ("/returns", "/warehouse-relations", "/inventory", "/inventory-templates"):
             self.assertEqual(self.client.get(path).status_code, 200)
         relations = self.client.get("/warehouse-relations")
         self.assertIn("<div>成本</div>", relations.text)
@@ -163,19 +160,19 @@ class PnlWebAuthTests(unittest.TestCase):
         login = self.login("temu-test", "temu-test")
 
         self.assertEqual(login.status_code, 303)
-        self.assertEqual(login.headers["location"], "/sku-mappings")
+        self.assertEqual(login.headers["location"], "/warehouse-relations")
         self.assertEqual(self.client.get("/").status_code, 303)
         self.assertEqual(self.client.get("/api/filters").status_code, 403)
         self.assertEqual(self.client.get("/api/data").status_code, 403)
         self.assertEqual(self.client.get("/api/orders").status_code, 403)
         self.assertEqual(self.client.post("/api/sync-latest-orders").status_code, 403)
 
-        mappings = self.client.get("/sku-mappings")
+        relations = self.client.get("/warehouse-relations")
         returns = self.client.get("/returns")
-        self.assertEqual(mappings.status_code, 200)
+        self.assertEqual(relations.status_code, 200)
         self.assertEqual(returns.status_code, 200)
-        self.assertNotIn(">PNL<", mappings.text)
-        self.assertIn("退货明细", mappings.text)
+        self.assertNotIn(">PNL<", relations.text)
+        self.assertIn("/warehouse-console/sku-mappings", relations.text)
 
     def test_pyy_can_run_latest_order_sync(self) -> None:
         self.login("pyy", "12345")
@@ -262,8 +259,14 @@ class PnlWebAuthTests(unittest.TestCase):
         cookie = login.cookies[COOKIE_NAME]
         self.client.cookies.set(COOKIE_NAME, cookie + "x")
 
-        response = self.client.get("/api/sku-mappings")
+        response = self.client.get("/api/inventory")
         self.assertEqual(response.status_code, 401)
+
+    def test_legacy_sku_mapping_routes_are_removed(self) -> None:
+        self.login("operations", "operations")
+
+        self.assertEqual(self.client.get("/sku-mappings").status_code, 404)
+        self.assertEqual(self.client.get("/api/sku-mappings").status_code, 404)
 
     def test_logout_clears_session(self) -> None:
         self.login("pyy", "12345")

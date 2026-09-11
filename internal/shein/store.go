@@ -9,14 +9,21 @@ import (
 	"strings"
 	"time"
 
+	"shein-api-manager/internal/xlwms"
+
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 type Store struct {
-	pool       *pgxpool.Pool
-	shopKey    string
-	schemaName string
+	pool                *pgxpool.Pool
+	shopKey             string
+	schemaName          string
+	platformSKUResolver PlatformSKUResolver
+}
+
+type PlatformSKUResolver interface {
+	ResolvePlatformSKUs(context.Context, string, []string) (xlwms.PlatformSKUMappingResolution, error)
 }
 
 type ShopSummary struct {
@@ -107,6 +114,10 @@ func NewStoreForShop(ctx context.Context, databaseURL, schemaName, shopKey strin
 
 func (s *Store) Close() {
 	s.pool.Close()
+}
+
+func (s *Store) SetPlatformSKUResolver(resolver PlatformSKUResolver) {
+	s.platformSKUResolver = resolver
 }
 
 func (s *Store) Migrate(ctx context.Context) error {
@@ -379,6 +390,49 @@ func (s *Store) Migrate(ctx context.Context) error {
 			ADD COLUMN IF NOT EXISTS resolved_at timestamptz;
 		CREATE INDEX IF NOT EXISTS idx_shein_go_fulfillment_tasks_watch
 			ON shein_go_fulfillment_tasks (shop_key, oms_sync_status, outbound_order_no, updated_at DESC);
+
+		CREATE TABLE IF NOT EXISTS shein_sku_aliases (
+			shop_key text NOT NULL,
+			sku_code text NOT NULL,
+			seller_sku text NOT NULL,
+			source text NOT NULL,
+			first_seen_at timestamptz NOT NULL DEFAULT now(),
+			last_seen_at timestamptz NOT NULL DEFAULT now(),
+			PRIMARY KEY (shop_key, sku_code, seller_sku)
+		);
+		CREATE INDEX IF NOT EXISTS idx_shein_sku_aliases_seller
+			ON shein_sku_aliases(shop_key, seller_sku);
+
+		INSERT INTO shein_sku_aliases(shop_key,sku_code,seller_sku,source)
+		SELECT DISTINCT orders.shop_key,btrim(goods->>'skuCode'),btrim(goods->>'sellerSku'),'order'
+		FROM shein_orders orders
+		CROSS JOIN LATERAL jsonb_array_elements(
+			CASE WHEN jsonb_typeof(orders.detail_payload->'orderGoodsInfoList')='array'
+				THEN orders.detail_payload->'orderGoodsInfoList' ELSE '[]'::jsonb END
+		) goods
+		WHERE btrim(coalesce(goods->>'skuCode',''))<>'' AND btrim(coalesce(goods->>'sellerSku',''))<>''
+		ON CONFLICT(shop_key,sku_code,seller_sku) DO UPDATE
+		SET source='order',last_seen_at=now();
+
+		DO $product_alias_backfill$
+		BEGIN
+			IF to_regclass('shein_product_details') IS NOT NULL THEN
+				EXECUTE $product_alias_sql$
+					INSERT INTO shein_sku_aliases(shop_key,sku_code,seller_sku,source)
+					SELECT DISTINCT details.shop_key,btrim(sku->>'skuCode'),btrim(sku->>'supplierSku'),'product'
+					FROM shein_product_details details
+					CROSS JOIN LATERAL jsonb_array_elements(
+						CASE WHEN jsonb_typeof(details.skc_list)='array' THEN details.skc_list ELSE '[]'::jsonb END
+					) skc
+					CROSS JOIN LATERAL jsonb_array_elements(
+						CASE WHEN jsonb_typeof(skc->'skuList')='array' THEN skc->'skuList' ELSE '[]'::jsonb END
+					) sku
+					WHERE btrim(coalesce(sku->>'skuCode',''))<>'' AND btrim(coalesce(sku->>'supplierSku',''))<>''
+					ON CONFLICT(shop_key,sku_code,seller_sku) DO UPDATE
+					SET source=CASE WHEN shein_sku_aliases.source='order' THEN 'order' ELSE 'product' END,last_seen_at=now()
+				$product_alias_sql$;
+			END IF;
+		END $product_alias_backfill$;
 
 	`)
 	if err != nil {

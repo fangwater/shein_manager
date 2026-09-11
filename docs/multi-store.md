@@ -13,7 +13,7 @@ display name, schema name, enabled state, and SHEIN credentials. The fulfillment
 API returns only `code`, `name`, and `default`; it never returns credentials,
 credential hints, API base URLs, or schema names.
 
-Orders, returns, products, SKU mappings, inventory cost records, synchronization
+Orders, returns, products, SKU aliases, inventory cost records, synchronization
 state, fulfillment tasks, operation ledgers, quotes, batches, and label purchase
 records live inside the registered shop schema. The tables keep `shop_key` as a
 second isolation boundary even though each connection already uses
@@ -22,7 +22,9 @@ second isolation boundary even though each connection already uses
 `public.shein_shops`, `health_checks`, and the `numbers_*` workbook tables remain
 shared. XLWMS inventory and platform-order data remain owned by the warehouse
 service and are queried through its API instead of being copied into a shop
-schema.
+schema. Platform SKU to warehouse SKU recipes are likewise account-independent
+XLWMS data; SHEIN stores only the `skuCode -> sellerSku` aliases needed for old
+snapshots that do not contain `sellerSku`.
 
 The current production data was moved transactionally from `public` and the
 legacy `default` key with:

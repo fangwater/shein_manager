@@ -7,7 +7,7 @@ from fastapi import HTTPException
 
 os.environ["SHEIN_WEB_COOKIE_SECURE"] = "false"
 
-from shein_api_manager.db import INVENTORY_SCHEMA_SQL, SKU_MAPPING_SCHEMA_SQL
+from shein_api_manager.db import INVENTORY_SCHEMA_SQL, WAREHOUSE_SKU_SCHEMA_SQL
 from scripts.export_orders_profit import infer_pcs, warehouse_cost_for_sku
 
 from shein_api_manager.pnl_web import (
@@ -47,7 +47,7 @@ class InventoryModelTests(unittest.TestCase):
         self.assertNotIn("CREATE TABLE IF NOT EXISTS shein_inventory_tickets", INVENTORY_SCHEMA_SQL)
 
     def test_warehouse_operation_fee_schema_defaults_to_zero(self) -> None:
-        self.assertIn("operation_fee_price numeric NOT NULL DEFAULT 0", SKU_MAPPING_SCHEMA_SQL)
+        self.assertIn("operation_fee_price numeric NOT NULL DEFAULT 0", WAREHOUSE_SKU_SCHEMA_SQL)
 
     def test_warehouse_cost_combines_three_costs_and_mapping_quantity(self) -> None:
         costs = {

@@ -1,10 +1,8 @@
 from __future__ import annotations
 
 import base64
-import csv
 import hashlib
 import hmac
-import io
 import json
 import os
 import re
@@ -23,12 +21,13 @@ import pandas as pd
 import psycopg
 from psycopg.rows import dict_row
 
-from fastapi import Body, Cookie, FastAPI, File, Form, HTTPException, Query, UploadFile
+from fastapi import Body, Cookie, FastAPI, Form, HTTPException, Query
 
 from .config import load_settings
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
 
 from .xlwms_shein_orders import query_shein_cost_order_page
+from .platform_mappings import recipe_key, resolve_platform_skus
 
 from .xlwms_bridge import (
     get_sync_status as get_xlwms_sync_status,
@@ -51,7 +50,6 @@ VIEW_PROFIT = "view_profit"
 VIEW_RETURNS = "view_returns"
 VIEW_LOGISTICS = "view_logistics"
 VIEW_SHIPPING_FEE = "view_shipping_fee"
-ACCESS_SKU_MAPPINGS = "access_sku_mappings"
 VIEW_WAREHOUSE_RELATIONS = "view_warehouse_relations"
 VIEW_WAREHOUSE_COST = "view_warehouse_cost"
 ACCESS_INVENTORY = "access_inventory"
@@ -66,7 +64,6 @@ ROLE_PERMISSIONS: dict[str, frozenset[str]] = {
         VIEW_RETURNS,
         VIEW_LOGISTICS,
         VIEW_SHIPPING_FEE,
-        ACCESS_SKU_MAPPINGS,
         VIEW_WAREHOUSE_RELATIONS,
         VIEW_WAREHOUSE_COST,
         ACCESS_INVENTORY,
@@ -76,12 +73,10 @@ ROLE_PERMISSIONS: dict[str, frozenset[str]] = {
         VIEW_RETURNS,
         VIEW_LOGISTICS,
         VIEW_SHIPPING_FEE,
-        ACCESS_SKU_MAPPINGS,
         VIEW_WAREHOUSE_RELATIONS,
     }),
     ROLE_ORDER_FOLLOW_UP: frozenset({
         VIEW_RETURNS,
-        ACCESS_SKU_MAPPINGS,
         VIEW_WAREHOUSE_RELATIONS,
         VIEW_WAREHOUSE_COST,
         ACCESS_INVENTORY,
@@ -90,9 +85,9 @@ ROLE_PERMISSIONS: dict[str, frozenset[str]] = {
 }
 ROLE_HOME_PATHS = {
     ROLE_ADMIN: "/",
-    ROLE_TEST: "/sku-mappings",
+    ROLE_TEST: "/warehouse-relations",
     ROLE_OPERATIONS: "/logistics",
-    ROLE_ORDER_FOLLOW_UP: "/sku-mappings",
+    ROLE_ORDER_FOLLOW_UP: "/warehouse-relations",
 }
 APP_TITLE = "Panda SHEIN PNL"
 ACTUAL_PNL_MODE = "actual"
@@ -102,7 +97,6 @@ NAV_PERMISSION_HREFS = {
     VIEW_LOGISTICS: ("logistics", "logistics-costs", "../logistics", "../logistics-costs"),
     VIEW_SHIPPING_FEE: ("shipping-fee",),
     VIEW_RETURNS: ("returns",),
-    ACCESS_SKU_MAPPINGS: ("sku-mappings",),
     VIEW_WAREHOUSE_RELATIONS: ("warehouse-relations",),
     ACCESS_INVENTORY: ("inventory",),
     ACCESS_COST_TEMPLATES: ("inventory-templates",),
@@ -352,13 +346,6 @@ def returns_page(token: str | None = None, shein_pnl_token: str | None = Cookie(
     return page_response("returns.html", shein_pnl_token, permission=VIEW_RETURNS)
 
 
-@app.get("/sku-mappings", response_class=HTMLResponse)
-def sku_mappings_page(token: str | None = None, shein_pnl_token: str | None = Cookie(default=None, alias=COOKIE_NAME)) -> HTMLResponse:
-    return page_response("sku_mappings.html", shein_pnl_token, permission=ACCESS_SKU_MAPPINGS)
-
-
-
-
 @app.get("/warehouse-relations", response_class=HTMLResponse)
 def warehouse_relations_page(token: str | None = None, shein_pnl_token: str | None = Cookie(default=None, alias=COOKIE_NAME)) -> HTMLResponse:
     return page_response("warehouse_relations.html", shein_pnl_token, permission=VIEW_WAREHOUSE_RELATIONS)
@@ -558,29 +545,78 @@ def load_pnl_relation_maps() -> tuple[dict[str, dict[str, Any]], dict[str, dict[
     try:
         with psycopg.connect(database_url(), row_factory=dict_row) as conn:
             catalog = build_product_sku_catalog(conn, settings.shop_key)
-            mapping_rows = conn.execute(
-                """
-                SELECT shein_sku, warehouse_sku, sku_group, warehouse_qty, updated_at
-                FROM shein_sku_mappings
-                WHERE shop_key = %s AND enabled = true
-                ORDER BY updated_at DESC, id DESC
-                """,
-                (settings.shop_key,),
-            ).fetchall()
+            mappings = platform_relation_maps(conn, settings.shop_key, catalog)
     except Exception:
         return {}, {}
-    mappings: dict[str, dict[str, Any]] = {}
-    for row in mapping_rows:
-        shein_sku = clean_text(row.get("shein_sku"))
-        if not shein_sku or shein_sku in mappings:
-            continue
-        mappings[shein_sku] = {
-            "warehouse_sku": clean_text(row.get("warehouse_sku")),
-            "sku_group": clean_text(row.get("sku_group")),
-            "warehouse_qty": number(row.get("warehouse_qty")),
-            "updated_at": row.get("updated_at"),
-        }
     return mappings, catalog
+
+
+def relation_mapping_from_platform(sku_code: str, mapping: dict[str, Any]) -> dict[str, Any] | None:
+    recipe = recipe_key(mapping)
+    if not recipe:
+        return None
+    items = [dict(item) for item in mapping.get("items") or [] if isinstance(item, dict)]
+    warehouse_label = " + ".join(
+        f"{warehouse_sku} x {quantity}" if quantity != 1 else warehouse_sku
+        for warehouse_sku, quantity in recipe
+    )
+    return {
+        "shein_sku": sku_code,
+        "warehouse_sku": recipe[0][0] if len(recipe) == 1 else warehouse_label,
+        "warehouse_qty": recipe[0][1] if len(recipe) == 1 else sum(quantity for _, quantity in recipe),
+        "sku_group": "default",
+        "note": "XLWMS 通用平台 SKU 映射",
+        "enabled": True,
+        "updated_at": mapping.get("updated_at"),
+        "items": items,
+    }
+
+
+def platform_relation_maps(
+    conn: psycopg.Connection,
+    shop_key: str,
+    catalog: dict[str, dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    alias_rows = conn.execute(
+        """
+        SELECT sku_code, seller_sku
+        FROM shein_sku_aliases
+        WHERE shop_key = %s
+        ORDER BY sku_code, CASE source WHEN 'order' THEN 0 ELSE 1 END, last_seen_at DESC
+        """,
+        (shop_key,),
+    ).fetchall()
+    aliases: dict[str, list[str]] = {}
+    for row in alias_rows:
+        sku_code = clean_text(row.get("sku_code"))
+        seller_sku = clean_text(row.get("seller_sku"))
+        if sku_code and seller_sku:
+            aliases.setdefault(sku_code, []).append(seller_sku)
+    for sku_code, product in catalog.items():
+        supplier_sku = clean_text(product.get("supplierSku"))
+        if supplier_sku:
+            aliases.setdefault(sku_code, []).append(supplier_sku)
+    candidates = list(catalog)
+    candidates.extend(seller_sku for values in aliases.values() for seller_sku in values)
+    resolved = resolve_platform_skus("shein", candidates)
+    mappings: dict[str, dict[str, Any]] = {}
+    for sku_code, seller_skus in aliases.items():
+        candidate_mappings = [resolved[value] for value in dict.fromkeys([*seller_skus, sku_code]) if value in resolved]
+        recipes = {recipe_key(candidate) for candidate in candidate_mappings if recipe_key(candidate)}
+        if len(recipes) != 1:
+            continue
+        recipe = next(iter(recipes))
+        exemplar = next(candidate for candidate in candidate_mappings if recipe_key(candidate) == recipe)
+        relation_mapping = relation_mapping_from_platform(sku_code, exemplar)
+        if relation_mapping:
+            mappings[sku_code] = relation_mapping
+    for sku_code in catalog:
+        if sku_code in mappings or sku_code in aliases or sku_code not in resolved:
+            continue
+        relation_mapping = relation_mapping_from_platform(sku_code, resolved[sku_code])
+        if relation_mapping:
+            mappings[sku_code] = relation_mapping
+    return mappings
 
 
 def enrich_pnl_items_with_relations(df: pd.DataFrame) -> pd.DataFrame:
@@ -2698,146 +2734,7 @@ def api_return_data(
     return JSONResponse({"summary": summary, "rows": rows})
 
 
-SKU_MAPPING_WAREHOUSE_ALIASES = {
-    "warehouse_sku", "warehousesku", "warehouse sku", "仓库sku", "仓库SKU", "仓库 SKU",
-    "仓库编码", "仓库商品编码", "本地sku", "本地SKU", "库存sku", "库存SKU", "sku",
-}
-SKU_MAPPING_SHEIN_ALIASES = {
-    "shein_sku", "sheinsku", "shein sku", "SHEIN SKU", "sheinSKU", "平台sku", "平台SKU",
-    "shein平台sku", "shein平台SKU", "shein商品sku", "shein商品SKU", "店铺sku", "店铺SKU",
-}
-SKU_MAPPING_LENGTH_ALIASES = {"length_cm", "lengthcm", "length", "长", "长度", "长cm", "长度cm", "product_length", "package_length"}
-SKU_MAPPING_WIDTH_ALIASES = {"width_cm", "widthcm", "width", "宽", "宽度", "宽cm", "宽度cm", "product_width", "package_width"}
-SKU_MAPPING_HEIGHT_ALIASES = {"height_cm", "heightcm", "height", "高", "高度", "高cm", "高度cm", "product_height", "package_height"}
-SKU_MAPPING_WEIGHT_ALIASES = {"weight_kg", "weightkg", "weight", "重量", "重", "重量kg", "product_weight", "package_weight"}
-SKU_MAPPING_PURCHASE_PRICE_ALIASES = {"purchase_price", "purchaseprice", "purchase", "采购价", "采购价格", "买入价", "进货价"}
-SKU_MAPPING_OCEAN_FREIGHT_PRICE_ALIASES = {"ocean_freight_price", "oceanfreightprice", "ocean_freight", "sea_freight", "shipping_price", "海运价格", "海运价", "海运费"}
-SKU_MAPPING_OPERATION_FEE_ALIASES = {"operation_fee_price", "operationfeeprice", "operation_fee", "operationfee", "handling_fee", "操作费", "操作费用"}
-DEFAULT_SKU_GROUP = "default"
-SKU_MAPPING_IMPORT_HEADERS = ["warehouse_sku", "shein_sku", "length_cm", "width_cm", "height_cm", "weight_kg", "purchase_price", "ocean_freight_price", "operation_fee_price"]
-SKU_MAPPING_HEADER_ALIASES = (
-    SKU_MAPPING_WAREHOUSE_ALIASES
-    | SKU_MAPPING_SHEIN_ALIASES
-    | SKU_MAPPING_LENGTH_ALIASES
-    | SKU_MAPPING_WIDTH_ALIASES
-    | SKU_MAPPING_HEIGHT_ALIASES
-    | SKU_MAPPING_WEIGHT_ALIASES
-    | SKU_MAPPING_PURCHASE_PRICE_ALIASES
-    | SKU_MAPPING_OCEAN_FREIGHT_PRICE_ALIASES
-    | SKU_MAPPING_OPERATION_FEE_ALIASES
-)
-
-
-def ensure_sku_mapping_store() -> tuple[str, str]:
-    from .db import ensure_sku_mapping_schema
-
-    url = database_url()
-    ensure_sku_mapping_schema(url)
-    return url, load_settings().shop_key
-
-
-def normalize_sku_mapping_header(value: Any) -> str:
-    return re.sub(r"[\s_\-()（）/]+", "", str(value or "").strip().lower())
-
-
-def read_table_value(row: dict[str, Any], aliases: set[str]) -> Any:
-    normalized_aliases = {normalize_sku_mapping_header(alias) for alias in aliases}
-    for key, value in row.items():
-        if normalize_sku_mapping_header(key) in normalized_aliases:
-            return value
-    return ""
-
-
-def decode_csv_bytes(content: bytes) -> str:
-    for encoding in ("utf-8-sig", "gb18030", "latin-1"):
-        try:
-            return content.decode(encoding)
-        except UnicodeDecodeError:
-            continue
-    raise HTTPException(status_code=400, detail="CSV encoding is not supported")
-
-
-def table_has_sku_mapping_header(values: list[str]) -> bool:
-    aliases = {normalize_sku_mapping_header(value) for value in SKU_MAPPING_HEADER_ALIASES}
-    return any(normalize_sku_mapping_header(value) in aliases for value in values)
-
-
-def sku_mapping_record_from_header_row(row: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "warehouse_sku": read_table_value(row, SKU_MAPPING_WAREHOUSE_ALIASES),
-        "shein_sku": read_table_value(row, SKU_MAPPING_SHEIN_ALIASES),
-        "length_cm": read_table_value(row, SKU_MAPPING_LENGTH_ALIASES),
-        "width_cm": read_table_value(row, SKU_MAPPING_WIDTH_ALIASES),
-        "height_cm": read_table_value(row, SKU_MAPPING_HEIGHT_ALIASES),
-        "weight_kg": read_table_value(row, SKU_MAPPING_WEIGHT_ALIASES),
-        "purchase_price": read_table_value(row, SKU_MAPPING_PURCHASE_PRICE_ALIASES),
-        "ocean_freight_price": read_table_value(row, SKU_MAPPING_OCEAN_FREIGHT_PRICE_ALIASES),
-        "operation_fee_price": read_table_value(row, SKU_MAPPING_OPERATION_FEE_ALIASES),
-    }
-
-
-def parse_sku_mapping_table_rows(rows: list[tuple[int, list[Any]]]) -> list[tuple[int, dict[str, Any]]]:
-    nonempty_rows = [
-        (row_number, ["" if value is None else value for value in values])
-        for row_number, values in rows
-        if any(str(value or "").strip() for value in values)
-    ]
-    if not nonempty_rows:
-        return []
-
-    _, first_values = nonempty_rows[0]
-    if table_has_sku_mapping_header([str(value or "") for value in first_values]):
-        headers = [str(value or "").strip() for value in first_values]
-        records: list[tuple[int, dict[str, Any]]] = []
-        for row_number, values in nonempty_rows[1:]:
-            row = {headers[index]: values[index] if index < len(values) else "" for index in range(len(headers))}
-            records.append((row_number, sku_mapping_record_from_header_row(row)))
-        return records
-
-    return [
-        (
-            row_number,
-            {field: values[index] if index < len(values) else "" for index, field in enumerate(SKU_MAPPING_IMPORT_HEADERS)},
-        )
-        for row_number, values in nonempty_rows
-    ]
-
-
-def parse_sku_mapping_csv(text: str) -> list[tuple[int, dict[str, Any]]]:
-    return parse_sku_mapping_table_rows([
-        (row_number, values)
-        for row_number, values in enumerate(csv.reader(io.StringIO(text)), start=1)
-    ])
-
-
-def parse_sku_mapping_excel(content: bytes) -> list[tuple[int, dict[str, Any]]]:
-    try:
-        from openpyxl import load_workbook
-    except ModuleNotFoundError:
-        raise HTTPException(status_code=500, detail="Excel import requires openpyxl. Run: pip install -r requirements.txt")
-
-    try:
-        workbook = load_workbook(io.BytesIO(content), read_only=True, data_only=True)
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail=f"Excel file could not be read: {exc}")
-    worksheet = workbook.active
-    rows = [
-        (row_number, list(values))
-        for row_number, values in enumerate(worksheet.iter_rows(values_only=True), start=1)
-    ]
-    workbook.close()
-    return parse_sku_mapping_table_rows(rows)
-
-
-def is_excel_upload(filename: str, content_type: str) -> bool:
-    filename = filename.lower()
-    return filename.endswith((".xlsx", ".xlsm")) or content_type in {
-        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        "application/vnd.ms-excel.sheet.macroenabled.12",
-    }
-
-
-def sku_mapping_text(value: Any, field_name: str) -> str:
+def required_text(value: Any, field_name: str) -> str:
     text = str(value or "").strip()
     if not text:
         raise HTTPException(status_code=400, detail=f"{field_name} is required")
@@ -2846,7 +2743,7 @@ def sku_mapping_text(value: Any, field_name: str) -> str:
     return text
 
 
-def sku_mapping_decimal(value: Any, field_name: str) -> Decimal | None:
+def required_decimal(value: Any, field_name: str) -> Decimal | None:
     if value is None:
         return None
     text = str(value).strip()
@@ -2863,12 +2760,6 @@ def sku_mapping_decimal(value: Any, field_name: str) -> Decimal | None:
     return decimal_value
 
 
-def sku_mapping_number(value: Any) -> float | None:
-    if value in (None, ""):
-        return None
-    return float(value)
-
-
 def payload_value(payload: dict[str, Any], *keys: str) -> Any:
     for key in keys:
         if key in payload:
@@ -2876,225 +2767,11 @@ def payload_value(payload: dict[str, Any], *keys: str) -> Any:
     return None
 
 
-WAREHOUSE_DETAIL_PAYLOAD_KEYS = {
-    "length_cm", "lengthCm", "length", "productLength",
-    "width_cm", "widthCm", "width", "productWidth",
-    "height_cm", "heightCm", "height", "productHeight",
-    "weight_kg", "weightKg", "weight", "productWeight",
-    "purchase_price", "purchasePrice", "purchase", "purchaseCost",
-    "ocean_freight_price", "oceanFreightPrice", "oceanFreight", "seaFreight", "shippingPrice",
-    "operation_fee_price", "operationFeePrice", "operationFee", "handlingFee",
-}
-
-
-def warehouse_detail_payload_present(payload: dict[str, Any]) -> bool:
-    return any(key in payload for key in WAREHOUSE_DETAIL_PAYLOAD_KEYS)
-
-
-def normalize_warehouse_sku_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "warehouse_sku": sku_mapping_text(payload_value(payload, "warehouse_sku", "warehouseSku"), "warehouse_sku"),
-        "length_cm": sku_mapping_decimal(payload_value(payload, "length_cm", "lengthCm", "length", "productLength"), "length_cm"),
-        "width_cm": sku_mapping_decimal(payload_value(payload, "width_cm", "widthCm", "width", "productWidth"), "width_cm"),
-        "height_cm": sku_mapping_decimal(payload_value(payload, "height_cm", "heightCm", "height", "productHeight"), "height_cm"),
-        "weight_kg": sku_mapping_decimal(payload_value(payload, "weight_kg", "weightKg", "weight", "productWeight"), "weight_kg"),
-        "cost_price": None,
-        "purchase_price": sku_mapping_decimal(payload_value(payload, "purchase_price", "purchasePrice", "purchase", "purchaseCost"), "purchase_price"),
-        "ocean_freight_price": sku_mapping_decimal(payload_value(payload, "ocean_freight_price", "oceanFreightPrice", "oceanFreight", "seaFreight", "shippingPrice"), "ocean_freight_price"),
-        "operation_fee_price": sku_mapping_decimal(payload_value(payload, "operation_fee_price", "operationFeePrice", "operationFee", "handlingFee"), "operation_fee_price"),
-        "note": clean_text(payload_value(payload, "note")) or None,
-        "enabled": bool(payload_value(payload, "enabled")) if payload_value(payload, "enabled") is not None else True,
-    }
-
-
-def normalize_sku_mapping_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "warehouse_sku": sku_mapping_text(payload_value(payload, "warehouse_sku", "warehouseSku"), "warehouse_sku"),
-        "shein_sku": sku_mapping_text(payload_value(payload, "shein_sku", "sheinSku"), "shein_sku"),
-        "sku_group": DEFAULT_SKU_GROUP,
-        "warehouse_qty": Decimal("1"),
-        "length_cm": None,
-        "width_cm": None,
-        "height_cm": None,
-        "weight_kg": None,
-        "cost_price": None,
-        "purchase_price": None,
-        "ocean_freight_price": None,
-        "note": None,
-        "enabled": True,
-    }
-
-
-def sku_meta_value(sku_meta: dict[str, Any] | None, shein_sku: str) -> dict[str, Any]:
-    value = (sku_meta or {}).get(shein_sku, {})
-    if isinstance(value, str):
-        return {"label": value}
-    return value if isinstance(value, dict) else {}
-
-
-def serialize_sku_mapping(row: dict[str, Any], sku_meta: dict[str, Any] | None = None) -> dict[str, Any]:
-    updated_at = row.get("updated_at")
-    shein_sku = clean_text(row.get("shein_sku"))
-    meta = sku_meta_value(sku_meta, shein_sku)
-    sku_label = clean_text(meta.get("label"))
-    return {
-        "id": row.get("id"),
-        "warehouseSku": clean_text(row.get("warehouse_sku")),
-        "sheinSku": shein_sku,
-        "sheinSkuLabel": sku_label,
-        "imageUrl": clean_text(meta.get("imageUrl")),
-        "title": clean_text(meta.get("title")),
-        "skcName": clean_text(meta.get("skcName")),
-        "spuName": clean_text(meta.get("spuName")),
-        "lengthCm": sku_mapping_number(row.get("length_cm")),
-        "widthCm": sku_mapping_number(row.get("width_cm")),
-        "heightCm": sku_mapping_number(row.get("height_cm")),
-        "weightKg": sku_mapping_number(row.get("weight_kg")),
-        "purchasePrice": sku_mapping_number(row.get("purchase_price")),
-        "oceanFreightPrice": sku_mapping_number(row.get("ocean_freight_price")),
-        "updatedAt": updated_at.strftime("%Y-%m-%d %H:%M") if hasattr(updated_at, "strftime") else clean_text(updated_at),
-    }
-
-
-def summarize_sku_mappings(rows: list[dict[str, Any]]) -> dict[str, Any]:
-    warehouse_skus = {clean_text(row.get("warehouse_sku")) for row in rows if clean_text(row.get("warehouse_sku"))}
-    shein_skus = {clean_text(row.get("shein_sku")) for row in rows if clean_text(row.get("shein_sku"))}
-    return {"total": len(rows), "warehouseSkus": len(warehouse_skus), "sheinSkus": len(shein_skus)}
-
-
-def serialize_warehouse_sku(row: dict[str, Any]) -> dict[str, Any]:
-    updated_at = row.get("updated_at")
-    return {
-        "id": row.get("id"),
-        "warehouseSku": clean_text(row.get("warehouse_sku")),
-        "lengthCm": sku_mapping_number(row.get("length_cm")),
-        "widthCm": sku_mapping_number(row.get("width_cm")),
-        "heightCm": sku_mapping_number(row.get("height_cm")),
-        "weightKg": sku_mapping_number(row.get("weight_kg")),
-        "purchasePrice": sku_mapping_number(row.get("purchase_price")),
-        "oceanFreightPrice": sku_mapping_number(row.get("ocean_freight_price")),
-        "operationFeePrice": sku_mapping_number(row.get("operation_fee_price")) or 0.0,
-        "note": clean_text(row.get("note")),
-        "enabled": bool(row.get("enabled", True)),
-        "updatedAt": updated_at.strftime("%Y-%m-%d %H:%M") if hasattr(updated_at, "strftime") else clean_text(updated_at),
-    }
-
-
-def default_warehouse_sku_response(settings: dict[str, Any]) -> dict[str, Any]:
-    updated_at = settings.get("updated_at")
-    return {
-        "warehouseSku": clean_text(settings.get("default_warehouse_sku")),
-        "updatedAt": updated_at.strftime("%Y-%m-%d %H:%M") if hasattr(updated_at, "strftime") else clean_text(updated_at),
-    }
-
-
-def unmapped_shein_sku_rows(shein_skus: list[dict[str, Any]], rows: list[dict[str, Any]], default_warehouse_sku: str) -> list[dict[str, Any]]:
-    mapped = {clean_text(row.get("shein_sku")) for row in rows if clean_text(row.get("shein_sku"))}
-    return [
-        {
-            "sheinSku": item["sku"],
-            "sheinSkuLabel": item["label"],
-            "warehouseSku": default_warehouse_sku,
-            "imageUrl": clean_text(item.get("imageUrl")),
-            "title": clean_text(item.get("title")),
-            "skcName": clean_text(item.get("skcName")),
-            "spuName": clean_text(item.get("spuName")),
-            "lines": item["lines"],
-            "orders": item["orders"],
-        }
-        for item in shein_skus
-        if clean_text(item.get("sku")) and clean_text(item.get("sku")) not in mapped
-    ]
-
-
-def product_sku_label(row: dict[str, Any]) -> str:
-    title = clean_text(row.get("title"))
-    supplier_sku = clean_text(row.get("supplier_sku"))
-    supplier_code = clean_text(row.get("supplier_code"))
-    skc_name = clean_text(row.get("skc_name"))
-    spu_name = clean_text(row.get("spu_name"))
-    parts = [part for part in (title, supplier_sku, supplier_code, skc_name, spu_name) if part]
-    return " · ".join(parts[:3]) if parts else clean_text(row.get("sku_code"))
-
-
-def product_sku_options() -> list[dict[str, Any]]:
-    try:
-        from .db import list_product_sku_options
-
-        rows = list_product_sku_options(database_url(), shop_key=load_settings().shop_key)
-    except Exception:
-        return []
-    return [
-        {
-            "sku": clean_text(row.get("sku_code")),
-            "label": product_sku_label(row),
-            "imageUrl": clean_text(row.get("main_pic_url")),
-            "title": clean_text(row.get("title")),
-            "skcName": clean_text(row.get("skc_name")),
-            "spuName": clean_text(row.get("spu_name")),
-            "supplierSku": clean_text(row.get("supplier_sku")),
-            "supplierCode": clean_text(row.get("supplier_code")),
-            "lines": 0,
-            "orders": 0,
-            "source": "product",
-        }
-        for row in rows
-        if clean_text(row.get("sku_code"))
-    ]
-
-
-def shein_sku_options() -> list[dict[str, Any]]:
-    options: dict[str, dict[str, Any]] = {}
-    if ITEMS_PATH.exists():
-        df = load_items()
-        if not df.empty:
-            sku_col = "sku_code" if "sku_code" in df.columns else "sku_label"
-            label_col = "sku_label" if "sku_label" in df.columns else "sku_attr_us"
-            grouped = (
-                df.assign(
-                    shein_sku=df[sku_col].fillna("").astype(str).str.strip(),
-                    label=df[label_col].fillna("").astype(str).str.strip(),
-                )
-                .loc[lambda x: x["shein_sku"].ne("")]
-                .groupby(["shein_sku", "label"], dropna=False)
-                .agg(lines=("goods_id", "count"), orders=("order_no", "nunique"))
-                .reset_index()
-                .sort_values(["lines", "shein_sku"], ascending=[False, True])
-            )
-            for row in grouped.itertuples(index=False):
-                sku = str(row.shein_sku)
-                options[sku] = {
-                    "sku": sku,
-                    "label": str(row.label or row.shein_sku),
-                    "imageUrl": "",
-                    "title": "",
-                    "skcName": "",
-                    "spuName": "",
-                    "supplierSku": "",
-                    "supplierCode": "",
-                    "lines": int(row.lines),
-                    "orders": int(row.orders),
-                    "source": "orders",
-                }
-    for item in product_sku_options():
-        sku = item["sku"]
-        if sku in options:
-            options[sku]["source"] = "orders+product"
-            if options[sku]["label"] == sku and item.get("label"):
-                options[sku]["label"] = item["label"]
-            for key in ("imageUrl", "title", "skcName", "spuName", "supplierSku", "supplierCode"):
-                if item.get(key) and not options[sku].get(key):
-                    options[sku][key] = item[key]
-        else:
-            options[sku] = item
-    return sorted(options.values(), key=lambda item: (-int(item.get("lines") or 0), item["sku"]))
-
-
 def ensure_warehouse_relation_store() -> tuple[str, str]:
-    from .db import ensure_product_schema, ensure_sku_mapping_schema
+    from .db import ensure_product_schema, ensure_warehouse_sku_schema
 
     url = database_url()
-    ensure_sku_mapping_schema(url)
+    ensure_warehouse_sku_schema(url)
     ensure_product_schema(url)
     return url, load_settings().shop_key
 
@@ -3351,11 +3028,11 @@ INVENTORY_DEFAULT_TEMPLATE = [
 
 
 def ensure_inventory_store() -> tuple[str, str]:
-    from .db import ensure_inventory_schema, ensure_product_schema, ensure_sku_mapping_schema
+    from .db import ensure_inventory_schema, ensure_product_schema, ensure_warehouse_sku_schema
 
     url = database_url()
     ensure_inventory_schema(url)
-    ensure_sku_mapping_schema(url)
+    ensure_warehouse_sku_schema(url)
     ensure_product_schema(url)
     return url, load_settings().shop_key
 
@@ -3368,7 +3045,7 @@ def inventory_note(value: Any) -> str | None:
 
 
 def inventory_decimal(value: Any, field_name: str) -> Decimal | None:
-    return sku_mapping_decimal(value, field_name)
+    return required_decimal(value, field_name)
 
 
 def inventory_number_or_none(value: Any) -> float | None:
@@ -3546,16 +3223,14 @@ def inventory_warehouse_references(conn: psycopg.Connection, shop_key: str) -> l
         """,
         (shop_key,),
     ).fetchall()
-    mapping_rows = conn.execute(
-        """
-        SELECT warehouse_sku, shein_sku
-        FROM shein_sku_mappings
-        WHERE shop_key = %s AND enabled = true
-        ORDER BY warehouse_sku, shein_sku
-        """,
-        (shop_key,),
-    ).fetchall()
     catalog = build_product_sku_catalog(conn, shop_key)
+    relation_mappings = platform_relation_maps(conn, shop_key, catalog)
+    mapping_rows: list[dict[str, Any]] = []
+    for shein_sku, mapping in relation_mappings.items():
+        for item in mapping.get("items") or []:
+            warehouse_sku = clean_text(item.get("warehouse_sku")) if isinstance(item, dict) else ""
+            if warehouse_sku:
+                mapping_rows.append({"warehouse_sku": warehouse_sku, "shein_sku": shein_sku})
     refs: dict[str, dict[str, Any]] = {}
     for row in warehouse_rows:
         warehouse_sku = clean_text(row.get("warehouse_sku"))
@@ -3741,7 +3416,7 @@ def normalize_inventory_lines(lines_payload: Any) -> list[dict[str, Any]]:
     for index, payload in enumerate(lines_payload):
         if not isinstance(payload, dict):
             raise HTTPException(status_code=400, detail=f"lines[{index}] must be an object")
-        warehouse_sku = sku_mapping_text(
+        warehouse_sku = required_text(
             payload_value(payload, "warehouseSku", "warehouse_sku"),
             f"lines[{index}].warehouseSku",
         )
@@ -4571,9 +4246,8 @@ def build_relation_row(
     sku_code: str,
     product: dict[str, Any] | None,
     mapping: dict[str, Any] | None,
-    default_warehouse_sku: str,
 ) -> dict[str, Any]:
-    status = "mapped" if mapping else "default" if default_warehouse_sku else "unmapped"
+    status = "mapped" if mapping else "unmapped"
     if mapping and product is None:
         status = "missing_product"
     warehouse_sku = clean_text(mapping.get("warehouse_sku")) if mapping else ""
@@ -4583,7 +4257,7 @@ def build_relation_row(
         "mappingId": mapping.get("id") if mapping else None,
         "mappingStatus": status,
         "warehouseSku": warehouse_sku,
-        "effectiveWarehouseSku": warehouse_sku or default_warehouse_sku,
+        "effectiveWarehouseSku": warehouse_sku,
         "warehouseQty": float(mapping.get("warehouse_qty") or 0) if mapping else None,
         "skuGroup": clean_text(mapping.get("sku_group")) if mapping else "",
         "note": clean_text(mapping.get("note")) if mapping else "",
@@ -4633,10 +4307,9 @@ def relation_group_summary(rows: list[dict[str, Any]], key: str) -> list[dict[st
                 "skcCount": len({item["skcName"] for item in items if item.get("skcName")}),
                 "spuCount": len({item["spuName"] for item in items if item.get("spuName")}),
                 "mappedCount": sum(1 for item in items if item.get("mappingStatus") == "mapped"),
-                "defaultCount": sum(1 for item in items if item.get("mappingStatus") == "default"),
                 "unmappedCount": sum(1 for item in items if item.get("mappingStatus") == "unmapped"),
                 "missingProductCount": sum(1 for item in items if item.get("mappingStatus") == "missing_product"),
-                "missingSkuMappingCount": sum(1 for item in items if item.get("mappingStatus") in {"default", "unmapped"}),
+                "missingSkuMappingCount": sum(1 for item in items if item.get("mappingStatus") == "unmapped"),
                 "inventoryTotal": sum(int(item.get("inventoryTotal") or 0) for item in items),
                 "activeSkuCount": sum(1 for item in items if item.get("skcShelfStatus") == 1),
                 "imageUrl": next((item.get("imageUrl") for item in items if item.get("imageUrl")), ""),
@@ -4660,20 +4333,6 @@ def api_warehouse_relations(token: str | None = None, shein_pnl_token: str | Non
     account = require_auth(token, shein_pnl_token, permission=VIEW_WAREHOUSE_RELATIONS)
     url, shop_key = ensure_warehouse_relation_store()
     with psycopg.connect(url, row_factory=dict_row) as conn:
-        default_row = conn.execute(
-            "SELECT default_warehouse_sku FROM shein_sku_mapping_settings WHERE shop_key = %s",
-            (shop_key,),
-        ).fetchone()
-        default_warehouse_sku = clean_text(default_row.get("default_warehouse_sku")) if default_row else ""
-        mapping_rows = conn.execute(
-            """
-            SELECT id, warehouse_sku, shein_sku, sku_group, warehouse_qty, note, enabled, updated_at
-            FROM shein_sku_mappings
-            WHERE shop_key = %s AND enabled = true
-            ORDER BY warehouse_sku, shein_sku, id
-            """,
-            (shop_key,),
-        ).fetchall()
         warehouse_rows = conn.execute(
             """
             SELECT warehouse_sku, enabled, updated_at
@@ -4684,6 +4343,7 @@ def api_warehouse_relations(token: str | None = None, shein_pnl_token: str | Non
             (shop_key,),
         ).fetchall()
         catalog = build_product_sku_catalog(conn, shop_key)
+        mapping_rows = list(platform_relation_maps(conn, shop_key, catalog).values())
 
     rows: list[dict[str, Any]] = []
     mapped_skus: set[str] = set()
@@ -4698,7 +4358,6 @@ def api_warehouse_relations(token: str | None = None, shein_pnl_token: str | Non
                 sku_code=sku_code,
                 product=catalog.get(sku_code),
                 mapping=mapping,
-                default_warehouse_sku=default_warehouse_sku,
             )
         )
     for sku_code, product in catalog.items():
@@ -4710,7 +4369,6 @@ def api_warehouse_relations(token: str | None = None, shein_pnl_token: str | Non
                 sku_code=sku_code,
                 product=product,
                 mapping=None,
-                default_warehouse_sku=default_warehouse_sku,
             )
         )
 
@@ -4723,15 +4381,14 @@ def api_warehouse_relations(token: str | None = None, shein_pnl_token: str | Non
         "mappedRows": sum(1 for row in rows if row["mappingStatus"] == "mapped"),
         "productSkus": product_sku_count,
         "mappedProductSkus": len(mapped_skus.intersection(catalog.keys())),
-        "unmappedProductSkus": len([row for row in rows if row["mappingStatus"] in {"default", "unmapped"}]),
-        "missingSkuMappings": len([row for row in rows if row["mappingStatus"] in {"default", "unmapped"}]),
+        "unmappedProductSkus": len([row for row in rows if row["mappingStatus"] == "unmapped"]),
+        "missingSkuMappings": len([row for row in rows if row["mappingStatus"] == "unmapped"]),
         "missingProductMappings": sum(1 for row in rows if row["mappingStatus"] == "missing_product"),
         "skcCount": len({row["skcName"] for row in rows if row.get("skcName")}),
         "spuCount": len({row["spuName"] for row in rows if row.get("spuName")}),
         "activeSkus": sum(1 for row in rows if row.get("skcShelfStatus") == 1),
         "offlineSkus": sum(1 for row in rows if row.get("skcShelfStatus") == 0),
         "inventoryTotal": sum(int(row.get("inventoryTotal") or 0) for row in rows),
-        "defaultWarehouseSku": default_warehouse_sku,
         "coverageRate": round(len(mapped_skus.intersection(catalog.keys())) / product_sku_count, 4) if product_sku_count else None,
     }
     return JSONResponse(
@@ -4753,265 +4410,6 @@ def api_warehouse_relations(token: str | None = None, shein_pnl_token: str | Non
                 "skcs": relation_group_summary(rows, "skcName"),
             },
         }
-    )
-
-
-@app.get("/api/sku-mappings")
-def api_sku_mappings(q: str | None = None, token: str | None = None, shein_pnl_token: str | None = Cookie(default=None, alias=COOKIE_NAME)) -> JSONResponse:
-    require_auth(token, shein_pnl_token, permission=ACCESS_SKU_MAPPINGS)
-    from .db import get_sku_mapping_settings, list_sku_mappings, list_warehouse_skus
-
-    url, shop_key = ensure_sku_mapping_store()
-    rows = list_sku_mappings(url, shop_key=shop_key, search=q)
-    all_rows = list_sku_mappings(url, shop_key=shop_key)
-    warehouse_skus = list_warehouse_skus(url, shop_key=shop_key)
-    settings = get_sku_mapping_settings(url, shop_key=shop_key)
-    default_warehouse_sku = clean_text(settings.get("default_warehouse_sku"))
-    shein_skus = shein_sku_options()
-    sku_meta = {item["sku"]: item for item in shein_skus}
-    unmapped = unmapped_shein_sku_rows(shein_skus, all_rows, default_warehouse_sku)
-    if q:
-        q_text = q.strip().lower()
-        unmapped = [row for row in unmapped if q_text in f"{row['warehouseSku']} {row['sheinSku']} {row['sheinSkuLabel']}".lower()]
-    summary = summarize_sku_mappings(all_rows)
-    summary["unmappedSheinSkus"] = len(unmapped_shein_sku_rows(shein_skus, all_rows, default_warehouse_sku))
-    summary["defaultWarehouseSku"] = default_warehouse_sku
-    summary["warehouseSkuCount"] = len(warehouse_skus)
-    return JSONResponse({
-        "shop": shop_key,
-        "summary": summary,
-        "settings": default_warehouse_sku_response(settings),
-        "warehouseSkus": [serialize_warehouse_sku(row) for row in warehouse_skus],
-        "sheinSkus": shein_skus,
-        "rows": [serialize_sku_mapping(row, sku_meta=sku_meta) for row in rows],
-        "unmappedRows": unmapped,
-    })
-
-
-@app.post("/api/warehouse-skus")
-def api_save_warehouse_sku(
-    payload: dict[str, Any] = Body(...),
-    token: str | None = None,
-    shein_pnl_token: str | None = Cookie(default=None, alias=COOKIE_NAME),
-) -> JSONResponse:
-    require_auth(token, shein_pnl_token, permission=ACCESS_SKU_MAPPINGS)
-    from .db import upsert_warehouse_sku
-
-    values = normalize_warehouse_sku_payload(payload)
-    url, shop_key = ensure_sku_mapping_store()
-    try:
-        row, inserted = upsert_warehouse_sku(
-            url,
-            shop_key=shop_key,
-            preserve_existing_values=not warehouse_detail_payload_present(payload),
-            **values,
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
-    return JSONResponse({"row": serialize_warehouse_sku(row), "inserted": inserted})
-
-
-@app.post("/api/sku-mappings/settings")
-def api_save_sku_mapping_settings(
-    payload: dict[str, Any] = Body(...),
-    token: str | None = None,
-    shein_pnl_token: str | None = Cookie(default=None, alias=COOKIE_NAME),
-) -> JSONResponse:
-    require_auth(token, shein_pnl_token, permission=ACCESS_SKU_MAPPINGS)
-    from .db import save_sku_mapping_settings
-
-    default_warehouse_sku = clean_text(payload_value(payload, "default_warehouse_sku", "defaultWarehouseSku"))
-    if len(default_warehouse_sku) > 240:
-        raise HTTPException(status_code=400, detail="default warehouse sku is too long")
-    url, shop_key = ensure_sku_mapping_store()
-    settings = save_sku_mapping_settings(url, shop_key=shop_key, default_warehouse_sku=default_warehouse_sku)
-    return JSONResponse({"settings": default_warehouse_sku_response(settings)})
-
-
-@app.post("/api/sku-mappings")
-def api_save_sku_mapping(
-    payload: dict[str, Any] = Body(...),
-    token: str | None = None,
-    shein_pnl_token: str | None = Cookie(default=None, alias=COOKIE_NAME),
-) -> JSONResponse:
-    require_auth(token, shein_pnl_token, permission=ACCESS_SKU_MAPPINGS)
-    from .db import upsert_sku_mapping, upsert_warehouse_sku
-
-    url, shop_key = ensure_sku_mapping_store()
-    mapping_id_value = payload_value(payload, "id", "mappingId")
-    mapping_id = int(mapping_id_value) if mapping_id_value not in (None, "") else None
-    warehouse_values = normalize_warehouse_sku_payload(payload)
-    values = normalize_sku_mapping_payload(payload)
-    try:
-        upsert_warehouse_sku(
-            url,
-            shop_key=shop_key,
-            preserve_existing_values=not warehouse_detail_payload_present(payload),
-            **warehouse_values,
-        )
-        row, inserted = upsert_sku_mapping(url, shop_key=shop_key, mapping_id=mapping_id, **values)
-    except KeyError as exc:
-        raise HTTPException(status_code=404, detail=str(exc))
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
-    except psycopg.errors.UniqueViolation:
-        raise HTTPException(status_code=409, detail="SKU mapping already exists")
-    shein_skus = shein_sku_options()
-    sku_meta = {item["sku"]: item for item in shein_skus}
-    return JSONResponse({"row": serialize_sku_mapping(row, sku_meta=sku_meta), "inserted": inserted})
-
-
-@app.delete("/api/sku-mappings/{mapping_id}")
-def api_delete_sku_mapping(
-    mapping_id: int,
-    token: str | None = None,
-    shein_pnl_token: str | None = Cookie(default=None, alias=COOKIE_NAME),
-) -> JSONResponse:
-    require_auth(token, shein_pnl_token, permission=ACCESS_SKU_MAPPINGS)
-    from .db import delete_sku_mapping
-
-    url, shop_key = ensure_sku_mapping_store()
-    deleted = delete_sku_mapping(url, shop_key=shop_key, mapping_id=mapping_id)
-    if not deleted:
-        raise HTTPException(status_code=404, detail="SKU mapping not found")
-    return JSONResponse({"deleted": True})
-
-
-@app.post("/api/sku-mappings/import")
-async def api_import_sku_mappings(
-    file: UploadFile = File(...),
-    token: str | None = None,
-    shein_pnl_token: str | None = Cookie(default=None, alias=COOKIE_NAME),
-) -> JSONResponse:
-    require_auth(token, shein_pnl_token, permission=ACCESS_SKU_MAPPINGS)
-    from .db import list_sku_mappings, upsert_sku_mapping, upsert_warehouse_sku
-
-    content = await file.read()
-    if len(content) > 10 * 1024 * 1024:
-        raise HTTPException(status_code=400, detail="Import file is too large")
-    filename = file.filename or ""
-    content_type = file.content_type or ""
-    if filename.lower().endswith(".xls"):
-        raise HTTPException(status_code=400, detail="Please save old .xls files as .xlsx before importing")
-    records = parse_sku_mapping_excel(content) if is_excel_upload(filename, content_type) else parse_sku_mapping_csv(decode_csv_bytes(content))
-    url, shop_key = ensure_sku_mapping_store()
-    inserted = 0
-    updated = 0
-    skipped = 0
-    errors: list[dict[str, Any]] = []
-    for row_number, raw in records:
-        try:
-            warehouse_values = normalize_warehouse_sku_payload(raw)
-            _, warehouse_inserted = upsert_warehouse_sku(
-                url,
-                shop_key=shop_key,
-                preserve_existing_values=not warehouse_detail_payload_present(raw),
-                **warehouse_values,
-            )
-            shein_sku = clean_text(raw.get("shein_sku"))
-            if shein_sku:
-                values = normalize_sku_mapping_payload(raw)
-                _, mapping_inserted = upsert_sku_mapping(url, shop_key=shop_key, **values)
-                is_inserted = warehouse_inserted or mapping_inserted
-            else:
-                is_inserted = warehouse_inserted
-            inserted += 1 if is_inserted else 0
-            updated += 0 if is_inserted else 1
-        except HTTPException as exc:
-            skipped += 1
-            if len(errors) < 20:
-                errors.append({"row": row_number, "error": exc.detail})
-        except Exception as exc:
-            skipped += 1
-            if len(errors) < 20:
-                errors.append({"row": row_number, "error": str(exc)})
-    rows = list_sku_mappings(url, shop_key=shop_key)
-    shein_skus = shein_sku_options()
-    sku_meta = {item["sku"]: item for item in shein_skus}
-    return JSONResponse({
-        "inserted": inserted,
-        "updated": updated,
-        "skipped": skipped,
-        "errors": errors,
-        "summary": summarize_sku_mappings(rows),
-        "rows": [serialize_sku_mapping(row, sku_meta=sku_meta) for row in rows],
-    })
-
-
-@app.get("/api/sku-mappings/export")
-def api_export_sku_mappings(token: str | None = None, shein_pnl_token: str | None = Cookie(default=None, alias=COOKIE_NAME)) -> Response:
-    require_auth(token, shein_pnl_token, permission=ACCESS_SKU_MAPPINGS)
-    from .db import list_sku_mappings, list_warehouse_skus
-
-    url, shop_key = ensure_sku_mapping_store()
-    warehouse_rows = list_warehouse_skus(url, shop_key=shop_key, include_disabled=True)
-    warehouse_by_sku = {clean_text(row.get("warehouse_sku")): row for row in warehouse_rows}
-    mappings_by_warehouse: dict[str, list[dict[str, Any]]] = {}
-    for row in list_sku_mappings(url, shop_key=shop_key):
-        mappings_by_warehouse.setdefault(clean_text(row.get("warehouse_sku")), []).append(row)
-
-    output = io.StringIO()
-    writer = csv.writer(output)
-    writer.writerow(SKU_MAPPING_IMPORT_HEADERS)
-    for warehouse_sku in sorted(set(warehouse_by_sku) | set(mappings_by_warehouse)):
-        if not warehouse_sku:
-            continue
-        warehouse = warehouse_by_sku.get(warehouse_sku, {})
-        mapping_rows = mappings_by_warehouse.get(warehouse_sku) or [{"shein_sku": ""}]
-        for mapping in mapping_rows:
-            writer.writerow([
-                warehouse_sku,
-                mapping.get("shein_sku") or "",
-                warehouse.get("length_cm") if warehouse.get("length_cm") is not None else "",
-                warehouse.get("width_cm") if warehouse.get("width_cm") is not None else "",
-                warehouse.get("height_cm") if warehouse.get("height_cm") is not None else "",
-                warehouse.get("weight_kg") if warehouse.get("weight_kg") is not None else "",
-                warehouse.get("purchase_price") if warehouse.get("purchase_price") is not None else "",
-                warehouse.get("ocean_freight_price") if warehouse.get("ocean_freight_price") is not None else "",
-                warehouse.get("operation_fee_price") if warehouse.get("operation_fee_price") is not None else 0,
-            ])
-    return Response(
-        "\ufeff" + output.getvalue(),
-        media_type="text/csv; charset=utf-8",
-        headers={"Content-Disposition": 'attachment; filename="shein_sku_mappings.csv"'},
-    )
-
-
-@app.get("/api/sku-mappings/template")
-def api_sku_mapping_template(token: str | None = None, shein_pnl_token: str | None = Cookie(default=None, alias=COOKIE_NAME)) -> Response:
-    require_auth(token, shein_pnl_token, permission=ACCESS_SKU_MAPPINGS)
-    output = io.StringIO()
-    writer = csv.writer(output)
-    writer.writerow(SKU_MAPPING_IMPORT_HEADERS)
-    writer.writerow(["WH-SKU-001", "SHEIN-SKU-001", "30", "20", "10", "0.5", "4.20", "0.80", "0"])
-    writer.writerow(["WH-SKU-001", "SHEIN-SKU-002", "", "", "", "", "", "", ""])
-    return Response(
-        "\ufeff" + output.getvalue(),
-        media_type="text/csv; charset=utf-8",
-        headers={"Content-Disposition": 'attachment; filename="shein_sku_mapping_template.csv"'},
-    )
-
-
-@app.get("/api/sku-mappings/template.xlsx")
-def api_sku_mapping_excel_template(token: str | None = None, shein_pnl_token: str | None = Cookie(default=None, alias=COOKIE_NAME)) -> Response:
-    require_auth(token, shein_pnl_token, permission=ACCESS_SKU_MAPPINGS)
-    try:
-        from openpyxl import Workbook
-    except ModuleNotFoundError:
-        raise HTTPException(status_code=500, detail="Excel template requires openpyxl. Run: pip install -r requirements.txt")
-
-    workbook = Workbook()
-    worksheet = workbook.active
-    worksheet.title = "sku_mappings"
-    worksheet.append(SKU_MAPPING_IMPORT_HEADERS)
-    worksheet.append(["WH-SKU-001", "SHEIN-SKU-001", "30", "20", "10", "0.5", "4.20", "0.80", "0"])
-    worksheet.append(["WH-SKU-001", "SHEIN-SKU-002", "", "", "", "", "", "", ""])
-    output = io.BytesIO()
-    workbook.save(output)
-    return Response(
-        output.getvalue(),
-        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition": 'attachment; filename="shein_sku_mapping_template.xlsx"'},
     )
 
 

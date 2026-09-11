@@ -12,7 +12,7 @@ import (
 )
 
 func TestClientUsesPublicManagerContract(t *testing.T) {
-	requests := make(chan *http.Request, 4)
+	requests := make(chan *http.Request, 5)
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		requests <- request.Clone(request.Context())
 		writer.Header().Set("Content-Type", "application/json")
@@ -45,6 +45,18 @@ func TestClientUsesPublicManagerContract(t *testing.T) {
 				t.Fatalf("unexpected X-Shein-Shop = %q", request.Header.Get("X-Shein-Shop"))
 			}
 			_, _ = writer.Write([]byte(`{"success":true,"data":{"platform":"shein","east_threshold":10,"west_threshold":20,"total_threshold":30}}`))
+		case "/api/platform-sku-mappings/resolve":
+			var payload struct {
+				Platform string   `json:"platform"`
+				SKUs     []string `json:"platform_skus"`
+			}
+			if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+				t.Fatal(err)
+			}
+			if payload.Platform != "shein" || len(payload.SKUs) != 1 || payload.SKUs[0] != "SELLER-01" {
+				t.Fatalf("mapping payload = %#v", payload)
+			}
+			_, _ = writer.Write([]byte(`{"success":true,"data":{"platform":"shein","mappings":[{"platform":"shein","platform_sku":"SELLER-01","enabled":true,"items":[{"warehouse_sku":"WH-1","quantity":2,"spec_complete":true}]}],"unmapped_skus":[]}}`))
 		default:
 			http.NotFound(writer, request)
 		}
@@ -70,12 +82,17 @@ func TestClientUsesPublicManagerContract(t *testing.T) {
 	if err != nil || thresholds.Platform != "shein" || thresholds.EastThreshold != 10 {
 		t.Fatalf("PlatformInventoryThresholds = %#v, %v", thresholds, err)
 	}
+	resolution, err := client.ResolvePlatformSKUs(context.Background(), "shein", []string{" SELLER-01 "})
+	if err != nil || len(resolution.Mappings) != 1 || resolution.Mappings[0].Items[0].WarehouseSKU != "WH-1" {
+		t.Fatalf("ResolvePlatformSKUs = %#v, %v", resolution, err)
+	}
 
 	<-requests
 	orderRequest := <-requests
 	if orderRequest.Header.Get("X-OMS-Account") != "dps" {
 		t.Fatalf("X-OMS-Account = %q", orderRequest.Header.Get("X-OMS-Account"))
 	}
+	<-requests
 	<-requests
 	<-requests
 }

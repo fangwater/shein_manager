@@ -77,6 +77,7 @@ func run(ctx context.Context, logger *slog.Logger) error {
 		if err := destination.Migrate(ctx); err != nil {
 			return fmt.Errorf("migrate SHEIN shop %s: %w", shop.Code, err)
 		}
+		destination.SetPlatformSKUResolver(xlwmsClient)
 		shopLogger := logger.With("shop_code", shop.Code, "shop_name", shop.Name)
 		handlers[shop.Code] = sheinconsole.New(
 			destination, shop.Code, shop.Name, cfg.RequestTimeout, shopLogger, xlwmsClient,

@@ -13,8 +13,8 @@ func TestPrivateTablesAreUniqueAndExcludeRegistry(t *testing.T) {
 		}
 		seen[table] = true
 	}
-	if len(privateTables) != 32 {
-		t.Fatalf("private table count = %d, want 32", len(privateTables))
+	if len(privateTables) != 31 {
+		t.Fatalf("private table count = %d, want 31", len(privateTables))
 	}
 }
 

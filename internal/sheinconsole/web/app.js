@@ -1185,7 +1185,9 @@ function renderOrders(rows) {
 
 function orderAction(order, number) {
   const status = String(orderStatus(order));
-  const automatic = '<button class="table-action primary" data-auto-order="' + escapeHTML(number) + '">自动发货</button>';
+  const retry = order.auto_fulfillment && order.auto_fulfillment.status === "failed";
+  const automatic = '<button class="table-action primary" data-auto-order="' + escapeHTML(number) + '">' +
+    (retry ? "重试自动发货" : "自动发货") + "</button>";
   const oms = '<button class="table-action" data-oms-order="' + escapeHTML(number) + '">查领星</button>';
   const reason = unprocessableReason(order);
   const platformLabel = canPurchasePlatformLabel(order);
@@ -1208,6 +1210,7 @@ function orderAction(order, number) {
 }
 
 function workflowStatusText(order) {
+  if (order.auto_fulfillment && order.auto_fulfillment.status === "failed") return "自动发货异常";
   const status = String(orderStatus(order));
   if (status === "1") {
     if (unprocessableReason(order)) return "平台暂不可处理";
@@ -1257,7 +1260,8 @@ function filterOrders() {
     }).join("");
     const status = orderStatus(order);
     const deadline = orderDeadline(order);
-    const tone = String(status) === "2" ? "info" : "pending";
+    const tone = order.auto_fulfillment && order.auto_fulfillment.status === "failed"
+      ? "error" : (String(status) === "2" ? "info" : "pending");
     return '<tr><td><div class="order-id"><button class="order-link" data-detail-order="' + escapeHTML(number) + '">' +
       escapeHTML(number) + "</button><small>更新 " + escapeHTML(shortTime(orderTime(order))) +
       '</small></div></td><td><div class="sku-stack">' + (lineHTML || "-") +
@@ -1383,6 +1387,7 @@ function jobStepLabel(step) {
     check_order: "等待下单结果",
     print_label: "获取面单",
     create_parcel: "自动建领星出库单",
+    already_fulfilled: "已由其他流程完成",
     completed: "自动发货完成",
     manual_required: "已转人工处理",
     canceled: "任务已取消",

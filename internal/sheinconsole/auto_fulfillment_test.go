@@ -88,6 +88,19 @@ func TestPlatformLabelPurchaseSkipsAddressTransition(t *testing.T) {
 	}
 }
 
+func TestAutomaticOrderAlreadyFulfilledStopsDuplicatePurchase(t *testing.T) {
+	for _, status := range []string{"pending_pickup", "shipped", "delivered"} {
+		if !automaticOrderAlreadyFulfilled(status) {
+			t.Fatalf("status %q must stop a duplicate automatic purchase", status)
+		}
+	}
+	for _, status := range []string{"pending_processing", "pending_shipping", "refunded", "unknown"} {
+		if automaticOrderAlreadyFulfilled(status) {
+			t.Fatalf("status %q must not be recorded as already fulfilled", status)
+		}
+	}
+}
+
 func TestAvailableWarehousesKeepsOnlyOperatedWarehouses(t *testing.T) {
 	warehouses := availableWarehouses(map[string]any{"info": map[string]any{"availableWarehouses": []any{
 		map[string]any{"warehouseAddressCode": "WH2602103441974274", "warehouseName": "PG仓", "availableStatus": "1"},
@@ -133,19 +146,46 @@ func TestAutomaticInventoryWarehouseKeysExcludesZeroStockARPEast(t *testing.T) {
 	}
 }
 
-func TestAutomaticOMSAccountUsesXLWMSDecision(t *testing.T) {
+func TestAutomaticOMSAccountsUseSelectedWarehouseAPIBinding(t *testing.T) {
 	decision := json.RawMessage(`{
-		"account_decision":{"account_key":"OMS_US_1","configured":true,"requires_manual":false}
+		"records":[{"sku":"WH-SKU","regions":[{"warehouses":[
+			{"warehouse_key":"DPS002","api_binding":{"oms_account_key":"dps"}},
+			{"warehouse_key":"ARP_EAST","api_binding":{"oms_account_key":"ARP"}}
+		]}]}]
 	}`)
-	account, err := automaticOMSAccount(decision)
-	if err != nil || account != "oms_us_1" {
-		t.Fatalf("account decision = (%q, %v)", account, err)
+	accounts, err := automaticOMSAccountsByWarehouse(decision, map[string]bool{"DPS002": true, "ARP_EAST": true})
+	if err != nil || accounts["DPS002"] != "dps" || accounts["ARP_EAST"] != "arp" {
+		t.Fatalf("warehouse accounts = (%#v, %v)", accounts, err)
 	}
-	manual := json.RawMessage(`{
-		"account_decision":{"configured":false,"requires_manual":true,"reason":"SKU 未配置账户"}
+	missing := json.RawMessage(`{
+		"records":[{"sku":"WH-SKU","regions":[{"warehouses":[
+			{"warehouse_key":"DPS002"}
+		]}]}]
 	}`)
-	if _, err := automaticOMSAccount(manual); err == nil || err.Error() != "SKU 未配置账户" {
-		t.Fatalf("manual account decision error = %v", err)
+	if _, err := automaticOMSAccountsByWarehouse(missing, map[string]bool{"DPS002": true}); err == nil || !strings.Contains(err.Error(), "DPS002") {
+		t.Fatalf("missing warehouse account error = %v", err)
+	}
+	partial := json.RawMessage(`{
+		"records":[{"sku":"WH-SKU","regions":[{"warehouses":[
+			{"warehouse_key":"DPS002"},
+			{"warehouse_key":"ARP_EAST","api_binding":{"oms_account_key":"arp"}}
+		]}]}]
+	}`)
+	accounts, err = automaticOMSAccountsByWarehouse(partial, map[string]bool{"DPS002": true, "ARP_EAST": true})
+	if err != nil || len(accounts) != 1 || accounts["ARP_EAST"] != "arp" {
+		t.Fatalf("partial warehouse accounts = (%#v, %v)", accounts, err)
+	}
+}
+
+func TestAutomaticOMSAccountsRejectCrossSKUAccountConflict(t *testing.T) {
+	decision := json.RawMessage(`{
+		"records":[
+			{"sku":"SKU-A","regions":[{"warehouses":[{"warehouse_key":"ARP_EAST","api_binding":{"oms_account_key":"arp"}}]}]},
+			{"sku":"SKU-B","regions":[{"warehouses":[{"warehouse_key":"ARP_EAST","api_binding":{"oms_account_key":"dps"}}]}]}
+		]
+	}`)
+	if _, err := automaticOMSAccountsByWarehouse(decision, map[string]bool{"ARP_EAST": true}); err == nil || !strings.Contains(err.Error(), "不同领星履约账户") {
+		t.Fatalf("cross-SKU account conflict error = %v", err)
 	}
 }
 

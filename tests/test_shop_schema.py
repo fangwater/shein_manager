@@ -7,6 +7,7 @@ from psycopg.conninfo import conninfo_to_dict
 from shein_api_manager.db import (
     REGISTRY_SCHEMA_SQL,
     SHOP_SCHEMA_SQL,
+    SKU_ALIAS_SCHEMA_SQL,
     schema_database_url,
 )
 
@@ -32,6 +33,9 @@ class ShopSchemaTests(unittest.TestCase):
         self.assertNotIn("CREATE TABLE IF NOT EXISTS shein_shops", SHOP_SCHEMA_SQL)
         self.assertIn("REFERENCES public.shein_shops", SHOP_SCHEMA_SQL)
         self.assertIn("ON UPDATE CASCADE", SHOP_SCHEMA_SQL)
+        self.assertNotIn("shein_sku_mappings", SHOP_SCHEMA_SQL)
+        self.assertIn("CREATE TABLE IF NOT EXISTS shein_sku_aliases", SKU_ALIAS_SCHEMA_SQL)
+        self.assertIn("PRIMARY KEY (shop_key, sku_code, seller_sku)", SKU_ALIAS_SCHEMA_SQL)
 
 
 if __name__ == "__main__":

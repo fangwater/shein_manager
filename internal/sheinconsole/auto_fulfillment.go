@@ -206,8 +206,7 @@ func (s *Server) runAutoFulfillment(writer http.ResponseWriter, request *http.Re
 	}
 	eligible := make(map[string]bool, len(eligibleOrders))
 	for _, order := range eligibleOrders {
-		eligible[order.OrderNo] = order.ReadyForAutomaticFulfillment() &&
-			(order.Job == nil || order.Job.Status == "failed")
+		eligible[order.OrderNo] = order.CanRunAutomaticFulfillment()
 	}
 	rejected := make(map[string]string)
 	seen := make(map[string]bool)
@@ -505,6 +504,15 @@ func (s *Server) processAutoFulfillment(ref autoQueueRef) {
 	}
 }
 
+func automaticOrderAlreadyFulfilled(normalized string) bool {
+	switch strings.TrimSpace(normalized) {
+	case "pending_pickup", "shipped", "delivered":
+		return true
+	default:
+		return false
+	}
+}
+
 func (s *Server) finishBulkItem(ctx context.Context, ref autoQueueRef, status, message string) {
 	batch, found, err := s.store.FinishBulkFulfillmentItem(ctx, ref.ShopKey, ref.OrderNo, status, message)
 	if err != nil {
@@ -567,6 +575,13 @@ func (s *Server) executeAutoFulfillment(ctx context.Context, ref autoQueueRef) e
 		}
 	}
 	if order == nil {
+		_, normalized, stateErr := s.store.OrderFulfillmentState(ctx, ref.ShopKey, ref.OrderNo)
+		if stateErr != nil {
+			return stateErr
+		}
+		if automaticOrderAlreadyFulfilled(normalized) {
+			return s.store.SetAutoJobState(ctx, ref.ShopKey, ref.OrderNo, "completed", "already_fulfilled", "", "")
+		}
 		return errors.New("订单已不在待履约队列")
 	}
 	if !order.AutoEligible || order.PackageSpec == nil {
@@ -612,13 +627,18 @@ func (s *Server) executeAutoFulfillment(ctx context.Context, ref autoQueueRef) e
 	if check.Status == "failed" {
 		return errors.New(check.ErrorMessage)
 	}
-	omsAccount, err := automaticOMSAccount(inventoryDecision)
-	if err != nil {
-		return err
-	}
 	eligibleWarehouseKeys, err := automaticInventoryWarehouseKeys(inventoryDecision, quantities)
 	if err != nil {
 		return err
+	}
+	warehouseAccounts, err := automaticOMSAccountsByWarehouse(inventoryDecision, eligibleWarehouseKeys)
+	if err != nil {
+		return err
+	}
+	for warehouseKey := range eligibleWarehouseKeys {
+		if _, configured := warehouseAccounts[warehouseKey]; !configured {
+			delete(eligibleWarehouseKeys, warehouseKey)
+		}
 	}
 
 	if err := s.setAutomaticStep(ctx, ref, "query_warehouses"); err != nil {
@@ -655,6 +675,11 @@ func (s *Server) executeAutoFulfillment(ctx context.Context, ref autoQueueRef) e
 		}
 		if len(rejected) > 0 {
 			reason += "；已排除邮编不覆盖承运商 " + joinedCarrierKeys(rejected)
+		}
+		warehouseKey := shein.PolicyWarehouseKey(selected.Quote.WarehouseAddressCode, "")
+		omsAccount, configured := warehouseAccounts[warehouseKey]
+		if !configured {
+			return fmt.Errorf("XLWMS 仓库 %s 未配置领星履约账户", warehouseKey)
 		}
 		if err := s.store.SetAutoJobSelection(ctx, ref.ShopKey, ref.OrderNo, order.SheinSKU, order.WarehouseSKU,
 			omsAccount, selected.Quote.WarehouseAddressCode, selected.Quote.PreRequestID,
@@ -1002,13 +1027,7 @@ func availableWarehouses(result map[string]any) []map[string]any {
 }
 
 type automaticInventoryDecision struct {
-	Complete        bool `json:"complete"`
-	AccountDecision struct {
-		AccountKey     string `json:"account_key"`
-		Configured     bool   `json:"configured"`
-		RequiresManual bool   `json:"requires_manual"`
-		Reason         string `json:"reason"`
-	} `json:"account_decision"`
+	Complete          bool `json:"complete"`
 	PackageResolution struct {
 		Complete bool   `json:"complete"`
 		Error    string `json:"error"`
@@ -1019,6 +1038,9 @@ type automaticInventoryDecision struct {
 		Reason         string `json:"reason"`
 		Regions        []struct {
 			Warehouses []struct {
+				APIBinding *struct {
+					OMSAccountKey string `json:"oms_account_key"`
+				} `json:"api_binding"`
 				Key         string  `json:"warehouse_key"`
 				Active      bool    `json:"active"`
 				QueryStatus string  `json:"query_status"`
@@ -1029,20 +1051,69 @@ type automaticInventoryDecision struct {
 	} `json:"records"`
 }
 
-func automaticOMSAccount(raw json.RawMessage) (string, error) {
+func automaticOMSAccountsByWarehouse(raw json.RawMessage, eligible map[string]bool) (map[string]string, error) {
 	var decision automaticInventoryDecision
 	if err := json.Unmarshal(raw, &decision); err != nil {
-		return "", errors.New("领星履约账户响应无法解析")
+		return nil, errors.New("领星履约账户响应无法解析")
 	}
-	account := strings.ToLower(strings.TrimSpace(decision.AccountDecision.AccountKey))
-	if decision.AccountDecision.Configured && !decision.AccountDecision.RequiresManual && validOMSAccountKey(account) {
-		return account, nil
+	keys := make([]string, 0, len(eligible))
+	for key := range eligible {
+		keys = append(keys, strings.ToUpper(strings.TrimSpace(key)))
 	}
-	reason := strings.TrimSpace(decision.AccountDecision.Reason)
-	if reason == "" {
-		reason = "平台 SKU 未配置领星履约账户"
+	sort.Strings(keys)
+	accounts := make(map[string]string, len(keys))
+	reasons := make([]string, 0)
+	for _, key := range keys {
+		account := ""
+		reason := ""
+		for _, record := range decision.Records {
+			found := false
+			for _, region := range record.Regions {
+				for _, warehouse := range region.Warehouses {
+					if strings.ToUpper(strings.TrimSpace(warehouse.Key)) != key {
+						continue
+					}
+					found = true
+					boundAccount := ""
+					if warehouse.APIBinding != nil {
+						boundAccount = strings.ToLower(strings.TrimSpace(warehouse.APIBinding.OMSAccountKey))
+					}
+					if !validOMSAccountKey(boundAccount) {
+						reason = fmt.Sprintf("XLWMS 仓库 %s 未配置有效的领星履约账户", key)
+					} else if account != "" && account != boundAccount {
+						reason = fmt.Sprintf("XLWMS 仓库 %s 的商品绑定了不同领星履约账户", key)
+					} else {
+						account = boundAccount
+					}
+					break
+				}
+				if found {
+					break
+				}
+			}
+			if !found && reason == "" {
+				reason = fmt.Sprintf("领星实时库存响应缺少仓库 %s 的账户绑定", key)
+			}
+			if reason != "" {
+				break
+			}
+		}
+		if reason == "" && account != "" {
+			accounts[key] = account
+			continue
+		}
+		if reason == "" {
+			reason = fmt.Sprintf("XLWMS 仓库 %s 未配置有效的领星履约账户", key)
+		}
+		reasons = append(reasons, reason)
 	}
-	return "", errors.New(reason)
+	if len(accounts) == 0 {
+		if len(reasons) == 0 {
+			return nil, errors.New("领星实时库存没有可路由的履约账户")
+		}
+		return nil, errors.New(strings.Join(reasons, "；"))
+	}
+	return accounts, nil
 }
 
 func validOMSAccountKey(value string) bool {

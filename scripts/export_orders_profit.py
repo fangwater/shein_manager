@@ -3,14 +3,15 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 import nbformat as nbf
 import pandas as pd
 import psycopg
 
 from shein_api_manager.config import load_settings
-from shein_api_manager.db import ensure_sku_mapping_schema, shop_database_url
+from shein_api_manager.db import ensure_sku_alias_schema, ensure_warehouse_sku_schema, shop_database_url
+from shein_api_manager.platform_mappings import recipe_key, resolve_platform_skus
 
 
 BASE_DIR = Path(__file__).resolve().parents[1]
@@ -34,42 +35,82 @@ def money(value: Any, default: float = 0.0) -> float:
         return default
 
 
-def fetch_warehouse_costs() -> dict[str, dict[str, Any]]:
+def fetch_warehouse_costs(platform_skus: Iterable[Any] = ()) -> dict[str, dict[str, Any]]:
     settings = load_settings()
     if not settings.database_url:
         raise RuntimeError("DATABASE_URL is required")
     database_url = shop_database_url(settings.database_url, settings.shop_key)
-    ensure_sku_mapping_schema(database_url)
+    ensure_sku_alias_schema(database_url)
+    ensure_warehouse_sku_schema(database_url)
     with psycopg.connect(database_url) as conn:
-        rows = conn.execute(
+        alias_rows = conn.execute(
             """
-            SELECT m.shein_sku, m.warehouse_sku, m.warehouse_qty,
-                   w.purchase_price, w.ocean_freight_price, w.operation_fee_price
-            FROM shein_sku_mappings m
-            JOIN shein_warehouse_skus w
-              ON w.shop_key = m.shop_key AND w.warehouse_sku = m.warehouse_sku
-            WHERE m.shop_key = %s AND m.enabled = true AND w.enabled = true
-            ORDER BY m.updated_at DESC, m.id DESC
+            SELECT sku_code, seller_sku
+            FROM shein_sku_aliases
+            WHERE shop_key = %s
+            ORDER BY sku_code, CASE source WHEN 'order' THEN 0 ELSE 1 END, last_seen_at DESC
             """,
             (settings.shop_key,),
         ).fetchall()
-    costs: dict[str, dict[str, Any]] = {}
-    for shein_sku, warehouse_sku, warehouse_qty, purchase_price, ocean_freight_price, operation_fee_price in rows:
-        sku_code = str(shein_sku or "").strip()
-        if not sku_code or sku_code in costs:
-            continue
-        costs[sku_code] = {
-            "warehouse_sku": str(warehouse_sku or "").strip(),
-            "warehouse_qty": warehouse_qty,
+        warehouse_rows = conn.execute(
+            """
+            SELECT warehouse_sku, purchase_price, ocean_freight_price, operation_fee_price
+            FROM shein_warehouse_skus
+            WHERE shop_key = %s AND enabled = true
+            """,
+            (settings.shop_key,),
+        ).fetchall()
+    aliases: dict[str, list[str]] = {}
+    for sku_code, seller_sku in alias_rows:
+        sku_code = str(sku_code or "").strip()
+        seller_sku = str(seller_sku or "").strip()
+        if sku_code and seller_sku:
+            aliases.setdefault(sku_code, []).append(seller_sku)
+    candidates = [str(value or "").strip() for value in platform_skus]
+    candidates.extend(seller_sku for values in aliases.values() for seller_sku in values)
+    resolved = resolve_platform_skus("shein", candidates)
+    warehouse_costs = {
+        str(warehouse_sku or "").strip(): {
             "purchase_price": purchase_price,
             "ocean_freight_price": ocean_freight_price,
             "operation_fee_price": operation_fee_price,
         }
+        for warehouse_sku, purchase_price, ocean_freight_price, operation_fee_price in warehouse_rows
+    }
+    costs: dict[str, dict[str, Any]] = {}
+    for seller_sku, mapping in resolved.items():
+        recipe = recipe_key(mapping)
+        if not recipe:
+            continue
+        purchase_total = ocean_total = operation_total = 0.0
+        complete = True
+        for warehouse_sku, quantity in recipe:
+            prices = warehouse_costs.get(warehouse_sku)
+            if not prices or any(prices[field] is None for field in ("purchase_price", "ocean_freight_price", "operation_fee_price")):
+                complete = False
+                continue
+            purchase_total += money(prices["purchase_price"]) * quantity
+            ocean_total += money(prices["ocean_freight_price"]) * quantity
+            operation_total += money(prices["operation_fee_price"]) * quantity
+        costs[seller_sku] = {
+            "warehouse_sku": " + ".join(f"{sku} x {qty}" if qty != 1 else sku for sku, qty in recipe),
+            "warehouse_qty": sum(quantity for _, quantity in recipe),
+            "purchase_total": purchase_total,
+            "ocean_freight_total": ocean_total,
+            "operation_fee_total": operation_total,
+            "complete": complete,
+            "recipe": recipe,
+        }
+    for sku_code, seller_skus in aliases.items():
+        candidate_costs = [costs[value] for value in dict.fromkeys([*seller_skus, sku_code]) if value in costs]
+        recipes = {candidate["recipe"] for candidate in candidate_costs}
+        if len(recipes) == 1:
+            costs[sku_code] = candidate_costs[0]
     return costs
 
 
-def warehouse_cost_for_sku(sku_code: Any, costs: dict[str, dict[str, Any]]) -> dict[str, Any]:
-    row = costs.get(str(sku_code or "").strip())
+def warehouse_cost_for_sku(sku_code: Any, costs: dict[str, dict[str, Any]], seller_sku: Any = None) -> dict[str, Any]:
+    row = costs.get(str(seller_sku or "").strip()) or costs.get(str(sku_code or "").strip())
     if not row:
         return {
             "warehouse_sku": "",
@@ -80,6 +121,20 @@ def warehouse_cost_for_sku(sku_code: Any, costs: dict[str, dict[str, Any]]) -> d
             "total": 0.0,
             "matched": False,
             "composition": "warehouse_cost_unmapped",
+        }
+    if "purchase_total" in row:
+        purchase = money(row.get("purchase_total"))
+        ocean_freight = money(row.get("ocean_freight_total"))
+        operation_fee = money(row.get("operation_fee_total"))
+        return {
+            "warehouse_sku": row.get("warehouse_sku") or "",
+            "warehouse_qty": money(row.get("warehouse_qty")),
+            "purchase": purchase,
+            "ocean_freight": ocean_freight,
+            "operation_fee": operation_fee,
+            "total": purchase + ocean_freight + operation_fee,
+            "matched": bool(row.get("complete")),
+            "composition": f"warehouse:{row.get('warehouse_sku') or ''}; total={purchase + ocean_freight + operation_fee:.4f}",
         }
     quantity = money(row.get("warehouse_qty"))
     purchase = money(row.get("purchase_price"))
@@ -187,7 +242,15 @@ def fetch_orders() -> list[
 
 def build_dataframes() -> tuple[pd.DataFrame, pd.DataFrame]:
     rows = fetch_orders()
-    warehouse_costs = fetch_warehouse_costs()
+    platform_skus: list[Any] = []
+    for row in rows:
+        detail = row[-1]
+        if not isinstance(detail, dict):
+            continue
+        for goods in detail.get("orderGoodsInfoList") or []:
+            if isinstance(goods, dict):
+                platform_skus.extend((goods.get("sellerSku"), goods.get("skuCode")))
+    warehouse_costs = fetch_warehouse_costs(platform_skus)
     item_rows: list[dict[str, Any]] = []
     for (
         order_no,
@@ -250,7 +313,7 @@ def build_dataframes() -> tuple[pd.DataFrame, pd.DataFrame]:
                 allocation_method = "equal"
 
             pcs = infer_pcs(goods)
-            warehouse_cost = warehouse_cost_for_sku(goods.get("skuCode"), warehouse_costs)
+            warehouse_cost = warehouse_cost_for_sku(goods.get("skuCode"), warehouse_costs, goods.get("sellerSku"))
             product_cost = warehouse_cost["total"]
             packaging_fee = 0.0
             composition = warehouse_cost["composition"]

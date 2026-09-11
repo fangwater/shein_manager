@@ -26,5 +26,18 @@ module.exports = {
       kill_timeout: 20000,
       time: true,
     },
+    {
+      name: "shein-product-alias-sync",
+      cwd: "/home/ubuntu/shein-api-manager",
+      script: "deploy/run-product-alias-sync.sh",
+      interpreter: "/bin/bash",
+      exec_mode: "fork",
+      instances: 1,
+      autorestart: true,
+      restart_delay: 10000,
+      max_memory_restart: "256M",
+      kill_timeout: 10000,
+      time: true,
+    },
   ],
 };

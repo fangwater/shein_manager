@@ -157,8 +157,9 @@ console “可合并订单” view.
 Automatic fulfillment jobs are persisted in
 `shein_go_auto_fulfillment_jobs`. Each job records its current step, attempt,
 selected warehouse and channel, price, result identifiers, and any sanitized
-error. Failed jobs move to the exception queue and can be retried without
-losing their operation-ledger history.
+error. Failed jobs remain visible in the pending queue and also move to the
+exception queue. They can be retried without losing their operation-ledger
+history.
 
 One-click fulfillment creates a persistent batch in
 `shein_go_bulk_fulfillment_batches` with ordered items in
@@ -287,8 +288,8 @@ python -m shein_api_manager sync-product-details \
 Raw wrappers are also available as `product-list` for
 `/open-api/openapi-business-backend/product/query` and `product-search` for
 `/open-api/goods/searchProduct`. Product sync stores raw JSON in PostgreSQL and
-feeds the SKU mapping page, so products that have not yet appeared in orders can
-be mapped after `sync-products` or `sync-product-details` runs.
+maintains the local `skuCode -> sellerSku` alias set. Platform SKU to warehouse
+SKU recipes are owned by XLWMS and queried through its generic mapping API.
 
 ## Order Status And Returns
 
@@ -405,9 +406,10 @@ The Go service listens on `127.0.0.1:18084` and is routed under `/shein/`. It re
 
 ## Python Web Deployment
 
-All PNL, logistics, shipping-fee, returns, SKU mapping, warehouse relation, and
-inventory pages are served by one FastAPI application. Production runs one PM2
-process on `127.0.0.1:18992`; Nginx is the only public entry point.
+All PNL, logistics, shipping-fee, returns, warehouse relation, and inventory
+pages are served by one FastAPI application. Its SKU mapping navigation links to
+the XLWMS central mapping page. Production runs one PM2 process on
+`127.0.0.1:18992`; Nginx is the only public entry point.
 
 Start or update the service and persist the PM2 process list:
 

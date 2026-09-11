@@ -63,6 +63,13 @@ of a raw OpenAPI drawer. Only operated DPS/ARP warehouses remain selectable
 for platform labels. Before automatic quoting, live XLWMS inventory must pass
 the shop safety-stock rules; out-of-stock warehouses are excluded, while an
 incomplete or manual-review inventory decision stops automatic fulfillment.
+The selected quote warehouse resolves its OMS account from that warehouse's
+XLWMS `api_binding`; the service does not infer an account from a SKU, shop, or
+warehouse name. Failed automatic jobs remain visible in both the pending and
+exception queues so an unshipped order cannot disappear from operations.
+If an order reaches pending-pickup, shipped, or delivered while waiting in an
+automatic batch, the worker records it as already fulfilled and skips a second
+label purchase.
 PG and other platform-listed warehouses stay visible as unavailable and cannot
 be quoted. Each shop configures carrier enablement and priority per OMS
 warehouse (`DPS002`, `ARP_EAST`, `DPS004`, `ARP_WEST`).
@@ -123,7 +130,8 @@ warehouse watcher both reuse the same create path: download the current SHEIN
 and submit `Upload_Shipping_Label`. The processing page still prefills a
 recovery form from the latest fulfillment task, the stored order snapshot,
 live `export-address` with `handleType=1`, and queue SKU mappings so operators
-can rebuild a failed outbound. SHEIN express channel codes are not Lingxing
+resolved from the XLWMS central mapping API so operators can rebuild a failed
+outbound. SHEIN express channel codes are not Lingxing
 warehouse channels; the form defaults `logisticsChannel` to
 `Upload_Shipping_Label`. Creating again first cancels the latest active
 Lingxing parcel, then waits for `selectBizStatus` or detail `status=4` so a

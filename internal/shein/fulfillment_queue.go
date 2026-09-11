@@ -9,6 +9,8 @@ import (
 	"strings"
 	"time"
 
+	"shein-api-manager/internal/xlwms"
+
 	"github.com/jackc/pgx/v5"
 )
 
@@ -25,14 +27,22 @@ func (spec PackageSpec) Complete() bool {
 }
 
 type QueueGoods struct {
-	GoodsID           string `json:"goods_id"`
-	SKUCode           string `json:"sku_code"`
-	SellerSKU         string `json:"seller_sku"`
-	GoodsSN           string `json:"goods_sn"`
-	Title             string `json:"title"`
-	Quantity          int    `json:"quantity"`
-	WarehouseSKU      string `json:"warehouse_sku,omitempty"`
-	WarehouseQuantity string `json:"warehouse_quantity,omitempty"`
+	GoodsID           string                 `json:"goods_id"`
+	SKUCode           string                 `json:"sku_code"`
+	SellerSKU         string                 `json:"seller_sku"`
+	GoodsSN           string                 `json:"goods_sn"`
+	Title             string                 `json:"title"`
+	Quantity          int                    `json:"quantity"`
+	WarehouseSKU      string                 `json:"warehouse_sku,omitempty"`
+	WarehouseQuantity string                 `json:"warehouse_quantity,omitempty"`
+	WarehouseItems    []WarehouseMappingItem `json:"warehouse_items,omitempty"`
+}
+
+type WarehouseMappingItem struct {
+	WarehouseSKU string      `json:"warehouse_sku"`
+	Quantity     int         `json:"quantity"`
+	ProductName  string      `json:"product_name,omitempty"`
+	Spec         PackageSpec `json:"package_spec"`
 }
 
 type AutoFulfillmentJob struct {
@@ -111,6 +121,7 @@ type packageMapping struct {
 	WarehouseQty string
 	MappingCount int
 	Spec         PackageSpec
+	Items        []WarehouseMappingItem
 }
 
 func (s *Store) UpsertOrderSnapshots(ctx context.Context, shopKey string, snapshots []OrderSnapshot) error {
@@ -157,11 +168,38 @@ func (s *Store) UpsertOrderSnapshots(ctx context.Context, shopKey string, snapsh
 		if err != nil {
 			return fmt.Errorf("upsert SHEIN order snapshot: %w", err)
 		}
+		for _, alias := range orderSKUAliases(snapshot.DetailData) {
+			if _, err := tx.Exec(ctx, `
+				INSERT INTO shein_sku_aliases(shop_key,sku_code,seller_sku,source)
+				VALUES($1,$2,$3,'order')
+				ON CONFLICT(shop_key,sku_code,seller_sku) DO UPDATE
+				SET source='order',last_seen_at=now()
+			`, shopKey, alias[0], alias[1]); err != nil {
+				return fmt.Errorf("upsert SHEIN order SKU alias: %w", err)
+			}
+		}
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("commit SHEIN order snapshot sync: %w", err)
 	}
 	return nil
+}
+
+func orderSKUAliases(detail map[string]any) [][2]string {
+	aliases := make([][2]string, 0)
+	seen := make(map[[2]string]struct{})
+	for _, goods := range queueGoods(detail) {
+		alias := [2]string{strings.TrimSpace(goods.SKUCode), strings.TrimSpace(goods.SellerSKU)}
+		if alias[0] == "" || alias[1] == "" {
+			continue
+		}
+		if _, exists := seen[alias]; exists {
+			continue
+		}
+		seen[alias] = struct{}{}
+		aliases = append(aliases, alias)
+	}
+	return aliases
 }
 
 func NormalizeOrderStatus(status string) string {
@@ -217,23 +255,16 @@ func (s *Store) MappedOrderGoods(ctx context.Context, shopKey, orderNo string) (
 		return nil, err
 	}
 	goods := queueGoods(detail)
-	skus := make([]string, 0, len(goods))
-	for _, item := range goods {
-		if sku := strings.TrimSpace(item.SKUCode); sku != "" {
-			skus = append(skus, sku)
-		}
-	}
-	mappings, err := s.packageMappings(ctx, shopKey, skus)
+	mappings, err := s.packageMappings(ctx, shopKey, goods)
 	if err != nil {
 		return nil, err
 	}
 	for index := range goods {
-		mapping, ok := mappings[goods[index].SKUCode]
+		mapping, ok := mappings[goodsMappingKey(goods[index])]
 		if !ok || mapping.MappingCount != 1 {
 			continue
 		}
-		goods[index].WarehouseSKU = mapping.WarehouseSKU
-		goods[index].WarehouseQuantity = mapping.WarehouseQty
+		applyGoodsMapping(&goods[index], mapping)
 	}
 	if job, jobErr := s.GetAutoJob(ctx, shopKey, orderNo); jobErr == nil && job.WarehouseSKU != "" && len(goods) == 1 && goods[0].WarehouseSKU == "" {
 		goods[0].WarehouseSKU = job.WarehouseSKU
@@ -292,7 +323,7 @@ func (s *Store) ListOrderQueue(ctx context.Context, shopKey, queue string) ([]Or
 	defer rows.Close()
 
 	items := make([]OrderQueueItem, 0)
-	allSKUs := make([]string, 0)
+	allGoods := make([]QueueGoods, 0)
 	for rows.Next() {
 		var item OrderQueueItem
 		var detailJSON []byte
@@ -326,11 +357,7 @@ func (s *Store) ListOrderQueue(ctx context.Context, shopKey, queue string) ([]Or
 		}
 		item.Goods = queueGoods(item.Detail)
 		item.ItemCount = len(item.Goods)
-		for _, goods := range item.Goods {
-			if goods.SKUCode != "" {
-				allSKUs = append(allSKUs, goods.SKUCode)
-			}
-		}
+		allGoods = append(allGoods, item.Goods...)
 		if jobID != nil {
 			job.ID, job.OrderNo = *jobID, pointerValue(jobOrder)
 			job.Status, job.CurrentStep, job.Attempts = pointerValue(jobStatus), pointerValue(jobStep), pointerInt(jobAttempts)
@@ -362,7 +389,7 @@ func (s *Store) ListOrderQueue(ctx context.Context, shopKey, queue string) ([]Or
 		return nil, fmt.Errorf("read SHEIN fulfillment queue: %w", err)
 	}
 
-	mappings, err := s.packageMappings(ctx, shopKey, allSKUs)
+	mappings, err := s.packageMappings(ctx, shopKey, allGoods)
 	if err != nil {
 		return nil, err
 	}
@@ -371,7 +398,7 @@ func (s *Store) ListOrderQueue(ctx context.Context, shopKey, queue string) ([]Or
 		classifyOrderQueueItem(&items[index], mappings)
 		switch queue {
 		case "pending":
-			if items[index].ReadyForAutomaticFulfillment() && items[index].Job == nil {
+			if items[index].CanRunAutomaticFulfillment() {
 				filtered = append(filtered, items[index])
 			}
 		case "manual":
@@ -387,46 +414,184 @@ func (s *Store) ListOrderQueue(ctx context.Context, shopKey, queue string) ([]Or
 	return filtered, nil
 }
 
-func (s *Store) packageMappings(ctx context.Context, shopKey string, skus []string) (map[string]packageMapping, error) {
-	if len(skus) == 0 {
+func (s *Store) packageMappings(ctx context.Context, shopKey string, goods []QueueGoods) (map[string]packageMapping, error) {
+	if len(goods) == 0 {
 		return map[string]packageMapping{}, nil
 	}
-	rows, err := s.pool.Query(ctx, `
-		WITH counts AS (
-			SELECT shein_sku, COUNT(DISTINCT warehouse_sku) AS mapping_count
-			FROM shein_sku_mappings
-			WHERE shop_key = $1 AND enabled = true AND shein_sku = ANY($2::text[])
-			GROUP BY shein_sku
-		), ranked AS (
-			SELECT m.shein_sku, m.warehouse_sku, m.warehouse_qty::text,
-				counts.mapping_count,
-				w.length_cm::text, w.width_cm::text, w.height_cm::text, w.weight_kg::text,
-				ROW_NUMBER() OVER (PARTITION BY m.shein_sku ORDER BY m.updated_at DESC, m.id DESC) AS rank
-			FROM shein_sku_mappings m
-			JOIN counts USING (shein_sku)
-			LEFT JOIN shein_warehouse_skus w
-				ON w.shop_key = m.shop_key AND w.warehouse_sku = m.warehouse_sku AND w.enabled = true
-			WHERE m.shop_key = $1 AND m.enabled = true
-		)
-		SELECT shein_sku, warehouse_sku, warehouse_qty, mapping_count,
-			COALESCE(length_cm, ''), COALESCE(width_cm, ''),
-			COALESCE(height_cm, ''), COALESCE(weight_kg, '')
-		FROM ranked WHERE rank = 1
-	`, shopKey, skus)
-	if err != nil {
-		return nil, fmt.Errorf("load SHEIN package mappings: %w", err)
+	if s.platformSKUResolver == nil {
+		return nil, errors.New("XLWMS platform SKU resolver is not configured")
 	}
-	defer rows.Close()
-	result := make(map[string]packageMapping)
-	for rows.Next() {
-		var mapping packageMapping
-		if err := rows.Scan(&mapping.SheinSKU, &mapping.WarehouseSKU, &mapping.WarehouseQty, &mapping.MappingCount,
-			&mapping.Spec.LengthCM, &mapping.Spec.WidthCM, &mapping.Spec.HeightCM, &mapping.Spec.WeightKG); err != nil {
-			return nil, fmt.Errorf("scan SHEIN package mapping: %w", err)
+	missingSellerCodes := make([]string, 0)
+	seenCodes := make(map[string]struct{})
+	for _, item := range goods {
+		if strings.TrimSpace(item.SellerSKU) != "" {
+			continue
 		}
-		result[mapping.SheinSKU] = mapping
+		code := strings.TrimSpace(item.SKUCode)
+		if code == "" {
+			continue
+		}
+		if _, exists := seenCodes[code]; !exists {
+			seenCodes[code] = struct{}{}
+			missingSellerCodes = append(missingSellerCodes, code)
+		}
 	}
-	return result, rows.Err()
+	aliases := make(map[string][]string)
+	if len(missingSellerCodes) > 0 {
+		rows, err := s.pool.Query(ctx, `
+			SELECT sku_code,seller_sku FROM shein_sku_aliases
+			WHERE shop_key=$1 AND sku_code=ANY($2::text[])
+			ORDER BY sku_code,CASE source WHEN 'order' THEN 0 ELSE 1 END,last_seen_at DESC,seller_sku
+		`, shopKey, missingSellerCodes)
+		if err != nil {
+			return nil, fmt.Errorf("load SHEIN SKU aliases: %w", err)
+		}
+		for rows.Next() {
+			var code, sellerSKU string
+			if err := rows.Scan(&code, &sellerSKU); err != nil {
+				rows.Close()
+				return nil, fmt.Errorf("scan SHEIN SKU alias: %w", err)
+			}
+			aliases[code] = append(aliases[code], sellerSKU)
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("read SHEIN SKU aliases: %w", err)
+		}
+		rows.Close()
+	}
+	candidatesByKey := make(map[string][]string)
+	allPlatformSKUs := make([]string, 0)
+	seenPlatformSKUs := make(map[string]struct{})
+	for _, item := range goods {
+		key := goodsMappingKey(item)
+		if key == "" {
+			continue
+		}
+		candidates := platformSKUCandidates(item, aliases)
+		candidatesByKey[key] = candidates
+		for _, candidate := range candidates {
+			if _, exists := seenPlatformSKUs[candidate]; exists {
+				continue
+			}
+			seenPlatformSKUs[candidate] = struct{}{}
+			allPlatformSKUs = append(allPlatformSKUs, candidate)
+		}
+	}
+	resolved := make(map[string]packageMapping)
+	for start := 0; start < len(allPlatformSKUs); start += 500 {
+		end := start + 500
+		if end > len(allPlatformSKUs) {
+			end = len(allPlatformSKUs)
+		}
+		resolution, err := s.platformSKUResolver.ResolvePlatformSKUs(ctx, "shein", allPlatformSKUs[start:end])
+		if err != nil {
+			return nil, fmt.Errorf("resolve SHEIN platform SKU through XLWMS: %w", err)
+		}
+		for _, mapping := range resolution.Mappings {
+			resolved[mapping.PlatformSKU] = packageMappingFromXLWMS(mapping)
+		}
+	}
+	result := make(map[string]packageMapping)
+	for key, candidates := range candidatesByKey {
+		var selected packageMapping
+		for _, candidate := range candidates {
+			mapping, exists := resolved[candidate]
+			if !exists {
+				continue
+			}
+			if selected.MappingCount == 0 {
+				selected = mapping
+				continue
+			}
+			if !samePackageRecipe(selected, mapping) {
+				selected.MappingCount = 2
+				break
+			}
+		}
+		if selected.MappingCount > 0 {
+			result[key] = selected
+		}
+	}
+	return result, nil
+}
+
+func platformSKUCandidates(goods QueueGoods, aliases map[string][]string) []string {
+	code := strings.TrimSpace(goods.SKUCode)
+	candidates := append([]string(nil), aliases[code]...)
+	if sellerSKU := strings.TrimSpace(goods.SellerSKU); sellerSKU != "" {
+		candidates = []string{sellerSKU}
+	}
+	if code != "" {
+		candidates = append(candidates, code)
+	}
+	result := make([]string, 0, len(candidates))
+	seen := make(map[string]struct{}, len(candidates))
+	for _, candidate := range candidates {
+		candidate = strings.TrimSpace(candidate)
+		if candidate == "" {
+			continue
+		}
+		if _, exists := seen[candidate]; exists {
+			continue
+		}
+		seen[candidate] = struct{}{}
+		result = append(result, candidate)
+	}
+	return result
+}
+
+func packageMappingFromXLWMS(mapping xlwms.PlatformSKUMapping) packageMapping {
+	result := packageMapping{SheinSKU: mapping.PlatformSKU, MappingCount: 1, Items: make([]WarehouseMappingItem, 0, len(mapping.Items))}
+	for _, item := range mapping.Items {
+		result.Items = append(result.Items, WarehouseMappingItem{
+			WarehouseSKU: item.WarehouseSKU, Quantity: item.Quantity, ProductName: item.ProductName,
+			Spec: PackageSpec{LengthCM: decimalString(item.LengthCM), WidthCM: decimalString(item.WidthCM), HeightCM: decimalString(item.HeightCM), WeightKG: decimalString(item.WeightKG)},
+		})
+	}
+	if len(result.Items) == 1 {
+		result.WarehouseSKU = result.Items[0].WarehouseSKU
+		result.WarehouseQty = strconv.Itoa(result.Items[0].Quantity)
+		result.Spec = result.Items[0].Spec
+	}
+	return result
+}
+
+func decimalString(value *float64) string {
+	if value == nil {
+		return ""
+	}
+	return strconv.FormatFloat(*value, 'f', -1, 64)
+}
+
+func samePackageRecipe(left, right packageMapping) bool {
+	if len(left.Items) != len(right.Items) {
+		return false
+	}
+	for index := range left.Items {
+		if left.Items[index].WarehouseSKU != right.Items[index].WarehouseSKU || left.Items[index].Quantity != right.Items[index].Quantity {
+			return false
+		}
+	}
+	return true
+}
+
+func goodsMappingKey(goods QueueGoods) string {
+	if sellerSKU := strings.TrimSpace(goods.SellerSKU); sellerSKU != "" {
+		return "seller:" + sellerSKU
+	}
+	if skuCode := strings.TrimSpace(goods.SKUCode); skuCode != "" {
+		return "code:" + skuCode
+	}
+	return ""
+}
+
+func applyGoodsMapping(goods *QueueGoods, mapping packageMapping) {
+	goods.WarehouseItems = append([]WarehouseMappingItem(nil), mapping.Items...)
+	if len(mapping.Items) == 1 {
+		goods.WarehouseSKU = mapping.WarehouseSKU
+		goods.WarehouseQuantity = mapping.WarehouseQty
+	}
 }
 
 func queueGoods(detail map[string]any) []QueueGoods {
@@ -473,10 +638,9 @@ func orderGoodsUnits(goods []QueueGoods) int {
 func classifyOrderQueueItem(item *OrderQueueItem, mappings map[string]packageMapping) {
 	reasons := make([]string, 0)
 	for index := range item.Goods {
-		mapping, ok := mappings[item.Goods[index].SKUCode]
+		mapping, ok := mappings[goodsMappingKey(item.Goods[index])]
 		if ok && mapping.MappingCount == 1 {
-			item.Goods[index].WarehouseSKU = mapping.WarehouseSKU
-			item.Goods[index].WarehouseQuantity = mapping.WarehouseQty
+			applyGoodsMapping(&item.Goods[index], mapping)
 		}
 	}
 	units := orderGoodsUnits(item.Goods)
@@ -495,15 +659,20 @@ func classifyOrderQueueItem(item *OrderQueueItem, mappings map[string]packageMap
 		reasons = append(reasons, "平台标记订单暂不可处理")
 	}
 	if item.ItemCount == 1 && units == 1 {
-		item.SheinSKU = item.Goods[0].SKUCode
-		mapping, ok := mappings[item.SheinSKU]
+		item.SheinSKU = strings.TrimSpace(item.Goods[0].SellerSKU)
+		if item.SheinSKU == "" {
+			item.SheinSKU = strings.TrimSpace(item.Goods[0].SKUCode)
+		}
+		mapping, ok := mappings[goodsMappingKey(item.Goods[0])]
 		switch {
 		case item.SheinSKU == "":
-			reasons = append(reasons, "商品缺少 skuCode")
+			reasons = append(reasons, "商品缺少 sellerSku 和 skuCode")
 		case !ok:
 			reasons = append(reasons, "SKU 未绑定仓库商品")
 		case mapping.MappingCount > 1:
 			reasons = append(reasons, "SKU 对应多个仓库商品")
+		case len(mapping.Items) != 1:
+			reasons = append(reasons, "组合商品需人工确认包裹")
 		default:
 			item.WarehouseSKU = mapping.WarehouseSKU
 			spec := mapping.Spec
@@ -526,6 +695,10 @@ func (item OrderQueueItem) hasCurrentInventoryCheck() bool {
 
 func (item OrderQueueItem) ReadyForAutomaticFulfillment() bool {
 	return item.AutoEligible && item.hasCurrentInventoryCheck() && item.InventoryCheck.Status == "eligible"
+}
+
+func (item OrderQueueItem) CanRunAutomaticFulfillment() bool {
+	return item.ReadyForAutomaticFulfillment() && (item.Job == nil || item.Job.Status == "failed")
 }
 
 func (item OrderQueueItem) EligibleBeforeInventoryCheck() bool {

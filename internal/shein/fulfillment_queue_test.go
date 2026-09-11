@@ -3,9 +3,11 @@ package shein
 import (
 	"testing"
 	"time"
+
+	"shein-api-manager/internal/xlwms"
 )
 
-func TestClassifyOrderQueueItemUsesSKUCodeMapping(t *testing.T) {
+func TestClassifyOrderQueueItemPrefersSellerSKUMapping(t *testing.T) {
 	item := OrderQueueItem{
 		Detail: map[string]any{
 			"optionalLogisticsList": []any{float64(1)},
@@ -18,19 +20,31 @@ func TestClassifyOrderQueueItemUsesSKUCodeMapping(t *testing.T) {
 	item.Goods = queueGoods(item.Detail)
 	item.ItemCount = len(item.Goods)
 	classifyOrderQueueItem(&item, map[string]packageMapping{
-		"SKU-CODE": {
-			SheinSKU: "SKU-CODE", WarehouseSKU: "WH-1", WarehouseQty: "2", MappingCount: 1,
-			Spec: PackageSpec{LengthCM: "20", WidthCM: "15", HeightCM: "5", WeightKG: "0.3"},
+		"seller:SELLER-SKU": {
+			SheinSKU: "SELLER-SKU", WarehouseSKU: "WH-1", WarehouseQty: "2", MappingCount: 1,
+			Spec:  PackageSpec{LengthCM: "20", WidthCM: "15", HeightCM: "5", WeightKG: "0.3"},
+			Items: []WarehouseMappingItem{{WarehouseSKU: "WH-1", Quantity: 2, Spec: PackageSpec{LengthCM: "20", WidthCM: "15", HeightCM: "5", WeightKG: "0.3"}}},
 		},
+		"code:SKU-CODE": {SheinSKU: "SKU-CODE", WarehouseSKU: "WRONG", WarehouseQty: "1", MappingCount: 1},
 	})
 	if !item.AutoEligible {
 		t.Fatalf("single item should be eligible, reasons=%v", item.ManualReasons)
 	}
-	if item.SheinSKU != "SKU-CODE" || item.WarehouseSKU != "WH-1" {
+	if item.SheinSKU != "SELLER-SKU" || item.WarehouseSKU != "WH-1" {
 		t.Fatalf("classification used wrong SKU mapping: %#v", item)
 	}
 	if item.Goods[0].WarehouseSKU != "WH-1" || item.Goods[0].WarehouseQuantity != "2" {
 		t.Fatalf("goods line did not expose warehouse mapping: %#v", item.Goods[0])
+	}
+}
+
+func TestPlatformSKUCandidatesUseCodeAsFinalFallback(t *testing.T) {
+	aliases := map[string][]string{"SKU-CODE": {"ALIAS-01", "ALIAS-01"}}
+	if got := platformSKUCandidates(QueueGoods{SKUCode: " SKU-CODE "}, aliases); len(got) != 2 || got[0] != "ALIAS-01" || got[1] != "SKU-CODE" {
+		t.Fatalf("alias candidates = %#v", got)
+	}
+	if got := platformSKUCandidates(QueueGoods{SKUCode: "SKU-CODE", SellerSKU: " SELLER-01 "}, aliases); len(got) != 2 || got[0] != "SELLER-01" || got[1] != "SKU-CODE" {
+		t.Fatalf("seller candidates = %#v", got)
 	}
 }
 
@@ -75,6 +89,26 @@ func TestEligibleInventoryCheckRequiresCurrentOrderDetail(t *testing.T) {
 	}
 }
 
+func TestCanRunAutomaticFulfillmentIncludesFailedJob(t *testing.T) {
+	checkedAt := time.Date(2026, 9, 11, 10, 0, 0, 0, time.UTC)
+	item := OrderQueueItem{
+		AutoEligible:    true,
+		DetailFetchedAt: checkedAt,
+		InventoryCheck: &InventoryCheck{
+			SourceDetailFetchedAt: checkedAt,
+			Status:                "eligible",
+		},
+		Job: &AutoFulfillmentJob{Status: "failed"},
+	}
+	if !item.CanRunAutomaticFulfillment() {
+		t.Fatal("failed automatic job must remain runnable in the pending queue")
+	}
+	item.Job.Status = "running"
+	if item.CanRunAutomaticFulfillment() {
+		t.Fatal("active automatic job must not be duplicated in the pending queue")
+	}
+}
+
 func TestClassifyOrderQueueItemRoutesMultiItemToManual(t *testing.T) {
 	item := OrderQueueItem{
 		Detail: map[string]any{
@@ -106,9 +140,10 @@ func TestClassifyOrderQueueItemRoutesSingleSKUQuantityGreaterThanOneToManual(t *
 	item.Goods = queueGoods(item.Detail)
 	item.ItemCount = len(item.Goods)
 	classifyOrderQueueItem(&item, map[string]packageMapping{
-		"SKU-CODE": {
+		"code:SKU-CODE": {
 			SheinSKU: "SKU-CODE", WarehouseSKU: "WH-1", WarehouseQty: "2", MappingCount: 1,
-			Spec: PackageSpec{LengthCM: "20", WidthCM: "15", HeightCM: "5", WeightKG: "0.3"},
+			Spec:  PackageSpec{LengthCM: "20", WidthCM: "15", HeightCM: "5", WeightKG: "0.3"},
+			Items: []WarehouseMappingItem{{WarehouseSKU: "WH-1", Quantity: 2, Spec: PackageSpec{LengthCM: "20", WidthCM: "15", HeightCM: "5", WeightKG: "0.3"}}},
 		},
 	})
 	if item.AutoEligible {
@@ -125,6 +160,43 @@ func TestClassifyOrderQueueItemRoutesSingleSKUQuantityGreaterThanOneToManual(t *
 	}
 	if !found {
 		t.Fatalf("quantity>1 was not classified as multi-item: %#v", item.ManualReasons)
+	}
+}
+
+func TestPackageMappingFromXLWMSPreservesRecipeAndSpec(t *testing.T) {
+	length, width, height, weight := 20.0, 15.0, 5.0, 0.3
+	mapping := packageMappingFromXLWMS(xlwms.PlatformSKUMapping{
+		PlatformSKU: "SELLER-01",
+		Items: []xlwms.PlatformSKUMappingItem{
+			{WarehouseSKU: "WH-A", Quantity: 2, LengthCM: &length, WidthCM: &width, HeightCM: &height, WeightKG: &weight},
+		},
+	})
+	if mapping.MappingCount != 1 || mapping.WarehouseSKU != "WH-A" || mapping.WarehouseQty != "2" || !mapping.Spec.Complete() {
+		t.Fatalf("unexpected mapping: %#v", mapping)
+	}
+}
+
+func TestClassifyOrderQueueItemRoutesCombinationMappingToManual(t *testing.T) {
+	item := OrderQueueItem{
+		Detail: map[string]any{"optionalLogisticsList": []any{float64(1)}, "printOrderStatus": float64(1)},
+		Goods:  []QueueGoods{{SKUCode: "CODE", SellerSKU: "SELLER-01", Quantity: 1}}, ItemCount: 1,
+	}
+	classifyOrderQueueItem(&item, map[string]packageMapping{
+		"seller:SELLER-01": {SheinSKU: "SELLER-01", MappingCount: 1, Items: []WarehouseMappingItem{{WarehouseSKU: "WH-A", Quantity: 1}, {WarehouseSKU: "WH-B", Quantity: 1}}},
+	})
+	if item.AutoEligible || len(item.Goods[0].WarehouseItems) != 2 {
+		t.Fatalf("combination recipe was not preserved for manual fulfillment: %#v", item)
+	}
+}
+
+func TestOrderSKUAliasesIgnoresMissingAndDuplicateValues(t *testing.T) {
+	aliases := orderSKUAliases(map[string]any{"orderGoodsInfoList": []any{
+		map[string]any{"skuCode": "CODE-1", "sellerSku": "SELLER-01"},
+		map[string]any{"skuCode": "CODE-1", "sellerSku": "SELLER-01"},
+		map[string]any{"skuCode": "CODE-2", "sellerSku": ""},
+	}})
+	if len(aliases) != 1 || aliases[0] != [2]string{"CODE-1", "SELLER-01"} {
+		t.Fatalf("aliases = %#v", aliases)
 	}
 }
 

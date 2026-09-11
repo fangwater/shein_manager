@@ -67,6 +67,69 @@ type InventoryItem struct {
 	Quantity     int    `json:"quantity"`
 }
 
+type PlatformSKUMappingItem struct {
+	WarehouseSKU string   `json:"warehouse_sku"`
+	ProductName  string   `json:"product_name,omitempty"`
+	Quantity     int      `json:"quantity"`
+	LengthCM     *float64 `json:"length_cm,omitempty"`
+	WidthCM      *float64 `json:"width_cm,omitempty"`
+	HeightCM     *float64 `json:"height_cm,omitempty"`
+	WeightKG     *float64 `json:"weight_kg,omitempty"`
+	SpecComplete bool     `json:"spec_complete"`
+}
+
+type PlatformSKUMapping struct {
+	Platform    string                   `json:"platform"`
+	PlatformSKU string                   `json:"platform_sku"`
+	Source      string                   `json:"source"`
+	Enabled     bool                     `json:"enabled"`
+	Items       []PlatformSKUMappingItem `json:"items"`
+}
+
+type PlatformSKUMappingResolution struct {
+	Platform     string               `json:"platform"`
+	Mappings     []PlatformSKUMapping `json:"mappings"`
+	UnmappedSKUs []string             `json:"unmapped_skus"`
+}
+
+func (client *Client) ResolvePlatformSKUs(ctx context.Context, platform string, platformSKUs []string) (PlatformSKUMappingResolution, error) {
+	platform = strings.ToLower(strings.TrimSpace(platform))
+	if platform == "" {
+		return PlatformSKUMappingResolution{}, errors.New("platform is required")
+	}
+	values := make([]string, 0, len(platformSKUs))
+	seen := make(map[string]struct{}, len(platformSKUs))
+	for _, sku := range platformSKUs {
+		sku = strings.TrimSpace(sku)
+		if sku == "" {
+			continue
+		}
+		if _, exists := seen[sku]; exists {
+			continue
+		}
+		seen[sku] = struct{}{}
+		values = append(values, sku)
+	}
+	if len(values) == 0 {
+		return PlatformSKUMappingResolution{}, errors.New("at least one platform SKU is required")
+	}
+	body, err := json.Marshal(map[string]any{"platform": platform, "platform_skus": values})
+	if err != nil {
+		return PlatformSKUMappingResolution{}, err
+	}
+	var result PlatformSKUMappingResolution
+	if err := client.do(ctx, http.MethodPost, "/platform-sku-mappings/resolve", body, "", "", "", &result); err != nil {
+		return PlatformSKUMappingResolution{}, err
+	}
+	if result.Mappings == nil {
+		result.Mappings = []PlatformSKUMapping{}
+	}
+	if result.UnmappedSKUs == nil {
+		result.UnmappedSKUs = []string{}
+	}
+	return result, nil
+}
+
 type CarrierPolicy struct {
 	WarehouseKey string `json:"warehouse_key"`
 	CarrierCode  string `json:"carrier_code"`

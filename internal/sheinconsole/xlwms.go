@@ -1328,6 +1328,16 @@ func applyMappedProductsToParcelDraft(ctx context.Context, store *shein.Store, s
 	}
 	products := make([]xlwmsParcelDraftProduct, 0, len(goods))
 	for _, item := range goods {
+		if len(item.WarehouseItems) > 0 {
+			units := item.Quantity
+			if units < 1 {
+				units = 1
+			}
+			for _, mapped := range item.WarehouseItems {
+				products = append(products, xlwmsParcelDraftProduct{SKU: mapped.WarehouseSKU, Quantity: mapped.Quantity * units})
+			}
+			continue
+		}
 		sku := strings.TrimSpace(item.WarehouseSKU)
 		if sku == "" {
 			draft.MissingFields = appendUnique(draft.MissingFields, "仓库 SKU")
@@ -1702,6 +1712,16 @@ func warehouseQuantities(order shein.OrderQueueItem) (map[string]int, []string) 
 	quantities := make(map[string]int)
 	missing := make([]string, 0)
 	for _, goods := range order.Goods {
+		if len(goods.WarehouseItems) > 0 {
+			units := goods.Quantity
+			if units < 1 {
+				units = 1
+			}
+			for _, mapped := range goods.WarehouseItems {
+				quantities[mapped.WarehouseSKU] += mapped.Quantity * units
+			}
+			continue
+		}
 		sku := strings.TrimSpace(goods.WarehouseSKU)
 		if sku == "" {
 			source := strings.TrimSpace(goods.SKUCode)

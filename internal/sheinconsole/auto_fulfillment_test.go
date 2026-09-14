@@ -1,13 +1,29 @@
 package sheinconsole
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"shein-api-manager/internal/shein"
 )
+
+type recordingOrderListCaller struct {
+	calls []map[string]any
+}
+
+func (caller *recordingOrderListCaller) Call(_ context.Context, operation string, data map[string]any) (map[string]any, error) {
+	if operation != "order-list" {
+		return nil, errors.New("unexpected operation")
+	}
+	caller.calls = append(caller.calls, data)
+	return map[string]any{"info": map[string]any{"orderList": []any{
+		map[string]any{"orderNo": "ORDER-1", "orderStatus": data["orderStatus"]},
+	}}}, nil
+}
 
 func TestCollectOrderObjectsFindsNestedListsAndDetails(t *testing.T) {
 	value := map[string]any{"data": map[string]any{"records": []any{
@@ -18,6 +34,61 @@ func TestCollectOrderObjectsFindsNestedListsAndDetails(t *testing.T) {
 	}
 	if details := collectOrderObjects(value, true); len(details) != 0 {
 		t.Fatalf("list row was mistaken for detail: %#v", details)
+	}
+}
+
+func TestOpenOrderSyncStartAlwaysBackfillsAndBoundsCatchup(t *testing.T) {
+	location := time.FixedZone("UTC+8", 8*60*60)
+	endTime := time.Date(2026, 9, 14, 14, 0, 0, 0, location)
+	tests := []struct {
+		name     string
+		lastSync time.Time
+		want     time.Time
+	}{
+		{name: "no progress", want: endTime.Add(-openOrderMinLookback)},
+		{name: "recent progress", lastSync: endTime.Add(-24 * time.Hour), want: endTime.Add(-openOrderMinLookback)},
+		{name: "older progress", lastSync: endTime.Add(-20 * 24 * time.Hour), want: endTime.Add(-20*24*time.Hour - openOrderSyncOverlap)},
+		{name: "stale progress", lastSync: endTime.Add(-60 * 24 * time.Hour), want: endTime.Add(-openOrderMaxCatchup)},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := openOrderSyncStart(endTime, test.lastSync); !got.Equal(test.want) {
+				t.Fatalf("open order sync start = %v, want %v", got, test.want)
+			}
+		})
+	}
+}
+
+func TestListOpenOrderUpdatesSplitsLongLookbackIntoValidWindows(t *testing.T) {
+	location := time.FixedZone("UTC+8", 8*60*60)
+	endTime := time.Date(2026, 9, 14, 14, 0, 0, 0, location)
+	startTime := endTime.Add(-openOrderMinLookback)
+	caller := &recordingOrderListCaller{}
+	orders, err := listOpenOrderUpdates(context.Background(), caller, startTime, endTime)
+	if err != nil {
+		t.Fatalf("list open order updates: %v", err)
+	}
+	windows := openOrderListWindows(startTime, endTime)
+	if len(caller.calls) != len(windows)*2 {
+		t.Fatalf("order list calls = %d, want %d", len(caller.calls), len(windows)*2)
+	}
+	if len(orders) != 1 {
+		t.Fatalf("deduplicated orders = %d, want 1", len(orders))
+	}
+	statusCalls := map[int]int{}
+	for _, call := range caller.calls {
+		if call["queryType"] != 2 {
+			t.Fatalf("queryType = %v, want 2", call["queryType"])
+		}
+		windowStart, startErr := time.ParseInLocation(shein.SHEINTimeFormat, call["startTime"].(string), location)
+		windowEnd, endErr := time.ParseInLocation(shein.SHEINTimeFormat, call["endTime"].(string), location)
+		if startErr != nil || endErr != nil || windowEnd.Sub(windowStart) > openOrderListWindow {
+			t.Fatalf("invalid SHEIN order list window: %v - %v", call["startTime"], call["endTime"])
+		}
+		statusCalls[call["orderStatus"].(int)]++
+	}
+	if statusCalls[1] != len(windows) || statusCalls[2] != len(windows) {
+		t.Fatalf("status calls = %#v, want one call per status and window", statusCalls)
 	}
 }
 

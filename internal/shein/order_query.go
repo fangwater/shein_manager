@@ -161,6 +161,22 @@ func (s *Store) LatestOrderSync(ctx context.Context, shopKey string) (OrderSyncS
 	return status, err
 }
 
+func (s *Store) LatestSuccessfulOrderSyncTime(ctx context.Context, shopKey string) (time.Time, error) {
+	var completedAt *time.Time
+	err := s.pool.QueryRow(ctx, `
+		SELECT max(completed_at)
+		FROM shein_go_order_sync_runs
+		WHERE shop_key = $1 AND status = 'succeeded'
+	`, strings.TrimSpace(shopKey)).Scan(&completedAt)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("read latest successful SHEIN order sync: %w", err)
+	}
+	if completedAt == nil {
+		return time.Time{}, nil
+	}
+	return *completedAt, nil
+}
+
 type rowScanner interface {
 	Scan(dest ...any) error
 }

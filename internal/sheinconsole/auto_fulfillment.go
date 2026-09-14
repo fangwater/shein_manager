@@ -16,11 +16,25 @@ import (
 )
 
 const (
-	autoWorkerCount     = 3
-	autoMaxAttempts     = 12
-	autoRetryDelay      = 30 * time.Second
-	autoOperationWindow = 3 * time.Minute
+	autoWorkerCount           = 3
+	autoMaxAttempts           = 12
+	autoRetryDelay            = 30 * time.Second
+	autoOperationWindow       = 3 * time.Minute
+	openOrderMinLookback      = 7 * 24 * time.Hour
+	openOrderMaxCatchup       = 30 * 24 * time.Hour
+	openOrderSyncOverlap      = time.Hour
+	openOrderListWindow       = 47 * time.Hour
+	openOrderListMaxPageCount = 20
 )
+
+type orderListCaller interface {
+	Call(context.Context, string, map[string]any) (map[string]any, error)
+}
+
+type orderListWindow struct {
+	Start time.Time
+	End   time.Time
+}
 
 type autoQueueRef struct {
 	ShopKey string
@@ -105,7 +119,7 @@ func (s *Server) syncFulfillmentOrders(writer http.ResponseWriter, request *http
 	}
 	ctx, cancel := context.WithTimeout(request.Context(), s.requestTimeout)
 	defer cancel()
-	synced, err := s.syncOpenOrders(ctx, shopKey)
+	syncStatus, err := s.runTrackedOrderSync(ctx, shopKey)
 	if err != nil {
 		s.writeAPIError(writer, err)
 		return
@@ -127,7 +141,7 @@ func (s *Server) syncFulfillmentOrders(writer http.ResponseWriter, request *http
 		return
 	}
 	writeJSON(writer, http.StatusOK, response{Success: true, Data: map[string]any{
-		"synced": synced, "pending": pending, "manual_count": len(manual),
+		"synced": syncStatus.FetchedOrders, "pending": pending, "manual_count": len(manual),
 	}})
 }
 
@@ -332,33 +346,18 @@ func (s *Server) syncOpenOrders(ctx context.Context, shopKey string) (int, error
 	client := shein.NewClient(credentials, s.requestTimeout)
 	location := time.FixedZone("UTC+8", 8*60*60)
 	endTime := time.Now().In(location)
-	startTime := endTime.Add(-47 * time.Hour)
-	listByOrder := make(map[string]map[string]any)
+	lastSuccessfulSync, err := s.store.LatestSuccessfulOrderSyncTime(ctx, shopKey)
+	if err != nil {
+		return 0, err
+	}
+	startTime := openOrderSyncStart(endTime, lastSuccessfulSync)
+	listByOrder, err := listOpenOrderUpdates(ctx, client, startTime, endTime)
+	if err != nil {
+		return 0, err
+	}
 	orderNumbers := make(map[string]bool)
-
-	for _, status := range []int{1, 2} {
-		for page := 1; page <= 20; page++ {
-			result, err := client.Call(ctx, "order-list", map[string]any{
-				"queryType": 2, "startTime": startTime.Format(shein.SHEINTimeFormat),
-				"endTime": endTime.Format(shein.SHEINTimeFormat), "orderStatus": status,
-				"page": page, "pageSize": shein.MaxOrderListPageSize,
-			})
-			if err != nil {
-				return 0, err
-			}
-			orders := collectOrderObjects(result["info"], false)
-			for _, order := range orders {
-				orderNo := orderNumberFromMap(order)
-				if orderNo == "" {
-					continue
-				}
-				listByOrder[orderNo] = order
-				orderNumbers[orderNo] = true
-			}
-			if len(orders) < shein.MaxOrderListPageSize {
-				break
-			}
-		}
+	for orderNo := range listByOrder {
+		orderNumbers[orderNo] = true
 	}
 	existing, err := s.store.ListPendingOrderNos(ctx, shopKey)
 	if err != nil {
@@ -409,6 +408,69 @@ func (s *Server) syncOpenOrders(ctx context.Context, shopKey string) (int, error
 		return len(snapshots), err
 	}
 	return len(snapshots), nil
+}
+
+func openOrderSyncStart(endTime, lastSuccessfulSync time.Time) time.Time {
+	minimumStart := endTime.Add(-openOrderMinLookback)
+	if lastSuccessfulSync.IsZero() {
+		return minimumStart
+	}
+	candidate := lastSuccessfulSync.In(endTime.Location()).Add(-openOrderSyncOverlap)
+	maximumStart := endTime.Add(-openOrderMaxCatchup)
+	if candidate.Before(maximumStart) {
+		return maximumStart
+	}
+	if candidate.Before(minimumStart) {
+		return candidate
+	}
+	return minimumStart
+}
+
+func openOrderListWindows(startTime, endTime time.Time) []orderListWindow {
+	if startTime.After(endTime) {
+		return nil
+	}
+	windows := make([]orderListWindow, 0, int(endTime.Sub(startTime)/openOrderListWindow)+1)
+	for cursor := startTime; !cursor.After(endTime); {
+		windowEnd := cursor.Add(openOrderListWindow)
+		if windowEnd.After(endTime) {
+			windowEnd = endTime
+		}
+		windows = append(windows, orderListWindow{Start: cursor, End: windowEnd})
+		if windowEnd.Equal(endTime) {
+			break
+		}
+		cursor = windowEnd.Add(time.Second)
+	}
+	return windows
+}
+
+func listOpenOrderUpdates(ctx context.Context, client orderListCaller, startTime, endTime time.Time) (map[string]map[string]any, error) {
+	ordersByNumber := make(map[string]map[string]any)
+	for _, window := range openOrderListWindows(startTime, endTime) {
+		for _, status := range []int{1, 2} {
+			for page := 1; page <= openOrderListMaxPageCount; page++ {
+				result, err := client.Call(ctx, "order-list", map[string]any{
+					"queryType": 2, "startTime": window.Start.Format(shein.SHEINTimeFormat),
+					"endTime": window.End.Format(shein.SHEINTimeFormat), "orderStatus": status,
+					"page": page, "pageSize": shein.MaxOrderListPageSize,
+				})
+				if err != nil {
+					return nil, err
+				}
+				orders := collectOrderObjects(result["info"], false)
+				for _, order := range orders {
+					if orderNo := orderNumberFromMap(order); orderNo != "" {
+						ordersByNumber[orderNo] = order
+					}
+				}
+				if len(orders) < shein.MaxOrderListPageSize {
+					break
+				}
+			}
+		}
+	}
+	return ordersByNumber, nil
 }
 
 func collectOrderObjects(value any, requireDetail bool) []map[string]any {

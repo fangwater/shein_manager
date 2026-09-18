@@ -31,6 +31,9 @@ func TestCarrierCodeRecognizesSHEINChannelNames(t *testing.T) {
 	if got := CarrierCode("UNIUNI-US"); got != "UNIUNI" {
 		t.Fatalf("UNIUNI channel = %q", got)
 	}
+	if got := CarrierCode("CBS-US-GROUND", "CBS Logistics"); got != "CBS" {
+		t.Fatalf("CBS channel = %q", got)
+	}
 }
 
 func TestChannelUnavailableReasonUsesWarehousePolicy(t *testing.T) {
@@ -50,6 +53,9 @@ func TestChannelUnavailableReasonUsesWarehousePolicy(t *testing.T) {
 	if got := ChannelUnavailableReason("UPS-GROUND", "UPS", "", "USD", "WH2604283535967233", "", false, group); got != "" {
 		t.Fatalf("enabled UPS was blocked: %q", got)
 	}
+	if got := ChannelUnavailableReason("CBS-US-GROUND", "CBS", "", "USD", "WH2604283535967233", "", false, group); got != "" {
+		t.Fatalf("enabled CBS was blocked: %q", got)
+	}
 }
 
 func TestApplyCarrierPoliciesToChannelsMarksDisabled(t *testing.T) {
@@ -62,6 +68,7 @@ func TestApplyCarrierPoliciesToChannelsMarksDisabled(t *testing.T) {
 	result := map[string]any{"info": map[string]any{"channelInfoList": []any{
 		map[string]any{"expressChannelCode": "SPEEDX-US", "expressShortName": "SpeedX"},
 		map[string]any{"expressChannelCode": "GOFO-D2D250718-Na", "expressShortName": "GOFO"},
+		map[string]any{"expressChannelCode": "CBS-US-GROUND", "expressShortName": "CBS Logistics"},
 	}}}
 	ApplyCarrierPoliciesToChannels(result, "WH2607084039788546", "ARP仓-美东", testWarehouseCarrierPolicies("ARP_EAST", policies))
 	channels := channelObjects(result["info"])
@@ -71,10 +78,13 @@ func TestApplyCarrierPoliciesToChannelsMarksDisabled(t *testing.T) {
 	if channels[1]["availableStatus"] == "0" {
 		t.Fatalf("GOFO was disabled: %#v", channels[1])
 	}
+	if channels[2]["availableStatus"] == "0" {
+		t.Fatalf("CBS was disabled: %#v", channels[2])
+	}
 }
 
 func testCarrierPolicies(warehouseKey string) []CarrierPolicy {
-	codes := []string{"GOFO", "SWIFTX", "SPEEDX", "YANWEN", "UPS", "USPS", "FEDEX"}
+	codes := []string{"GOFO", "SWIFTX", "SPEEDX", "YANWEN", "UPS", "USPS", "FEDEX", "CBS"}
 	policies := make([]CarrierPolicy, 0, len(codes))
 	for index, code := range codes {
 		policies = append(policies, CarrierPolicy{WarehouseKey: warehouseKey, CarrierCode: code, Priority: index + 1, Enabled: true})
@@ -86,7 +96,7 @@ func testWarehouseCarrierPolicies(warehouseKey string, policies []CarrierPolicy)
 	return WarehouseCarrierPolicies{
 		WarehouseKey: warehouseKey,
 		BaseRules: WarehouseCarrierRules{
-			WarehouseKey: warehouseKey, AllowedCarrierCodes: []string{"GOFO", "SWIFTX", "SPEEDX", "YANWEN", "UPS", "USPS", "FEDEX"},
+			WarehouseKey: warehouseKey, AllowedCarrierCodes: []string{"GOFO", "SWIFTX", "SPEEDX", "YANWEN", "UPS", "USPS", "FEDEX", "CBS"},
 			AllowSignature: true, SelectionMode: "lowest_price", WarehouseTiePriority: 1,
 		},
 		Carriers: policies,

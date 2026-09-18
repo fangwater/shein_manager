@@ -40,7 +40,7 @@ var (
 		"ARPCA01":  "ARP_WEST",
 	}
 
-	carrierMatchOrder = []string{"UNIUNI", "SWIFTX", "SPEEDX", "YANWEN", "FEDEX", "USPS", "UPS", "GOFO"}
+	carrierMatchOrder = []string{"UNIUNI", "SWIFTX", "SPEEDX", "YANWEN", "FEDEX", "USPS", "UPS", "GOFO", "CBS"}
 )
 
 func PolicyWarehouseKey(code, name string) string {

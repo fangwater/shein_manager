@@ -72,7 +72,9 @@ automatic batch, the worker records it as already fulfilled and skips a second
 label purchase.
 PG and other platform-listed warehouses stay visible as unavailable and cannot
 be quoted. Each shop configures carrier enablement and priority per OMS
-warehouse (`DPS002`, `ARP_EAST`, `DPS004`, `ARP_WEST`).
+warehouse (`DPS002`, `ARP_EAST`, `DPS004`, `ARP_WEST`). CBS is recognized as
+a carrier and is selectable when XLWMS returns it in that warehouse's allowed
+carrier list with an enabled policy.
 Automatic selection picks the lowest live price and, on a tie, prefers ARP
 over DPS. There is no Temu-style USD 0.50 priority band and no DPS clearance
 preference. A disabled or non-whitelist carrier cannot be selected manually

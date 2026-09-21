@@ -75,10 +75,13 @@ be quoted. Each shop configures carrier enablement and priority per OMS
 warehouse (`DPS002`, `ARP_EAST`, `DPS004`, `ARP_WEST`). CBS is recognized as
 a carrier and is selectable when XLWMS returns it in that warehouse's allowed
 carrier list with an enabled policy.
-Automatic selection picks the lowest live price and, on a tie, prefers ARP
-over DPS. There is no Temu-style USD 0.50 priority band and no DPS clearance
-preference. A disabled or non-whitelist carrier cannot be selected manually
-or automatically. ARP East defaults UNIUNI and SwiftX to disabled. `export-address` with `handleType=2` is only
+Automatic selection follows the XLWMS Warehouse Console policy under
+`发货策略 -> 快递选择算法`. The current SHEIN default gives GOFO first priority
+when its live price is within USD 0.50 of the lowest quote; SpeedX and SwiftX
+remain fallbacks when GOFO is unavailable or exceeds that price band.
+Same-price warehouse ties prefer ARP over DPS. A disabled or non-whitelist
+carrier cannot be selected manually or automatically. ARP East defaults
+UNIUNI and SwiftX to disabled. `export-address` with `handleType=2` is only
 used for merchant self-ship orders that cannot buy a platform label.
 
 If SHEIN rejects a selected carrier because the destination postal code is

@@ -98,13 +98,15 @@ This is the Top 3 detail table. It contains one to three rows for each
    DPS on a tie, then `expressChannelCode`. This ranking only chooses which
    label to buy. After purchase, outbound follows the bought warehouse.
 4. The automatic worker first drops UNIUNI, non-whitelist, and shop-disabled
-   carriers for the quoted OMS warehouse. Among remaining quotes it selects the
-   lowest live price; same-price ties prefer ARP over DPS. ARP East defaults
-   UNIUNI and SwiftX to disabled. Manual purchases preserve the operator's
-   choice only when that channel is still allowed. The purchase header is
-   written before the SHEIN online-order call; candidates and the header are
-   committed atomically. A later OMS or parcel step cannot change that
-   warehouse; a mismatch is manual.
+   carriers for the quoted OMS warehouse. Carrier selection is controlled in
+   XLWMS Warehouse Console under `发货策略 -> 快递选择算法`: the current SHEIN
+   default gives GOFO first priority when its live fee is within USD 0.50 of
+   the lowest quote, so SpeedX and SwiftX are only fallbacks outside that band
+   or when GOFO is unavailable. Same-price warehouse ties prefer ARP over DPS.
+   Manual purchases preserve the operator's choice only when that channel is
+   still allowed. The purchase header is written before the SHEIN online-order
+   call; candidates and the header are committed atomically. A later OMS or
+   parcel step cannot change that warehouse; a mismatch is manual.
 5. A new Go quote must have a valid snapshot or ordering is blocked. Historical
    `preRequestId` values created before this feature remain orderable but do
    not create fabricated analysis rows. Historical data is not backfilled.

@@ -422,3 +422,16 @@ pm2 save
 
 The launcher reads the project `.env` before starting Uvicorn. Do not add secrets
 to the PM2 ecosystem file or expose the Uvicorn port directly to the internet.
+
+## ARP collection warehouses
+
+The service recognizes `ARP06A`/`ARP_HOUSTON` and reserves `ARPGA`/`ARP_ATLANTA`.
+Both warehouses accept only USPS, GOFO, UPS and FEDEX, after platform/SKU/account
+rules. Manual and automatic purchase both validate a saved channel snapshot
+against current XLWMS rules. Lookup of purchased labels reports the actual carrier.
+
+For a new SHEIN warehouse's opaque address ID, configure the private `.env`
+`SHEIN_OMS_WAREHOUSE_MAPPINGS` as a JSON object mapping the verified platform
+address ID to `ARP06A` or `ARPGA`, then reload the existing service. Do not infer
+this mapping from an ambiguous address name. Atlanta remains disabled in XLWMS
+until listing and its credential scope and OMS rights are available.

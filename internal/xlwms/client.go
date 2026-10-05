@@ -148,12 +148,13 @@ type WarehouseCarrierRules struct {
 }
 
 type WarehouseCarrierPolicies struct {
-	WarehouseKey string                `json:"warehouse_key"`
-	WarehouseSKU string                `json:"warehouse_sku,omitempty"`
-	Customized   bool                  `json:"customized"`
-	Source       string                `json:"source"`
-	BaseRules    WarehouseCarrierRules `json:"base_rules"`
-	Carriers     []CarrierPolicy       `json:"carriers"`
+	WarehouseEnabled *bool                 `json:"warehouse_enabled,omitempty"`
+	WarehouseKey     string                `json:"warehouse_key"`
+	WarehouseSKU     string                `json:"warehouse_sku,omitempty"`
+	Customized       bool                  `json:"customized"`
+	Source           string                `json:"source"`
+	BaseRules        WarehouseCarrierRules `json:"base_rules"`
+	Carriers         []CarrierPolicy       `json:"carriers"`
 }
 
 func (client *Client) CarrierPolicies(ctx context.Context, platform, warehouseSKU string) ([]WarehouseCarrierPolicies, error) {

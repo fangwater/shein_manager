@@ -298,6 +298,7 @@ type LabelPurchaseRecord struct {
 }
 
 type PurchasedLabelEvidence struct {
+	CarrierCode      string    `json:"carrier_code"`
 	PlatformOrderNo  string    `json:"platform_order_no"`
 	OMSWarehouseKey  string    `json:"oms_warehouse_key"`
 	OMSWarehouseCode string    `json:"oms_warehouse_code"`
@@ -331,7 +332,7 @@ func (s *Store) PurchasedLabelEvidenceByOrderNos(ctx context.Context, shopKey st
 	}
 	rows, err := s.pool.Query(ctx, `
 		SELECT DISTINCT ON (upper(order_no)) order_no,
-			selected_warehouse_address_code, delivery_no, purchased_at
+			selected_warehouse_address_code, delivery_no, purchased_at,selected_express_channel_code,selected_express_id_code,selected_express_short_name
 		FROM shein_label_purchase_choices
 		WHERE shop_key = $1 AND upper(order_no) = ANY($2)
 			AND delivery_no <> '' AND rejected_at IS NULL
@@ -343,9 +344,9 @@ func (s *Store) PurchasedLabelEvidenceByOrderNos(ctx context.Context, shopKey st
 	defer rows.Close()
 	result := make([]PurchasedLabelEvidence, 0, len(normalized))
 	for rows.Next() {
-		var orderNo, warehouseAddressCode, trackingNumber string
+		var orderNo, warehouseAddressCode, trackingNumber, channelCode, expressIDCode, expressName string
 		var purchasedAt time.Time
-		if err := rows.Scan(&orderNo, &warehouseAddressCode, &trackingNumber, &purchasedAt); err != nil {
+		if err := rows.Scan(&orderNo, &warehouseAddressCode, &trackingNumber, &purchasedAt, &channelCode, &expressIDCode, &expressName); err != nil {
 			return nil, fmt.Errorf("scan SHEIN purchased-label evidence: %w", err)
 		}
 		warehouse := ResolvePurchasedWarehouse(warehouseAddressCode)
@@ -354,7 +355,7 @@ func (s *Store) PurchasedLabelEvidenceByOrderNos(ctx context.Context, shopKey st
 		}
 		result = append(result, PurchasedLabelEvidence{
 			PlatformOrderNo: strings.TrimSpace(orderNo), OMSWarehouseKey: warehouse.OMSCode,
-			OMSWarehouseCode: warehouse.OMSCode, TrackingNumber: strings.TrimSpace(trackingNumber), PurchasedAt: purchasedAt,
+			CarrierCode: CarrierCode(channelCode, expressIDCode, expressName), OMSWarehouseCode: warehouse.OMSCode, TrackingNumber: strings.TrimSpace(trackingNumber), PurchasedAt: purchasedAt,
 		})
 	}
 	if err := rows.Err(); err != nil {

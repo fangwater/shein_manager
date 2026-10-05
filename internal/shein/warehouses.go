@@ -1,6 +1,7 @@
 package shein
 
 import (
+	"encoding/json"
 	"fmt"
 	"regexp"
 	"sort"
@@ -26,6 +27,8 @@ var operatedWarehouseAddressCodes = map[string]struct{}{
 	"DPSCA004":           {},
 	"HYTX30":             {},
 	"ARPCA01":            {},
+	"ARP06A":             {},
+	"ARPGA":              {},
 }
 
 var dpsWarehouseAddressCodes = map[string]string{
@@ -47,6 +50,8 @@ var omsWarehouseAddressCodes = map[string]string{
 	"DPSCA004":           "DPSCA004",
 	"HYTX30":             "HYTX30",
 	"ARPCA01":            "ARPCA01",
+	"ARP06A":             "ARP06A",
+	"ARPGA":              "ARPGA",
 }
 
 func warehouseWatchAddressCodes() []string {
@@ -162,6 +167,12 @@ func ResolvedOMSWarehouseCode(code, name string) string {
 	if identity == "" {
 		return ""
 	}
+	if strings.Contains(identity, "ARP06A") || strings.Contains(identity, "ARP-休斯顿6号仓") {
+		return "ARP06A"
+	}
+	if strings.Contains(identity, "ARPGA") {
+		return "ARPGA"
+	}
 	if strings.Contains(identity, "DPSNY002") || strings.Contains(identity, "DPS002") {
 		return "DPSNY002"
 	}
@@ -255,4 +266,26 @@ func warehouseObjects(value any) []map[string]any {
 	}
 	walk(value)
 	return objects
+}
+
+// Configured platform address IDs are explicit: similar names cannot prove that
+// two registrations describe the same physical warehouse.
+func ConfigureOMSWarehouseMappings(raw string) error {
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	mappings := map[string]string{}
+	if err := json.Unmarshal([]byte(raw), &mappings); err != nil {
+		return fmt.Errorf("invalid SHEIN_OMS_WAREHOUSE_MAPPINGS")
+	}
+	for address, oms := range mappings {
+		if !strings.HasPrefix(address, "WH") || (oms != "ARP06A" && oms != "ARPGA") {
+			return fmt.Errorf("unsupported SHEIN warehouse mapping")
+		}
+	}
+	for address, oms := range mappings {
+		omsWarehouseAddressCodes[address] = oms
+		operatedWarehouseAddressCodes[address] = struct{}{}
+	}
+	return nil
 }

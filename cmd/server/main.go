@@ -43,6 +43,9 @@ func main() {
 }
 
 func run(ctx context.Context, logger *slog.Logger) error {
+	if err := shein.ConfigureOMSWarehouseMappings(os.Getenv("SHEIN_OMS_WAREHOUSE_MAPPINGS")); err != nil {
+		return err
+	}
 	cfg, err := loadConfig()
 	if err != nil {
 		return err

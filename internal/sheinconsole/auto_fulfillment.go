@@ -1045,6 +1045,11 @@ func (s *Server) setAutomaticStep(ctx context.Context, ref autoQueueRef, step st
 
 func (s *Server) callAutomaticOperation(ctx context.Context, client *shein.Client, shopKey, operation string,
 	data map[string]any, idempotencyKey string) (map[string]any, error) {
+	if operation == "place-express-order" {
+		if err := s.rejectDisabledCarrierPurchase(ctx, shopKey, data); err != nil {
+			return nil, err
+		}
+	}
 	requestHash := hashRequest(data)
 	record, reserved, err := s.store.ReserveOperation(ctx, shopKey, operation, idempotencyKey, requestHash)
 	if err != nil {
@@ -1088,6 +1093,19 @@ func availableWarehouses(result map[string]any) []map[string]any {
 	return filtered
 }
 
+type automaticDecisionWarehouse struct {
+	APIBinding *struct {
+		OMSAccountKey string `json:"oms_account_key"`
+	} `json:"api_binding"`
+	Key         string  `json:"warehouse_key"`
+	Active      bool    `json:"active"`
+	QueryStatus string  `json:"query_status"`
+	Available   float64 `json:"available_amount"`
+	Selectable  bool    `json:"selectable"`
+}
+type automaticDecisionRegion struct {
+	Warehouses []automaticDecisionWarehouse `json:"warehouses"`
+}
 type automaticInventoryDecision struct {
 	Complete          bool `json:"complete"`
 	PackageResolution struct {
@@ -1095,27 +1113,30 @@ type automaticInventoryDecision struct {
 		Error    string `json:"error"`
 	} `json:"package_resolution"`
 	Records []struct {
-		SKU            string `json:"sku"`
-		RequiresManual bool   `json:"requires_manual"`
-		Reason         string `json:"reason"`
-		Regions        []struct {
-			Warehouses []struct {
-				APIBinding *struct {
-					OMSAccountKey string `json:"oms_account_key"`
-				} `json:"api_binding"`
-				Key         string  `json:"warehouse_key"`
-				Active      bool    `json:"active"`
-				QueryStatus string  `json:"query_status"`
-				Available   float64 `json:"available_amount"`
-				Selectable  bool    `json:"selectable"`
-			} `json:"warehouses"`
-		} `json:"regions"`
+		SKU            string                       `json:"sku"`
+		RequiresManual bool                         `json:"requires_manual"`
+		Reason         string                       `json:"reason"`
+		Warehouses     []automaticDecisionWarehouse `json:"warehouses"`
+		Regions        []automaticDecisionRegion    `json:"regions"`
 	} `json:"records"`
+}
+
+func decodeAutomaticInventoryDecision(raw json.RawMessage, decision *automaticInventoryDecision) error {
+	if err := json.Unmarshal(raw, decision); err != nil {
+		return err
+	}
+	for i := range decision.Records {
+		record := &decision.Records[i]
+		if record.Warehouses != nil {
+			record.Regions = []automaticDecisionRegion{{Warehouses: record.Warehouses}}
+		}
+	}
+	return nil
 }
 
 func automaticOMSAccountsByWarehouse(raw json.RawMessage, eligible map[string]bool) (map[string]string, error) {
 	var decision automaticInventoryDecision
-	if err := json.Unmarshal(raw, &decision); err != nil {
+	if err := decodeAutomaticInventoryDecision(raw, &decision); err != nil {
 		return nil, errors.New("领星履约账户响应无法解析")
 	}
 	keys := make([]string, 0, len(eligible))
@@ -1199,7 +1220,7 @@ type automaticInventoryWarehouse struct {
 
 func automaticInventoryWarehouseKeys(raw json.RawMessage, quantities map[string]int) (map[string]bool, error) {
 	var decision automaticInventoryDecision
-	if err := json.Unmarshal(raw, &decision); err != nil {
+	if err := decodeAutomaticInventoryDecision(raw, &decision); err != nil {
 		return nil, errors.New("领星实时库存响应无法解析")
 	}
 	if !decision.Complete {

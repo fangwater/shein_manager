@@ -422,7 +422,7 @@ func (s *Server) carrierPolicies(ctx context.Context, warehouseSKU string) ([]sh
 		if rules.WarehouseKey == "" {
 			return nil, fmt.Errorf("XLWMS did not return base carrier rules for %s", group.WarehouseKey)
 		}
-		result = append(result, shein.WarehouseCarrierPolicies{WarehouseKey: group.WarehouseKey, BaseRules: rules, Carriers: carriers})
+		result = append(result, shein.WarehouseCarrierPolicies{WarehouseKey: group.WarehouseKey, WarehouseEnabled: group.WarehouseEnabled, BaseRules: rules, Carriers: carriers})
 	}
 	return result, nil
 }
@@ -469,21 +469,25 @@ func (s *Server) rejectDisabledCarrierPurchase(ctx context.Context, shopKey stri
 	preRequestID := firstString(data, "preRequestId")
 	channelCode := firstString(data, "expressChannelCode")
 	if preRequestID == "" || channelCode == "" {
-		return nil
+		return errors.New("购单前须提供已保存的报价及渠道")
 	}
 	warehouseCode, orderNo, err := s.store.ShippingQuoteWarehouseAndOrder(ctx, shopKey, preRequestID)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return nil
+		return errors.New("购单报价不存在，请重新查询渠道")
 	}
 	if err != nil {
 		return err
+	}
+	candidate, err := s.store.ShippingQuoteCarrier(ctx, shopKey, preRequestID, channelCode)
+	if err != nil {
+		return errors.New("购单渠道不在可信报价快照中")
 	}
 	groups, err := s.carrierPolicies(ctx, s.orderWarehouseSKU(ctx, shopKey, orderNo))
 	if err != nil {
 		return err
 	}
 	reason := shein.ChannelUnavailableReason(
-		channelCode, "", "", "", warehouseCode, "", false,
+		candidate.ExpressChannelCode, candidate.ExpressIDCode, candidate.ExpressShortName, candidate.CurrencyCode, warehouseCode, "", false,
 		shein.PoliciesByWarehouse(groups)[shein.PolicyWarehouseKey(warehouseCode, "")],
 	)
 	if reason != "" {

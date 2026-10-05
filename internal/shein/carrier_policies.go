@@ -27,9 +27,10 @@ type WarehouseCarrierRules struct {
 }
 
 type WarehouseCarrierPolicies struct {
-	WarehouseKey string                `json:"warehouse_key"`
-	BaseRules    WarehouseCarrierRules `json:"base_rules"`
-	Carriers     []CarrierPolicy       `json:"carriers"`
+	WarehouseEnabled *bool                 `json:"warehouse_enabled,omitempty"`
+	WarehouseKey     string                `json:"warehouse_key"`
+	BaseRules        WarehouseCarrierRules `json:"base_rules"`
+	Carriers         []CarrierPolicy       `json:"carriers"`
 }
 
 var (
@@ -38,6 +39,8 @@ var (
 		"HYTX30":   "ARP_EAST",
 		"DPSCA004": "DPS004",
 		"ARPCA01":  "ARP_WEST",
+		"ARP06A":   "ARP_HOUSTON",
+		"ARPGA":    "ARP_ATLANTA",
 	}
 
 	carrierMatchOrder = []string{"UNIUNI", "SWIFTX", "SPEEDX", "YANWEN", "FEDEX", "USPS", "UPS", "GOFO", "CBS"}
@@ -52,7 +55,7 @@ func PolicyWarehouseKey(code, name string) string {
 
 func IsARPPolicyWarehouse(warehouseKey string) bool {
 	switch strings.ToUpper(strings.TrimSpace(warehouseKey)) {
-	case "ARP_EAST", "ARP_WEST", "HYTX30", "ARPCA01":
+	case "ARP_EAST", "ARP_WEST", "ARP_HOUSTON", "ARP_ATLANTA", "HYTX30", "ARPCA01", "ARP06A", "ARPGA":
 		return true
 	default:
 		return false
@@ -88,12 +91,18 @@ func ConfiguredCarrierPriority(policies []CarrierPolicy, code string) int {
 }
 
 func ChannelUnavailableReason(channelCode, expressIDCode, expressShortName, currencyCode, warehouseCode, warehouseName string, signatureRequired bool, group WarehouseCarrierPolicies) string {
+	if group.WarehouseEnabled != nil && !*group.WarehouseEnabled {
+		return "该仓库尚未启用"
+	}
 	code := CarrierCode(channelCode, expressIDCode, expressShortName)
 	displayCode := code
 	if displayCode == "" {
 		displayCode = strings.ToUpper(strings.TrimSpace(channelCode))
 	}
 	warehouseKey := PolicyWarehouseKey(warehouseCode, warehouseName)
+	if !PhysicalCarrierAllowed(warehouseKey, code) {
+		return "该仓库仅支持 USPS、GOFO、UPS、FEDEX"
+	}
 	allowedCarriers := make(map[string]bool, len(group.BaseRules.AllowedCarrierCodes))
 	for _, value := range group.BaseRules.AllowedCarrierCodes {
 		allowedCarriers[strings.ToUpper(strings.TrimSpace(value))] = true
@@ -246,4 +255,24 @@ func containsText(items []string, value string) bool {
 		}
 	}
 	return false
+}
+
+func PhysicalCarrierAllowed(warehouseKey, carrier string) bool {
+	switch warehouseKey {
+	case "ARP_HOUSTON", "ARP_ATLANTA", "ARP06A", "ARPGA":
+		switch carrier {
+		case "USPS", "GOFO", "UPS", "FEDEX":
+			return true
+		default:
+			return false
+		}
+	default:
+		return true
+	}
+}
+
+func (s *Store) ShippingQuoteCarrier(ctx context.Context, shopKey, preRequestID, channel string) (ShippingQuoteCandidate, error) {
+	var c ShippingQuoteCandidate
+	err := s.pool.QueryRow(ctx, `SELECT express_channel_code,express_id_code,express_short_name,currency_code FROM shein_go_shipping_quote_candidates WHERE shop_key=$1 AND pre_request_id=$2 AND express_channel_code=$3`, shopKey, preRequestID, channel).Scan(&c.ExpressChannelCode, &c.ExpressIDCode, &c.ExpressShortName, &c.CurrencyCode)
+	return c, err
 }

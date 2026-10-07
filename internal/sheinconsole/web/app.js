@@ -1711,6 +1711,10 @@ function isPGWarehouse(warehouse) {
 }
 
 function isAllowedShippingWarehouse(warehouse) {
+  const physicalCode = String(warehouse && warehouse.omsWarehouseCode || "").toUpperCase();
+  if (["DPSNY002", "DPSCA004", "HYTX30", "ARPCA01", "ARP06A", "ARPGA"].includes(physicalCode)) {
+    return !isPGWarehouse(warehouse);
+  }
   const identity = warehouseIdentity(warehouse);
   return /DPS|ARP/.test(identity) && !isPGWarehouse(warehouse);
 }

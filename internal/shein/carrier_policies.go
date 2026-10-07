@@ -100,7 +100,10 @@ func ChannelUnavailableReason(channelCode, expressIDCode, expressShortName, curr
 		displayCode = strings.ToUpper(strings.TrimSpace(channelCode))
 	}
 	warehouseKey := PolicyWarehouseKey(warehouseCode, warehouseName)
-	if !PhysicalCarrierAllowed(warehouseKey, code) {
+	if warehouseKey == "" {
+		warehouseKey = group.WarehouseKey
+	}
+	if !PhysicalCarrierAllowed(warehouseKey, code) || !PhysicalCarrierAllowed(group.WarehouseKey, code) {
 		return "该仓库仅支持 USPS、GOFO、UPS、FEDEX"
 	}
 	allowedCarriers := make(map[string]bool, len(group.BaseRules.AllowedCarrierCodes))

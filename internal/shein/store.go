@@ -434,11 +434,15 @@ func (s *Store) Migrate(ctx context.Context) error {
 			END IF;
 		END $product_alias_backfill$;
 
+ ALTER TABLE shein_go_shipping_quotes ADD COLUMN IF NOT EXISTS oms_warehouse_code text NOT NULL DEFAULT '';
+ ALTER TABLE shein_go_shipping_quotes ADD COLUMN IF NOT EXISTS binding_revision bigint NOT NULL DEFAULT 0;
+ ALTER TABLE shein_label_purchase_choices ADD COLUMN IF NOT EXISTS oms_warehouse_code text NOT NULL DEFAULT '';
+ ALTER TABLE shein_label_purchase_choices ADD COLUMN IF NOT EXISTS binding_revision bigint NOT NULL DEFAULT 0;
 	`)
 	if err != nil {
 		return fmt.Errorf("migrate SHEIN Go tables: %w", err)
 	}
-	return nil
+	return s.backfillLegacyWarehouseSnapshots(ctx)
 }
 
 func (s *Store) Credentials(ctx context.Context, shopKey string) (Credentials, error) {
@@ -859,6 +863,13 @@ func (s *Store) ListWarehouseWatchTasks(ctx context.Context, shopKey string, lim
 				outbound_order_no <> ''
 				OR COALESCE(oms_sync_status, '') <> ''
 				OR warehouse_address_code = ANY($3)
+                OR EXISTS (
+                    SELECT 1 FROM shein_label_purchase_choices p
+                    WHERE p.shop_key = shein_go_fulfillment_tasks.shop_key
+                        AND p.order_no = shein_go_fulfillment_tasks.order_no
+                        AND p.selected_warehouse_address_code = shein_go_fulfillment_tasks.warehouse_address_code
+                        AND p.rejected_at IS NULL AND p.oms_warehouse_code <> ''
+                )
 			)
 		ORDER BY
 			CASE WHEN oms_queried_at IS NULL THEN 0 ELSE 1 END,
@@ -962,7 +973,14 @@ const fulfillmentTaskSelect = `SELECT order_no, express_channel_code, warehouse_
 	order_place_type, handle_result, print_status, status, failure_reason, resolution_status, resolution_reason, resolved_at, created_at, updated_at,
 	outbound_order_no, outbound_status, outbound_status_name, label_attached,
 	oms_account, oms_order_no, oms_status_code, oms_status_key, oms_status_text,
-	oms_warehouse_code, oms_sync_status, oms_sync_message, oms_queried_at
+    COALESCE(NULLIF(shein_go_fulfillment_tasks.oms_warehouse_code, ''), (
+        SELECT p.oms_warehouse_code FROM shein_label_purchase_choices p
+        WHERE p.shop_key = shein_go_fulfillment_tasks.shop_key
+            AND p.order_no = shein_go_fulfillment_tasks.order_no
+            AND p.selected_warehouse_address_code = shein_go_fulfillment_tasks.warehouse_address_code
+            AND p.rejected_at IS NULL AND p.oms_warehouse_code <> ''
+        ORDER BY p.purchased_at DESC LIMIT 1
+    ), ''), oms_sync_status, oms_sync_message, oms_queried_at
 	FROM shein_go_fulfillment_tasks`
 
 type fulfillmentTaskScanner interface {

@@ -109,6 +109,9 @@ func (server *Server) registerRoutes(mux *http.ServeMux) {
 	mux.Handle("GET /api/auto-fulfillment/batches/latest", http.HandlerFunc(server.latestAutoFulfillmentBatch))
 	mux.Handle("GET /api/shipping/tasks", http.HandlerFunc(server.fulfillmentTasks))
 	mux.Handle("POST /api/shipping/tasks/{orderNo}/resolve", http.HandlerFunc(server.resolveFulfillmentTask))
+	mux.HandleFunc("GET /api/warehouse-management/activity", server.warehouseActivity)
+	mux.HandleFunc("POST /api/warehouse-management/options", server.managementWarehouseOptions)
+	mux.HandleFunc("GET /api/warehouse-management/legacy", server.legacyWarehouseBindings)
 	mux.Handle("POST /api/shipping/warehouses", server.operationHandler("available-shipping-warehouse"))
 	mux.Handle("POST /api/shipping/channels", server.operationHandler("order-mapping-channels"))
 	mux.Handle("POST /api/shipping/place", server.operationHandler("place-express-order"))
@@ -207,7 +210,15 @@ func (s *Server) operationHandler(operation string) http.Handler {
 		if !decodeJSON(writer, request, &payload) {
 			return
 		}
-		if err := shein.Validate(operation, payload.Data); err != nil {
+		validationData := payload.Data
+		if operation == "order-mapping-channels" {
+			validationData = make(map[string]any, len(payload.Data)+1)
+			for k, v := range payload.Data {
+				validationData[k] = v
+			}
+			validationData["warehouseName"] = "ARP"
+		}
+		if err := shein.Validate(operation, validationData); err != nil {
 			writeJSON(writer, http.StatusBadRequest, response{Success: false, Error: err.Error()})
 			return
 		}
@@ -229,6 +240,14 @@ func (s *Server) operationHandler(operation string) http.Handler {
 		requestHash := hashRequest(payload.Data)
 		ctx, cancel := context.WithTimeout(request.Context(), s.requestTimeout)
 		defer cancel()
+		if operation == "available-shipping-warehouse" || operation == "order-mapping-channels" {
+			scoped, scopeErr := s.warehouseBindingContext(ctx, shopKey)
+			if scopeErr != nil {
+				s.internalError(writer, "load warehouse configuration", scopeErr)
+				return
+			}
+			ctx = scoped
+		}
 		if requiresIdempotency {
 			record, reserved, reserveErr := s.store.ReserveOperation(ctx, shopKey, operation, idempotencyKey, requestHash)
 			if reserveErr != nil {
@@ -297,7 +316,7 @@ func (s *Server) operationHandler(operation string) http.Handler {
 				s.internalError(writer, "apply carrier policies", err)
 				return
 			}
-			if err := s.saveShippingQuote(shopKey, payload.Data, result); err != nil {
+			if err := s.saveShippingQuote(ctx, shopKey, payload.Data, result); err != nil {
 				s.internalError(writer, "save shipping quote", err)
 				return
 			}
@@ -460,12 +479,17 @@ func (s *Server) applyCarrierPoliciesToChannelResult(ctx context.Context, shopKe
 	if warehouseName == "" {
 		warehouseName = firstString(firstObject(result["info"]), "warehouseName", "warehouseAddressName", "warehouseDesc")
 	}
-	policyGroup := shein.PoliciesByWarehouse(groups)[shein.PolicyWarehouseKey(warehouseCode, warehouseName)]
+	policyGroup := shein.PoliciesByWarehouse(groups)[shein.PolicyWarehouseKeyInContext(ctx, warehouseCode, warehouseName)]
 	shein.ApplyCarrierPoliciesToChannels(result, warehouseCode, warehouseName, policyGroup)
 	return nil
 }
 
 func (s *Server) rejectDisabledCarrierPurchase(ctx context.Context, shopKey string, data map[string]any) error {
+	scoped, scopeErr := s.warehouseBindingContext(ctx, shopKey)
+	if scopeErr != nil {
+		return scopeErr
+	}
+	ctx = scoped
 	preRequestID := firstString(data, "preRequestId")
 	channelCode := firstString(data, "expressChannelCode")
 	if preRequestID == "" || channelCode == "" {
@@ -478,6 +502,13 @@ func (s *Server) rejectDisabledCarrierPurchase(ctx context.Context, shopKey stri
 	if err != nil {
 		return err
 	}
+	binding, found := shein.WarehouseSnapshot(ctx, warehouseCode)
+	if !found || !binding.Enabled {
+		return errors.New("当前店铺仓库已暂停或未配置，请重新报价")
+	}
+	if err := s.store.ValidateShippingQuoteBinding(ctx, shopKey, preRequestID, binding.OMSCode, binding.Revision); err != nil {
+		return err
+	}
 	candidate, err := s.store.ShippingQuoteCarrier(ctx, shopKey, preRequestID, channelCode)
 	if err != nil {
 		return errors.New("购单渠道不在可信报价快照中")
@@ -488,7 +519,7 @@ func (s *Server) rejectDisabledCarrierPurchase(ctx context.Context, shopKey stri
 	}
 	reason := shein.ChannelUnavailableReason(
 		candidate.ExpressChannelCode, candidate.ExpressIDCode, candidate.ExpressShortName, candidate.CurrencyCode, warehouseCode, "", false,
-		shein.PoliciesByWarehouse(groups)[shein.PolicyWarehouseKey(warehouseCode, "")],
+		shein.PoliciesByWarehouse(groups)[shein.PolicyWarehouseKeyInContext(ctx, warehouseCode, "")],
 	)
 	if reason != "" {
 		return errors.New(reason)

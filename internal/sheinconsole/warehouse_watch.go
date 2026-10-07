@@ -114,7 +114,7 @@ func (s *Server) refreshWarehouseWatch(ctx context.Context, task shein.Fulfillme
 		return task, nil
 	}
 	purchase, purchaseWarehouse := s.purchasedWarehouseForTask(ctx, task)
-	dpsWarehouse := shein.ResolvedDPSWarehouseCode(task.WarehouseAddressCode, "")
+	dpsWarehouse := shein.ResolvedDPSWarehouseCode(task.WarehouseAddressCode, task.OMSWarehouseCode)
 	if purchaseWarehouse.OK() {
 		dpsWarehouse = shein.ResolvedDPSWarehouseCode(purchaseWarehouse.AddressCode, purchaseWarehouse.OMSCode)
 	}
@@ -364,11 +364,11 @@ func (s *Server) sheinPlatformFulfillmentStatus(ctx context.Context, shopKey, or
 
 func (s *Server) purchasedWarehouseForTask(ctx context.Context, task shein.FulfillmentTask) (shein.LabelPurchaseRecord, shein.PurchasedWarehouse) {
 	if s.store == nil {
-		return shein.LabelPurchaseRecord{}, shein.ResolvePurchasedWarehouse(task.WarehouseAddressCode)
+		return shein.LabelPurchaseRecord{}, (shein.LabelPurchaseRecord{SelectedWarehouseAddressCode: task.WarehouseAddressCode, OMSWarehouseCode: task.OMSWarehouseCode}).ResolvedWarehouse()
 	}
 	record, err := s.store.LatestLabelPurchase(ctx, s.shopKey, task.OrderNo)
 	if err != nil {
-		return shein.LabelPurchaseRecord{}, shein.ResolvePurchasedWarehouse(task.WarehouseAddressCode)
+		return shein.LabelPurchaseRecord{}, (shein.LabelPurchaseRecord{SelectedWarehouseAddressCode: task.WarehouseAddressCode, OMSWarehouseCode: task.OMSWarehouseCode}).ResolvedWarehouse()
 	}
 	return record, record.ResolvedWarehouse()
 }
@@ -569,7 +569,7 @@ func (s *Server) syncFulfillmentAudits(ctx context.Context) error {
 			continue
 		}
 		_, purchased := s.purchasedWarehouseForTask(ctx, task)
-		warehouse := firstNonEmpty(purchased.OMSCode, task.OMSWarehouseCode, shein.ResolvedOMSWarehouseCode(task.WarehouseAddressCode, ""))
+		warehouse := firstNonEmpty(purchased.OMSCode, task.OMSWarehouseCode, shein.ResolvedOMSWarehouseCode(task.WarehouseAddressCode, task.OMSWarehouseCode))
 		if !isReliableOMSWarehouseCode(warehouse) {
 			warehouse = ""
 		}

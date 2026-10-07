@@ -703,6 +703,10 @@ func (s *Server) executeAutoFulfillment(ctx context.Context, ref autoQueueRef) e
 		}
 	}
 
+	ctx, err = s.warehouseBindingContext(ctx, ref.ShopKey)
+	if err != nil {
+		return err
+	}
 	if err := s.setAutomaticStep(ctx, ref, "query_warehouses"); err != nil {
 		return err
 	}
@@ -738,7 +742,7 @@ func (s *Server) executeAutoFulfillment(ctx context.Context, ref autoQueueRef) e
 		if len(rejected) > 0 {
 			reason += "；已排除邮编不覆盖承运商 " + joinedCarrierKeys(rejected)
 		}
-		warehouseKey := shein.PolicyWarehouseKey(selected.Quote.WarehouseAddressCode, "")
+		warehouseKey := shein.PolicyWarehouseKeyInContext(ctx, selected.Quote.WarehouseAddressCode, "")
 		omsAccount, configured := warehouseAccounts[warehouseKey]
 		if !configured {
 			return fmt.Errorf("XLWMS 仓库 %s 未配置领星履约账户", warehouseKey)
@@ -829,12 +833,15 @@ func (s *Server) automaticShippingQuotes(ctx context.Context, client *shein.Clie
 		if err != nil {
 			return nil, err
 		}
-		policyGroup := policiesByWarehouse[shein.PolicyWarehouseKey(warehouseCode, warehouseName)]
+		policyGroup := policiesByWarehouse[shein.PolicyWarehouseKeyInContext(ctx, warehouseCode, warehouseName)]
 		shein.ApplyCarrierPoliciesToChannels(result, warehouseCode, warehouseName, policyGroup)
 		quote, ok := shippingQuoteFromChannels(data, result)
 		if !ok {
 			continue
 		}
+		quote.OMSWarehouseCode = shein.ResolvedOMSWarehouseCodeInContext(ctx, warehouseCode, warehouseName)
+		binding, _ := shein.WarehouseSnapshot(ctx, warehouseCode)
+		quote.BindingRevision = binding.Revision
 		if err := s.store.SaveShippingQuote(ctx, ref.ShopKey, quote); err != nil {
 			return nil, err
 		}
@@ -994,6 +1001,7 @@ func (s *Server) completeAutomaticWarehouseHandoff(ctx context.Context, ref auto
 	task := shein.FulfillmentTask{
 		OrderNo:              ref.OrderNo,
 		WarehouseAddressCode: job.WarehouseAddressCode,
+		OMSWarehouseCode:     job.OMSWarehouseCode,
 		ExpressChannelCode:   job.ExpressChannelCode,
 		PlaceRequestID:       job.PlaceRequestID,
 		DeliveryNo:           job.DeliveryNo,
@@ -1006,7 +1014,7 @@ func (s *Server) completeAutomaticWarehouseHandoff(ctx context.Context, ref auto
 			if !errors.Is(err, shein.ErrFulfillmentTaskNotFound) {
 				return err
 			}
-			if shein.RequiresManualParcelCreate(ref.ShopKey, job.WarehouseAddressCode, "") {
+			if shein.RequiresManualParcelCreate(ref.ShopKey, job.WarehouseAddressCode, job.OMSWarehouseCode) {
 				return errors.New("DPS 面单已购买，但未找到履约任务，无法自动建领星出库单")
 			}
 			return nil
@@ -1025,7 +1033,7 @@ func (s *Server) completeAutomaticWarehouseHandoff(ctx context.Context, ref auto
 			task.PlaceRequestID = job.PlaceRequestID
 		}
 	}
-	if !shein.RequiresManualParcelCreate(ref.ShopKey, task.WarehouseAddressCode, "") {
+	if !shein.RequiresManualParcelCreate(ref.ShopKey, task.WarehouseAddressCode, task.OMSWarehouseCode) {
 		return nil
 	}
 	if s.store != nil {
@@ -1045,11 +1053,6 @@ func (s *Server) setAutomaticStep(ctx context.Context, ref autoQueueRef, step st
 
 func (s *Server) callAutomaticOperation(ctx context.Context, client *shein.Client, shopKey, operation string,
 	data map[string]any, idempotencyKey string) (map[string]any, error) {
-	if operation == "place-express-order" {
-		if err := s.rejectDisabledCarrierPurchase(ctx, shopKey, data); err != nil {
-			return nil, err
-		}
-	}
 	requestHash := hashRequest(data)
 	record, reserved, err := s.store.ReserveOperation(ctx, shopKey, operation, idempotencyKey, requestHash)
 	if err != nil {
@@ -1063,6 +1066,12 @@ func (s *Server) callAutomaticOperation(ctx context.Context, client *shein.Clien
 			return nil, errors.New("相同自动履约操作仍在处理中")
 		default:
 			return nil, errors.New("此前的自动履约操作失败")
+		}
+	}
+	if operation == "place-express-order" {
+		if err := s.rejectDisabledCarrierPurchase(ctx, shopKey, data); err != nil {
+			_ = s.store.FailOperation(context.WithoutCancel(ctx), shopKey, operation, idempotencyKey, operationErrorSummary(err))
+			return nil, err
 		}
 	}
 	result, err := client.Call(ctx, operation, data)
@@ -1083,6 +1092,10 @@ func availableWarehouses(result map[string]any) []map[string]any {
 		status := scalarString(warehouse, "availableStatus")
 		code := scalarString(warehouse, "warehouseAddressCode", "warehouseCode")
 		name := scalarString(warehouse, "warehouseName", "warehouseAddressName", "warehouseDesc")
+		if physical := scalarString(warehouse, "omsWarehouseCode"); physical != "" {
+			code = physical
+			name = ""
+		}
 		if (status == "" || status == "1") && shein.IsAllowedShippingWarehouse(code, name) {
 			filtered = append(filtered, warehouse)
 		}
@@ -1299,6 +1312,10 @@ func warehousesWithInventory(warehouses []map[string]any, eligible map[string]bo
 	for _, warehouse := range warehouses {
 		code := scalarString(warehouse, "warehouseAddressCode", "warehouseCode")
 		name := scalarString(warehouse, "warehouseName", "warehouseAddressName", "warehouseDesc")
+		if oms := scalarString(warehouse, "omsWarehouseCode"); oms != "" {
+			code = oms
+			name = ""
+		}
 		if eligible[shein.PolicyWarehouseKey(code, name)] {
 			filtered = append(filtered, warehouse)
 		}
@@ -1415,7 +1432,7 @@ func selectAutomaticQuotedChannel(quotes []quotedChannel) (quotedChannel, string
 	})
 	choice := withinRange[0]
 	carrier := shein.CarrierCode(choice.Candidate.ExpressChannelCode, choice.Candidate.ExpressIDCode, choice.Candidate.ExpressShortName)
-	warehouseKey := shein.PolicyWarehouseKey(choice.Quote.WarehouseAddressCode, "")
+	warehouseKey := shein.PolicyWarehouseKey(firstNonEmpty(choice.Quote.OMSWarehouseCode, choice.Quote.WarehouseAddressCode), "")
 	if warehouseKey == "" {
 		warehouseKey = choice.Quote.WarehouseAddressCode
 	}
@@ -1497,8 +1514,8 @@ func betterQuotedChannel(left, right quotedChannel) bool {
 	if left.Rules.WarehouseTiePriority != right.Rules.WarehouseTiePriority {
 		return left.Rules.WarehouseTiePriority < right.Rules.WarehouseTiePriority
 	}
-	leftARP := shein.IsARPPolicyWarehouse(shein.PolicyWarehouseKey(left.Quote.WarehouseAddressCode, ""))
-	rightARP := shein.IsARPPolicyWarehouse(shein.PolicyWarehouseKey(right.Quote.WarehouseAddressCode, ""))
+	leftARP := shein.IsARPPolicyWarehouse(shein.PolicyWarehouseKey(firstNonEmpty(left.Quote.OMSWarehouseCode, left.Quote.WarehouseAddressCode), ""))
+	rightARP := shein.IsARPPolicyWarehouse(shein.PolicyWarehouseKey(firstNonEmpty(right.Quote.OMSWarehouseCode, right.Quote.WarehouseAddressCode), ""))
 	if leftARP != rightARP {
 		return leftARP
 	}

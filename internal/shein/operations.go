@@ -53,7 +53,7 @@ func (c *Client) Call(ctx context.Context, operation string, data map[string]any
 	if endpoint.Method == http.MethodGet {
 		return nil, errors.New("use LogisticsTrack for the GET operation")
 	}
-	if err := Validate(operation, data); err != nil {
+	if err := ValidateWithWarehouseSnapshot(ctx, operation, data); err != nil {
 		return nil, err
 	}
 	result, err := c.Request(ctx, endpoint.Method, endpoint.Path, outboundRequestData(operation, data), nil)
@@ -61,7 +61,7 @@ func (c *Client) Call(ctx context.Context, operation string, data map[string]any
 		return nil, err
 	}
 	if operation == "available-shipping-warehouse" {
-		RestrictShippingWarehouseAvailability(result)
+		RestrictShippingWarehouseAvailabilityWithSnapshot(ctx, result)
 	}
 	return result, nil
 }

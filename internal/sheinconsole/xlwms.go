@@ -286,7 +286,7 @@ func (s *Server) createXLWMSParcel(writer http.ResponseWriter, request *http.Req
 		s.internalError(writer, "load fulfillment task for XLWMS parcel create", err)
 		return
 	}
-	if !shein.RequiresManualParcelCreate(shopKey, task.WarehouseAddressCode, "") {
+	if !shein.RequiresManualParcelCreate(shopKey, task.WarehouseAddressCode, task.OMSWarehouseCode) {
 		writeJSON(writer, http.StatusConflict, response{Success: false, Error: "当前发货仓不需要 DPS 出库单"})
 		return
 	}
@@ -371,7 +371,7 @@ func (s *Server) uploadXLWMSParcelLabel(writer http.ResponseWriter, request *htt
 		writeJSON(writer, http.StatusConflict, response{Success: false, Error: "SHEIN 已揽收或已签收，面单不能再打印"})
 		return
 	}
-	if !shein.RequiresManualParcelCreate(shopKey, task.WarehouseAddressCode, "") {
+	if !shein.RequiresManualParcelCreate(shopKey, task.WarehouseAddressCode, task.OMSWarehouseCode) {
 		writeJSON(writer, http.StatusConflict, response{Success: false, Error: "当前发货仓不需要补传 DPS 面单"})
 		return
 	}
@@ -379,7 +379,7 @@ func (s *Server) uploadXLWMSParcelLabel(writer http.ResponseWriter, request *htt
 		writeJSON(writer, http.StatusConflict, response{Success: false, Error: "当前订单尚未到面单阶段，不能上传面单"})
 		return
 	}
-	warehouse := strings.ToUpper(strings.TrimSpace(firstNonEmpty(payload.Warehouse, shein.ResolvedDPSWarehouseCode(task.WarehouseAddressCode, ""))))
+	warehouse := strings.ToUpper(strings.TrimSpace(firstNonEmpty(payload.Warehouse, shein.ResolvedDPSWarehouseCode(task.WarehouseAddressCode, task.OMSWarehouseCode))))
 	if warehouse == "" {
 		writeJSON(writer, http.StatusBadRequest, response{Success: false, Error: "建单仓库不能为空"})
 		return
@@ -525,7 +525,7 @@ func (s *Server) ensureAutomaticDPSParcel(ctx context.Context, shopKey string, t
 	if s.xlwms == nil {
 		return lingxingParcelStatus{}, errors.New("领星查询服务未配置")
 	}
-	if !shein.RequiresManualParcelCreate(shopKey, task.WarehouseAddressCode, "") {
+	if !shein.RequiresManualParcelCreate(shopKey, task.WarehouseAddressCode, task.OMSWarehouseCode) {
 		return lingxingParcelStatus{}, nil
 	}
 	loaded := []shein.FulfillmentTask{task}
@@ -538,7 +538,7 @@ func (s *Server) ensureAutomaticDPSParcel(ctx context.Context, shopKey string, t
 	if !shein.LabelPrintable(task) {
 		return lingxingParcelStatus{}, errors.New("SHEIN 已揽收或已签收，不能再建领星出库单")
 	}
-	warehouse := shein.ResolvedDPSWarehouseCode(task.WarehouseAddressCode, "")
+	warehouse := shein.ResolvedDPSWarehouseCode(task.WarehouseAddressCode, task.OMSWarehouseCode)
 	if warehouse == "" {
 		return lingxingParcelStatus{}, errors.New("DPS 发货仓无法识别")
 	}
@@ -801,11 +801,11 @@ func (s *Server) attachLingxingParcelStatusToTasks(ctx context.Context, shopKey 
 	}
 	var wait sync.WaitGroup
 	for index := range tasks {
-		if !shein.RequiresManualParcelCreate(shopKey, tasks[index].WarehouseAddressCode, "") {
+		if !shein.RequiresManualParcelCreate(shopKey, tasks[index].WarehouseAddressCode, tasks[index].OMSWarehouseCode) {
 			continue
 		}
 		orderNo := strings.TrimSpace(tasks[index].OrderNo)
-		warehouse := shein.ResolvedDPSWarehouseCode(tasks[index].WarehouseAddressCode, "")
+		warehouse := shein.ResolvedDPSWarehouseCode(tasks[index].WarehouseAddressCode, tasks[index].OMSWarehouseCode)
 		if orderNo == "" || warehouse == "" {
 			continue
 		}
@@ -1084,7 +1084,7 @@ func parcelLabelUploadFailure(result json.RawMessage) string {
 
 func parcelCreateOrder(shopKey, shopName, orderNo string, task shein.FulfillmentTask, payload xlwmsParcelCreateRequest) (map[string]any, error) {
 	warehouse := strings.ToUpper(strings.TrimSpace(payload.Warehouse))
-	expected := shein.ResolvedDPSWarehouseCode(task.WarehouseAddressCode, "")
+	expected := shein.ResolvedDPSWarehouseCode(task.WarehouseAddressCode, task.OMSWarehouseCode)
 	if expected != "" && warehouse != expected {
 		return nil, errors.New("建单仓库必须与 DPS 发货仓一致")
 	}
@@ -1235,8 +1235,8 @@ func finalizeParcelDraft(draft *xlwmsParcelDraft) {
 }
 
 func parcelDraftFromTask(shopKey, shopName string, task shein.FulfillmentTask) xlwmsParcelDraft {
-	warehouse := shein.ResolvedDPSWarehouseCode(task.WarehouseAddressCode, "")
-	required := shein.RequiresManualParcelCreate(shopKey, task.WarehouseAddressCode, "") && shein.LabelPrintable(task) &&
+	warehouse := shein.ResolvedDPSWarehouseCode(task.WarehouseAddressCode, task.OMSWarehouseCode)
+	required := shein.RequiresManualParcelCreate(shopKey, task.WarehouseAddressCode, task.OMSWarehouseCode) && shein.LabelPrintable(task) &&
 		(!task.ParcelComplete || (task.OutboundStatus != nil && *task.OutboundStatus == 7) ||
 			(strings.TrimSpace(task.OutboundOrderNo) != "" && !task.LabelAttached))
 	draft := xlwmsParcelDraft{

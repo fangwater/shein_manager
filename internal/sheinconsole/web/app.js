@@ -701,7 +701,7 @@ function sheinOrderAlreadyCollected(task) {
 }
 
 function canCreateManualParcel(task) {
-  return shopRequiresManualParcelCreate() && isDPSFulfillmentWarehouse(task && task.warehouse_address_code) &&
+  return shopRequiresManualParcelCreate() && isDPSFulfillmentWarehouse(task && task.warehouse_address_code, task && task.oms_warehouse_code) &&
     (task && (task.status === "label_ready" || task.status === "ready")) &&
     parcelNeedsComplementaryUpload(task) && !sheinOrderAlreadyCollected(task);
 }

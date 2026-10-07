@@ -59,7 +59,7 @@ func (s *Server) persistFulfillmentState(shopKey, operation string, requestData,
 	}
 }
 
-func (s *Server) saveShippingQuote(shopKey string, requestData, result map[string]any) error {
+func (s *Server) saveShippingQuote(ctx context.Context, shopKey string, requestData, result map[string]any) error {
 	quote, ok := shippingQuoteFromChannels(requestData, result)
 	if !ok {
 		if firstString(firstObject(result["info"]), "preRequestId") != "" {
@@ -67,8 +67,9 @@ func (s *Server) saveShippingQuote(shopKey string, requestData, result map[strin
 		}
 		return errors.New("SHEIN channel response does not contain a complete quote")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
+	quote.OMSWarehouseCode = shein.ResolvedOMSWarehouseCodeInContext(ctx, quote.WarehouseAddressCode, "")
+	binding, _ := shein.WarehouseSnapshot(ctx, quote.WarehouseAddressCode)
+	quote.BindingRevision = binding.Revision
 	return s.store.SaveShippingQuote(ctx, shopKey, quote)
 }
 

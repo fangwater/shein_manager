@@ -11,6 +11,8 @@ import (
 )
 
 type ShippingQuote struct {
+	OMSWarehouseCode     string
+	BindingRevision      int64
 	PreRequestID         string
 	OrderNo              string
 	WarehouseAddressCode string
@@ -48,10 +50,10 @@ func (s *Store) SaveShippingQuote(ctx context.Context, shopKey string, quote Shi
 
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO shein_go_shipping_quotes (
-			shop_key, pre_request_id, order_no, warehouse_address_code
-		) VALUES ($1, $2, $3, $4)
+			shop_key, pre_request_id, order_no, warehouse_address_code,oms_warehouse_code,binding_revision
+		) VALUES ($1, $2, $3, $4,$5,$6)
 		ON CONFLICT DO NOTHING
-	`, shopKey, quote.PreRequestID, quote.OrderNo, quote.WarehouseAddressCode); err != nil {
+	`, shopKey, quote.PreRequestID, quote.OrderNo, quote.WarehouseAddressCode, quote.OMSWarehouseCode, quote.BindingRevision); err != nil {
 		return fmt.Errorf("store SHEIN shipping quote: %w", err)
 	}
 	for _, candidate := range quote.Candidates {
@@ -264,6 +266,9 @@ func (s *Store) ReserveLabelPurchaseSelection(
 	if err != nil {
 		return false, fmt.Errorf("store SHEIN selected purchase choice: %w", err)
 	}
+	if _, err := tx.Exec(ctx, `UPDATE shein_label_purchase_choices p SET oms_warehouse_code=q.oms_warehouse_code,binding_revision=q.binding_revision FROM shein_go_shipping_quotes q WHERE p.shop_key=$1 AND p.pre_request_id=$2 AND q.shop_key=p.shop_key AND q.pre_request_id=p.pre_request_id AND p.oms_warehouse_code=''`, shopKey, preRequestID); err != nil {
+		return false, err
+	}
 	if tag.RowsAffected() == 1 {
 		for _, candidate := range candidates {
 			if _, err := tx.Exec(ctx, `
@@ -289,6 +294,7 @@ func (s *Store) ReserveLabelPurchaseSelection(
 }
 
 type LabelPurchaseRecord struct {
+	OMSWarehouseCode             string
 	OrderNo                      string
 	SelectedWarehouseAddressCode string
 	SelectedExpressChannelCode   string
@@ -332,7 +338,7 @@ func (s *Store) PurchasedLabelEvidenceByOrderNos(ctx context.Context, shopKey st
 	}
 	rows, err := s.pool.Query(ctx, `
 		SELECT DISTINCT ON (upper(order_no)) order_no,
-			selected_warehouse_address_code, delivery_no, purchased_at,selected_express_channel_code,selected_express_id_code,selected_express_short_name
+			selected_warehouse_address_code, delivery_no, purchased_at,selected_express_channel_code,selected_express_id_code,selected_express_short_name,oms_warehouse_code
 		FROM shein_label_purchase_choices
 		WHERE shop_key = $1 AND upper(order_no) = ANY($2)
 			AND delivery_no <> '' AND rejected_at IS NULL
@@ -344,12 +350,15 @@ func (s *Store) PurchasedLabelEvidenceByOrderNos(ctx context.Context, shopKey st
 	defer rows.Close()
 	result := make([]PurchasedLabelEvidence, 0, len(normalized))
 	for rows.Next() {
-		var orderNo, warehouseAddressCode, trackingNumber, channelCode, expressIDCode, expressName string
+		var orderNo, warehouseAddressCode, trackingNumber, channelCode, expressIDCode, expressName, omsCode string
 		var purchasedAt time.Time
-		if err := rows.Scan(&orderNo, &warehouseAddressCode, &trackingNumber, &purchasedAt, &channelCode, &expressIDCode, &expressName); err != nil {
+		if err := rows.Scan(&orderNo, &warehouseAddressCode, &trackingNumber, &purchasedAt, &channelCode, &expressIDCode, &expressName, &omsCode); err != nil {
 			return nil, fmt.Errorf("scan SHEIN purchased-label evidence: %w", err)
 		}
 		warehouse := ResolvePurchasedWarehouse(warehouseAddressCode)
+		if omsCode != "" {
+			warehouse = PurchasedWarehouse{AddressCode: warehouseAddressCode, OMSCode: omsCode}
+		}
 		if !warehouse.OK() {
 			continue
 		}
@@ -374,14 +383,14 @@ func (s *Store) LatestLabelPurchase(ctx context.Context, shopKey, orderNo string
 	err := s.pool.QueryRow(ctx, `
 		SELECT selected_warehouse_address_code, selected_express_channel_code,
 			COALESCE(selected_performance_cost::text, ''), COALESCE(selected_currency_code, ''),
-			COALESCE(delivery_no, '')
+			COALESCE(delivery_no, ''),oms_warehouse_code
 		FROM shein_label_purchase_choices
 		WHERE shop_key = $1 AND order_no = $2 AND rejected_at IS NULL
 		ORDER BY purchased_at DESC
 		LIMIT 1
 	`, shopKey, orderNo).Scan(
 		&record.SelectedWarehouseAddressCode, &record.SelectedExpressChannelCode,
-		&record.SelectedPerformanceCost, &record.SelectedCurrencyCode, &record.DeliveryNo,
+		&record.SelectedPerformanceCost, &record.SelectedCurrencyCode, &record.DeliveryNo, &record.OMSWarehouseCode,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return LabelPurchaseRecord{}, err
@@ -393,6 +402,9 @@ func (s *Store) LatestLabelPurchase(ctx context.Context, shopKey, orderNo string
 }
 
 func (record LabelPurchaseRecord) ResolvedWarehouse() PurchasedWarehouse {
+	if record.OMSWarehouseCode != "" {
+		return PurchasedWarehouse{AddressCode: record.SelectedWarehouseAddressCode, OMSCode: record.OMSWarehouseCode}
+	}
 	return ResolvePurchasedWarehouse(record.SelectedWarehouseAddressCode)
 }
 

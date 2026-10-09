@@ -104,7 +104,7 @@ func ChannelUnavailableReason(channelCode, expressIDCode, expressShortName, curr
 		warehouseKey = group.WarehouseKey
 	}
 	if !PhysicalCarrierAllowed(warehouseKey, code) || !PhysicalCarrierAllowed(group.WarehouseKey, code) {
-		return "该仓库仅支持 USPS、GOFO、UPS、FEDEX"
+		return "该仓库仅支持 USPS、GOFO、UPS、FEDEX、SPEEDX、CBS"
 	}
 	allowedCarriers := make(map[string]bool, len(group.BaseRules.AllowedCarrierCodes))
 	for _, value := range group.BaseRules.AllowedCarrierCodes {
@@ -261,10 +261,10 @@ func containsText(items []string, value string) bool {
 }
 
 func PhysicalCarrierAllowed(warehouseKey, carrier string) bool {
-	switch warehouseKey {
+	switch strings.ToUpper(strings.TrimSpace(warehouseKey)) {
 	case "ARP_HOUSTON", "ARP_ATLANTA", "ARP06A", "ARPGA":
-		switch carrier {
-		case "USPS", "GOFO", "UPS", "FEDEX":
+		switch strings.ToUpper(strings.TrimSpace(carrier)) {
+		case "USPS", "GOFO", "UPS", "FEDEX", "SPEEDX", "CBS":
 			return true
 		default:
 			return false

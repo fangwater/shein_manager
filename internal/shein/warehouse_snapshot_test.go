@@ -43,7 +43,7 @@ func TestBoughtLabelUsesOriginalSnapshot(t *testing.T) {
 }
 func TestDynamicPhysicalCarrierCapUsesPolicySnapshot(t *testing.T) {
 	g := WarehouseCarrierPolicies{WarehouseKey: "ARP_HOUSTON", BaseRules: WarehouseCarrierRules{WarehouseKey: "ARP_HOUSTON", AllowedCarrierCodes: []string{"SPEEDX", "USPS"}}}
-	if ChannelUnavailableReason("SPEEDX", "", "", "USD", "WH-NEW", "", false, g) == "" {
+	if ChannelUnavailableReason("YANWEN", "", "", "USD", "WH-NEW", "", false, g) == "" {
 		t.Fatal("opaque warehouse bypassed physical cap")
 	}
 }
